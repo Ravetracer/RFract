@@ -4,6 +4,8 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-25
+
 Stage 1: escape-time core and viewer.
 
 ### Added

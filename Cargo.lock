@@ -2017,7 +2017,7 @@ dependencies = [
 
 [[package]]
 name = "rfr-app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "eframe",
  "egui",
@@ -2035,7 +2035,7 @@ dependencies = [
 
 [[package]]
 name = "rfr-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rfr-core",
  "rfr-gpu",
@@ -2043,7 +2043,7 @@ dependencies = [
 
 [[package]]
 name = "rfr-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libloading",
  "png",
@@ -2054,7 +2054,7 @@ dependencies = [
 
 [[package]]
 name = "rfr-gpu"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytemuck",
  "naga",
