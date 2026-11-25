@@ -680,6 +680,18 @@ impl<'a> Ck<'a> {
         {
             return Ok(e);
         }
+        // isNaN / isInf of a real value (complex: the real part); "infinite" is beyond the f32
+        // range so the CPU and the GPU agree.
+        if self.dialect == Dialect::Ufm && matches!(lname.as_str(), "isnan" | "isinf") && vals.len() == 1 {
+            let a = conv(vals.pop().unwrap(), Ty::Real);
+            let k = if lname == "isnan" {
+                Kind::Cmp(Cmp::Ne, Box::new(a.clone()), Box::new(a))
+            } else {
+                let abs = Expr { ty: Ty::Real, kind: Kind::Call(Func::Abs, vec![a]) };
+                Kind::Cmp(Cmp::Gt, Box::new(abs), Box::new(real(3.4e38)))
+            };
+            return Ok(Expr { ty: Ty::Bool, kind: k });
+        }
         let two_real = |f: Func, vals: Vec<Expr>| -> Result<Expr, Error> {
             if vals.len() != 2 {
                 return err(line, format!("'{name}' takes two arguments"));

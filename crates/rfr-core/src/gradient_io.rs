@@ -97,47 +97,64 @@ fn parse_ugr(text: &str) -> Result<Vec<(String, Gradient)>, String> {
         let Some(gi) = lower.find("gradient:") else { continue };
         let oi = lower.find("opacity:");
         let gsec = &body[gi + 9..oi.filter(|&o| o > gi).unwrap_or(body.len())];
-        let mut stops = Vec::new();
-        let mut smooth = true;
+        if let Some(g) = ugr_gradient(gsec, oi.map(|o| &body[o + 8..])) {
+            let title = pairs(gsec).into_iter().find(|(k, _)| k == "title").map(|(_, v)| v).unwrap_or(e.name.clone());
+            out.push((title, g));
+        }
+    }
+    Ok(out)
+}
+
+/// A gradient from the text of a UFM `gradient:` section (`index=… color=…` pairs, 400
+/// positions, BGR colors, `rotation`, `smooth`) and its `opacity:` section.
+pub(crate) fn ugr_gradient(gsec: &str, osec: Option<&str>) -> Option<Gradient> {
+    let mut stops = Vec::new();
+    let mut smooth = true;
+    let mut rotation = 0.0;
+    let mut index: Option<f64> = None;
+    let list = pairs(gsec);
+    for (k, v) in &list {
+        if k == "rotation" {
+            rotation = v.parse().unwrap_or(0.0);
+        }
+    }
+    for (k, v) in list {
+        match k.as_str() {
+            "smooth" => smooth = v.eq_ignore_ascii_case("yes"),
+            "index" => index = v.parse().ok(),
+            "color" => {
+                if let (Some(i), Ok(c)) = (index.take(), v.parse::<u32>()) {
+                    let (r, g, b) = (c & 255, (c >> 8) & 255, (c >> 16) & 255);
+                    stops.push(srgb_stop(((i + rotation) / 400.0).rem_euclid(1.0), r as f64, g as f64, b as f64));
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut alpha = Vec::new();
+    if let Some(o) = osec {
         let mut index: Option<f64> = None;
-        for (k, v) in pairs(gsec) {
+        for (k, v) in pairs(o) {
             match k.as_str() {
-                "smooth" => smooth = v.eq_ignore_ascii_case("yes"),
                 "index" => index = v.parse().ok(),
-                "color" => {
-                    if let (Some(i), Ok(c)) = (index.take(), v.parse::<u32>()) {
-                        let (r, g, b) = (c & 255, (c >> 8) & 255, (c >> 16) & 255);
-                        stops.push(srgb_stop((i / 400.0).rem_euclid(1.0), r as f64, g as f64, b as f64));
+                "opacity" => {
+                    if let (Some(i), Ok(a)) = (index.take(), v.parse::<f32>()) {
+                        alpha.push(AlphaStop { pos: ((i + rotation) / 400.0).rem_euclid(1.0), alpha: (a / 255.0).clamp(0.0, 1.0) });
                     }
                 }
                 _ => {}
             }
         }
-        let mut alpha = Vec::new();
-        if let Some(o) = oi {
-            let mut index: Option<f64> = None;
-            for (k, v) in pairs(&body[o + 8..]) {
-                match k.as_str() {
-                    "index" => index = v.parse().ok(),
-                    "opacity" => {
-                        if let (Some(i), Ok(a)) = (index.take(), v.parse::<f32>()) {
-                            alpha.push(AlphaStop { pos: (i / 400.0).rem_euclid(1.0), alpha: (a / 255.0).clamp(0.0, 1.0) });
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            if alpha.iter().all(|a| a.alpha >= 1.0) {
-                alpha.clear();
-            }
-        }
-        if !stops.is_empty() {
-            stops.sort_by(|a, b| a.pos.total_cmp(&b.pos));
-            let title = pairs(gsec).into_iter().find(|(k, _)| k == "title").map(|(_, v)| v).unwrap_or(e.name.clone());
-            out.push((title, Gradient { stops, blend: if smooth { Blend::Smooth } else { Blend::Linear }, alpha }));
+        alpha.sort_by(|a, b| a.pos.total_cmp(&b.pos));
+        if alpha.iter().all(|a| a.alpha >= 1.0) {
+            alpha.clear();
         }
     }
-    Ok(out)
+    if stops.is_empty() {
+        return None;
+    }
+    stops.sort_by(|a, b| a.pos.total_cmp(&b.pos));
+    Some(Gradient { stops, blend: if smooth { Blend::Smooth } else { Blend::Linear }, alpha })
 }
 
 fn write_ugr(name: &str, g: &Gradient) -> String {

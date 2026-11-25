@@ -3,6 +3,7 @@
 //! Files: documents (`.rfr`) and PNG images that carry their document.
 
 pub mod png;
+pub mod upr;
 
 use std::path::Path;
 

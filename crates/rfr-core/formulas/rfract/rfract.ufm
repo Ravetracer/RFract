@@ -530,3 +530,19 @@ default:
     hint = "Escape threshold of |z|² (squared magnitude)."
   endparam
 }
+
+Pixel {
+; z is the point itself and the orbit ends after one step: the coloring sees the plane
+; directly (use it with transformations and coloring formulas).
+init:
+  z = #pixel
+loop:
+  z = z
+bailout:
+  false
+default:
+  title = "Pixel (plane only)"
+  center = (0, 0)
+  magn = 1
+  maxiter = 1
+}

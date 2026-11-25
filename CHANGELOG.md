@@ -17,6 +17,12 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
 - FractInt .frm formula files (symmetry suffixes ignored, `rotskew`, `magxmag`, variables that
   start at zero, `f(a, b)` as `f((a, b))`, `end if`, a final assignment as the bailout).
 - rfr-cli: `--formula-dir <folder>` makes the formulas of a folder available to every command.
+- Parameter files (.upr): File › Open lists their images; layers, view, formulas, colorings,
+  transformations and gradients are converted, standard formulas map onto built-in ones, and
+  an *Import notes* window lists what did not carry over. rfr-cli renders .upr images
+  (`--entry`) and checks whole folders (`upr --check`, optional thumbnails).
+- Formula *Pixel (plane only)* and coloring *Iteration count*.
+- UFM functions `isNaN` and `isInf`.
 - Color parameters in the inspector (color picker).
 
 ### Changed

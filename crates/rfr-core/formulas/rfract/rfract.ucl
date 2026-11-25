@@ -487,3 +487,16 @@ default:
     hint = "How much of the multiplied tint shows."
   endparam
 }
+
+Iterations {
+; The iteration count, scaled: the classic banded coloring, for the inside too.
+final:
+  #index = #numiter * @scale
+default:
+  title = "Iteration count"
+  float param scale
+    caption = "Scale"
+    default = 0.01
+    hint = "Gradient positions per iteration (0.01: one turn of the gradient every 100 iterations)."
+  endparam
+}

@@ -26,6 +26,8 @@ enum Action {
     New,
     Open,
     OpenPath(PathBuf),
+    /// An image of a parameter file (.upr): the file and the image's name.
+    OpenUprImage(PathBuf, String),
     Save,
     SaveAs,
     Export,
@@ -64,7 +66,32 @@ pub struct App {
     denoiser_rx: Option<Receiver<String>>,
     /// Indexing of the formula folders: entries found and the time it took.
     scan_rx: Option<Receiver<(usize, Duration)>>,
+    /// The images of an opened parameter file to choose from.
+    upr: Option<UprPicker>,
+    /// A parameter file to open once the formula folders are indexed.
+    pending_upr: Option<PathBuf>,
+    /// Notes of the last import (what did not carry over), shown in a window.
+    import_notes: Option<(String, Vec<String>)>,
     status: Option<(String, Instant, bool)>,
+}
+
+struct UprPicker {
+    path: PathBuf,
+    images: Vec<rfr_core::io::upr::UprImage>,
+    search: String,
+    /// Library generation the images were converted with.
+    generation: u64,
+}
+
+impl UprPicker {
+    fn read(p: &Path) -> Result<UprPicker, String> {
+        let generation = rfr_core::formula::library::generation();
+        Ok(UprPicker { path: p.to_path_buf(), images: rfr_core::io::upr::read(p)?, search: String::new(), generation })
+    }
+}
+
+fn is_upr(p: &Path) -> bool {
+    p.extension().is_some_and(|e| e.eq_ignore_ascii_case("upr"))
 }
 
 impl App {
@@ -100,6 +127,9 @@ impl App {
             denoiser: None,
             denoiser_rx: Some(rx),
             scan_rx: None,
+            upr: None,
+            pending_upr: None,
+            import_notes: None,
             status: None,
         };
         app.rescan_formulas(&cc.egui_ctx);
@@ -146,7 +176,123 @@ impl App {
         }
     }
 
+    /// Reads a parameter file: one image opens directly, several show the image list.
+    fn open_upr(&mut self, p: &Path) {
+        // Its formulas come from the formula folders: wait for them.
+        if self.scan_rx.is_some() {
+            self.pending_upr = Some(p.to_path_buf());
+            self.notify(format!("{}: waiting for the formula folders…", p.display()));
+            return;
+        }
+        match UprPicker::read(p) {
+            Ok(u) if u.images.len() == 1 => {
+                let name = u.images[0].name.clone();
+                self.upr = Some(u);
+                self.load_upr_image(p, &name);
+            }
+            Ok(u) => {
+                self.notify(format!("{}: {} images; pick one", p.display(), u.images.len()));
+                self.upr = Some(u);
+                self.remember_dir(p);
+            }
+            Err(e) => self.warn(e),
+        }
+    }
+
+    /// Loads image `name` of the parameter file in the picker (read again if it changed).
+    fn load_upr_image(&mut self, p: &Path, name: &str) {
+        let generation = rfr_core::formula::library::generation();
+        if self.upr.as_ref().is_none_or(|u| u.path != p || u.generation != generation) {
+            match UprPicker::read(p) {
+                Ok(u) => self.upr = Some(u),
+                Err(e) => return self.warn(e),
+            }
+        }
+        let Some(im) = self.upr.as_ref().and_then(|u| u.images.iter().find(|i| i.name == name)).cloned() else {
+            return self.warn(format!("{}: no image '{name}'", p.display()));
+        };
+        self.doc.load(im.doc, None);
+        self.selection = Selection::layer(vec![0]);
+        self.remember_dir(p);
+        self.prefs.add_recent(p.to_path_buf());
+        self.save_prefs();
+        if im.notes.is_empty() {
+            self.notify(format!("Imported {name} from {}", p.display()));
+            self.import_notes = None;
+        } else {
+            self.warn(format!("Imported {name}: {} thing(s) did not carry over exactly (see the notes window)", im.notes.len()));
+            self.import_notes = Some((name.to_string(), im.notes));
+        }
+    }
+
+    /// The image list of an opened parameter file.
+    fn upr_window(&mut self, ctx: &egui::Context) {
+        let mut pick = None;
+        let mut open = true;
+        // Convert again when the formula folders changed (formulas found or gone).
+        if let Some(u) = &self.upr
+            && u.generation != rfr_core::formula::library::generation()
+        {
+            let search = u.search.clone();
+            if let Ok(mut fresh) = UprPicker::read(&u.path.clone()) {
+                fresh.search = search;
+                self.upr = Some(fresh);
+            }
+        }
+        if let Some(u) = &mut self.upr {
+            let title = format!("Parameter file – {}", u.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default());
+            egui::Window::new(title).id(egui::Id::new("upr-picker")).open(&mut open).default_width(320.0).default_height(420.0).show(ctx, |ui| {
+                ui.add(egui::TextEdit::singleline(&mut u.search).hint_text(format!("{}  Search", icons::SEARCH)).desired_width(f32::INFINITY))
+                    .on_hover_text("Filter the images by name");
+                let q = u.search.trim().to_lowercase();
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    for im in u.images.iter().filter(|i| q.is_empty() || i.name.to_lowercase().contains(&q)) {
+                        let tip = if im.notes.is_empty() {
+                            format!("{} layer(s). Click to open this image.", im.doc.layers.len())
+                        } else {
+                            format!(
+                                "{} layer(s). Click to open this image.\nDoes not carry over exactly:\n{}",
+                                im.doc.layers.len(),
+                                im.notes.join("\n")
+                            )
+                        };
+                        let label =
+                            if im.notes.is_empty() { RichText::new(&im.name) } else { RichText::new(format!("{}  {}", im.name, icons::WARNING)) };
+                        if ui.selectable_label(false, label).on_hover_text(tip).clicked() {
+                            pick = Some(im.name.clone());
+                        }
+                    }
+                });
+            });
+        }
+        if !open {
+            self.upr = None;
+        }
+        if let (Some(name), Some(u)) = (pick, &self.upr) {
+            let p = u.path.clone();
+            self.run(Action::OpenUprImage(p, name), ctx);
+        }
+        let mut notes_open = true;
+        if let Some((name, notes)) = &self.import_notes {
+            egui::Window::new(format!("Import notes – {name}")).id(egui::Id::new("import-notes")).open(&mut notes_open).default_width(420.0).show(
+                ctx,
+                |ui| {
+                    ui.label(RichText::new("These parts of the image could not be carried over exactly:").color(theme::TEXT_MUTED));
+                    for n in notes {
+                        ui.label(format!("•  {n}"));
+                    }
+                },
+            );
+        }
+        if !notes_open {
+            self.import_notes = None;
+        }
+    }
+
     fn open_path(&mut self, p: &Path) {
+        if is_upr(p) {
+            return self.open_upr(p);
+        }
         match rfr_core::io::open(p) {
             Ok(d) => {
                 let is_png = p.extension().is_some_and(|e| e.eq_ignore_ascii_case("png"));
@@ -177,7 +323,12 @@ impl App {
 
     /// Runs an action; actions that would drop unsaved changes ask first.
     fn run(&mut self, a: Action, ctx: &egui::Context) {
-        let replaces = matches!(a, Action::New | Action::Open | Action::OpenPath(_));
+        // A parameter file only opens its image list; picking an image replaces the document.
+        let replaces = match &a {
+            Action::OpenPath(p) => !is_upr(p),
+            Action::New | Action::Open | Action::OpenUprImage(..) => true,
+            _ => false,
+        };
         if replaces && self.doc.modified() && self.pending.is_none() {
             self.pending = Some(Pending::Replace(Box::new(a)));
             return;
@@ -190,11 +341,17 @@ impl App {
                 self.notify("New document");
             }
             Action::Open => {
-                if let Some(p) = self.prefs.dialog().add_filter("RFract documents and images", &["rfr", "png"]).pick_file() {
-                    self.open_path(&p);
+                if let Some(p) = self.prefs.dialog().add_filter("RFract documents, images and parameter files", &["rfr", "png", "upr"]).pick_file() {
+                    if is_upr(&p) {
+                        // Pick the image first; the unsaved-changes question comes with the pick.
+                        self.open_upr(&p);
+                    } else {
+                        self.open_path(&p);
+                    }
                 }
             }
             Action::OpenPath(p) => self.open_path(&p),
+            Action::OpenUprImage(p, name) => self.load_upr_image(&p, &name),
             Action::Save => match self.doc.path.clone() {
                 Some(p) => self.save_to(p),
                 None => self.run(Action::SaveAs, ctx),
@@ -672,6 +829,9 @@ impl eframe::App for App {
             let folders = self.prefs.formula_folders.len();
             self.notify(format!("Formula folders: {n} formulas in {folders} folder(s), indexed in {:.1} s", t.as_secs_f64()));
             ctx.request_repaint();
+            if let Some(p) = self.pending_upr.take() {
+                self.open_upr(&p);
+            }
         }
         // Closing with unsaved changes asks first.
         if ctx.input(|i| i.viewport().close_requested()) && self.doc.modified() && !self.allow_close {
@@ -791,6 +951,7 @@ impl eframe::App for App {
         self.gradient_editor(&ctx);
         self.help.show(&ctx);
         self.prefs_window(&ctx);
+        self.upr_window(&ctx);
         self.pending_dialog(&ctx);
 
         // One undo step per gesture.

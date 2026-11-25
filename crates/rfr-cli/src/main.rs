@@ -20,8 +20,11 @@ Commands:
       -H, --height <px>      Image height (default: the document's)
       -s, --samples <n>      Samples per pixel (default: the document's)
       --cpu                  Render on the CPU (the reference renderer)
+      --entry <name>         The image of a .upr parameter file (default: the first)
   formulas                   List the built-in formulas with their ids
   formulas --check <path>…   Compile formula files (.ufm, .ucl, .uxf, .frm) or folders and report
+  upr --check <path>… [--thumbs <dir>] [--notes]
+                             Convert .upr parameter files and report what does not carry over
   info                       Program version, GPU, denoiser and settings folders
   help                       This text
 
@@ -59,6 +62,7 @@ fn render(args: &[String]) -> Result<(), String> {
     let mut input = None;
     let mut output = None;
     let mut cpu = false;
+    let mut entry: Option<String> = None;
     let (mut width, mut height, mut samples) = (None, None, None);
     let mut i = 0;
     while i < args.len() {
@@ -68,14 +72,28 @@ fn render(args: &[String]) -> Result<(), String> {
             "-H" | "--height" => height = Some(number::<u32>(value(args, &mut i, "--height")?, "--height")?),
             "-s" | "--samples" => samples = Some(number::<u32>(value(args, &mut i, "--samples")?, "--samples")?),
             "--cpu" => cpu = true,
+            "--entry" => entry = Some(value(args, &mut i, "--entry")?.to_string()),
             a if a.starts_with('-') => return Err(format!("unknown option '{a}'")),
             a => input = Some(a.to_string()),
         }
         i += 1;
     }
-    let input = input.ok_or("render needs an input (document, PNG or formula id)")?;
+    let input = input.ok_or("render needs an input (document, PNG, .upr file or formula id)")?;
     let path = Path::new(&input);
-    let doc = if path.exists() {
+    let is_upr = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("upr"));
+    let doc = if path.exists() && is_upr {
+        let images = rfr_core::io::upr::read(path)?;
+        let im = match &entry {
+            Some(name) => images.iter().find(|i| i.name.eq_ignore_ascii_case(name)).ok_or_else(|| {
+                format!("no image '{name}' in {}; it has: {}", path.display(), images.iter().map(|i| i.name.as_str()).collect::<Vec<_>>().join(", "))
+            })?,
+            None => &images[0],
+        };
+        for n in &im.notes {
+            eprintln!("note: {n}");
+        }
+        im.doc.clone()
+    } else if path.exists() {
         rfr_core::io::open(path)?
     } else if library().get(&input).is_some() {
         Document::for_formula(&input)
@@ -86,7 +104,10 @@ fn render(args: &[String]) -> Result<(), String> {
     let h = height.unwrap_or(doc.image.height).max(1);
     let s = samples.unwrap_or(doc.image.samples).max(1);
     let output = output.unwrap_or_else(|| {
-        let stem = if path.exists() {
+        let stem = if path.exists() && is_upr {
+            let base = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or("render".into());
+            format!("{base}-{}", entry.clone().unwrap_or_else(|| "1".into()).replace(['/', '\\', ' '], "_"))
+        } else if path.exists() {
             path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or("render".into())
         } else {
             input.replace([':', '/'], "_")
@@ -146,6 +167,115 @@ fn list_formulas() {
             return;
         }
     }
+}
+
+/// Converts every image of the `.upr` files below `paths`; reports how many convert without
+/// notes and build a render plan, and the notes by frequency. `--thumbs <dir>` renders a
+/// small picture of each image there.
+fn check_upr(args: &[String]) -> Result<(), String> {
+    let mut paths = Vec::new();
+    let mut thumbs: Option<PathBuf> = None;
+    let mut all_notes = false;
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--notes" {
+            all_notes = true;
+        } else if args[i] == "--thumbs" {
+            thumbs = Some(PathBuf::from(value(args, &mut i, "--thumbs")?));
+        } else {
+            paths.push(PathBuf::from(&args[i]));
+        }
+        i += 1;
+    }
+    let mut files = Vec::new();
+    for p in &paths {
+        if p.is_dir() {
+            if let Ok(rd) = std::fs::read_dir(p) {
+                files.extend(rd.flatten().map(|e| e.path()).filter(|f| f.extension().is_some_and(|e| e.eq_ignore_ascii_case("upr"))));
+            }
+        } else {
+            files.push(p.clone());
+        }
+    }
+    files.sort();
+    if let Some(d) = &thumbs {
+        std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
+    }
+    let gpu = if thumbs.is_some() { rfr_gpu::GpuContext::new_headless().ok() } else { None };
+    let (mut total, mut clean, mut planned) = (0, 0, 0);
+    let mut reasons: std::collections::BTreeMap<String, usize> = Default::default();
+    for f in &files {
+        let images = match rfr_core::io::upr::read(f) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("{e}");
+                continue;
+            }
+        };
+        for (k, im) in images.iter().enumerate() {
+            total += 1;
+            if im.notes.is_empty() {
+                clean += 1;
+            }
+            for n in &im.notes {
+                if all_notes {
+                    println!("{}\t{}\t{n}", f.display(), im.name);
+                }
+                let key: String = n.split('\'').enumerate().map(|(i, s)| if i % 2 == 1 { "…" } else { s }).collect::<Vec<_>>().join("'");
+                let key = key
+                    .split(" is not in your formula folders")
+                    .next()
+                    .map(|s| {
+                        if n.contains(" is not in your formula folders") {
+                            "a formula is not in the formula folders".to_string()
+                        } else {
+                            s.to_string()
+                        }
+                    })
+                    .unwrap_or(key);
+                *reasons.entry(key).or_default() += 1;
+            }
+            let aspect = im.doc.image.height as f64 / im.doc.image.width.max(1) as f64;
+            let (w, h) = (240, ((240.0 * aspect).round() as u32).max(16));
+            match rfr_core::render::Plan::sized(&im.doc, w, h) {
+                Ok(plan) => {
+                    planned += 1;
+                    if let (Some(dir), Some(ctx)) = (&thumbs, &gpu) {
+                        let name = format!(
+                            "{}-{k:03}-{}.png",
+                            f.file_stem().unwrap_or_default().to_string_lossy(),
+                            im.name.replace(['/', '\\', ' ', ':'], "_")
+                        );
+                        let out = dir.join(name);
+                        match rfr_gpu::render_blocking(ctx.clone(), &plan, 4, |_| true) {
+                            Ok(lin) => {
+                                let _ = rfr_core::io::png::write_rgba8(&out, w, h, &rfr_core::render::cpu::rgba8(&lin), Some(&im.doc));
+                            }
+                            Err(e) => eprintln!("{}: {e}", out.display()),
+                        }
+                    }
+                }
+                Err(e) => {
+                    if all_notes {
+                        println!("{}\t{}\tplan: {e}", f.display(), im.name);
+                    }
+                    *reasons.entry(format!("plan: {}", e.split(':').next().unwrap_or(&e))).or_default() += 1;
+                }
+            }
+        }
+    }
+    println!(
+        "{} files, {total} images: {clean} without notes ({:.1} %), {planned} render ({:.1} %)",
+        files.len(),
+        100.0 * clean as f64 / total.max(1) as f64,
+        100.0 * planned as f64 / total.max(1) as f64
+    );
+    let mut list: Vec<_> = reasons.into_iter().collect();
+    list.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+    for (r, n) in list.iter().take(25) {
+        println!("  {n:6}  {r}");
+    }
+    Ok(())
 }
 
 /// Compiles every formula file below `paths` and prints a summary with the failure reasons.
@@ -384,6 +514,7 @@ fn main() -> ExitCode {
             Ok(())
         }
         Some("render") => render(rest),
+        Some("upr") if rest.first().map(String::as_str) == Some("--check") => check_upr(&rest[1..]),
         Some("formulas") if rest.first().map(String::as_str) == Some("--check") => check_formulas(&rest[1..]),
         Some("formulas") => {
             list_formulas();
