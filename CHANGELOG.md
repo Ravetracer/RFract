@@ -4,6 +4,8 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
 
 ## [Unreleased]
 
+Stage 3: formula language compatibility (UFM and FractInt).
+
 ### Added
 
 - UFM formulas: arrays (fixed and dynamic), the `color` type with color parameters and color

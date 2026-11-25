@@ -3,28 +3,35 @@
 The stages and their scope are in PLAN.md. This file holds the next concrete steps and wishes
 that come up along the way.
 
-## Next: stage 3 – formula language compatibility (UFM and FractInt)
+## Next: stage 3b – UFM classes
 
-- [ ] UFM language: string comparisons of enum parameters, classes (UFM 5), more `#` symbols,
-      color type and direct coloring (`#color`)
-- [ ] `.upr` parameter files (layers, gradients, mappings)
-- [ ] FractInt `.frm` front end, built-in types, `.par`, `.map`
-- [ ] Formula editor and a browser for the user's formula folders
-- Baseline (local UFM database): 18.2 % of the fractal formulas, 16.4 % of the colorings and
-  34.7 % of the transformations compile.
+- [ ] `class`/`extends`, methods (virtual, static), fields, `import "x.ulb"`, `new`, object
+      parameters (`param ... type`) and plugin parameters (`func`-like class choices).
+- [ ] Nested plugin parameters in the document and the inspector.
+- [ ] Own implementation of the standard base classes (formula, coloring, transform, gradient,
+      generator); `common.ulb` from the user's formula folders.
+- [ ] GPU through monomorphization (plugin choices are known when the shader is built).
+- [ ] Optional: Cranelift JIT for the CPU path.
+
+## Done in stage 3 (v0.4.0)
+
+- UFM: arrays, color type and direct coloring, FractInt syntax, preprocessor; local database:
+  classic fractal formulas 98.4 %, colorings 89.1 %, transformations 97.1 % compile and render.
+- FractInt: `.frm` files 98.6 % (orgform), 40 escape-time types, `.par` with palettes.
+- Formula folders, `.upr` import (all 1571 images open, 51.6 % without notes), formula editor.
+- Open: image-sized arrays (Buddhabrot-style accumulation over the whole image), assignments
+  inside expressions (FractInt), orbit/attractor/IFS/cellular FractInt types, color function
+  parameters (`color func` with merge modes), UFM user functions.
 
 ## Open points from stage 2
 
-- Coloring formulas cannot set colors directly yet (`#color`, needs the color type); histogram
-  and Lyapunov colorings are missing (histogram needs a pass over the whole image).
+- Histogram coloring is missing (needs a pass over the whole image).
 - Post-transformations (on z after the iteration) are not there yet.
 
 ## Open points from stage 1
 
 - Distance estimation in double-float views falls back to the smooth iteration count (needs a
   dual double-float mode).
-- UFM compatibility: 18 % of the entries in the local UFM database compile (string compares of
-  enum parameters, classes, more `#` symbols are missing; stage 3).
 - Integer arithmetic: the CPU uses 64-bit, the GPU 32-bit integers (only differs on overflow).
 - The view's orbit display and a Julia preview inset are not there yet.
 

@@ -40,9 +40,9 @@ next concrete steps are in `TODO.md`. Siblings with code to reuse: `../RWildFire
 
 | Path | Content |
 |------|---------|
-| `crates/rfr-core` | `formula/` (`parse.rs` lexer and parsers for UFM syntax and FRM-like v1, `ast.rs` (program kinds), `check.rs` names/types → `ir.rs`, `cpu.rs` closures generic over the scalar with coloring hooks and transformations, `library.rs` bundled sets), `formulas/` (`rfract/rfract.ufm` fractals, `rfract.ucl` colorings, `rfract.uxf` transformations, `fractalpark/` bundled set, `tools/import_fractalpark.py`), `math/` (`scalar.rs` f64 and dual numbers, `complex.rs` stdlib), `doc.rs` (.rfr model v2: layer tree, merge modes, masks), `gradient.rs` (OKLab gradients, opacity, LUT), `gradient_io.rs` (.ugr/.map/.ggr/.gpl/.cpt), `palette.rs` (generator, from RMandelbulb3D), `render/` (`mod.rs` plan tree, sample positions, coloring math, precision; `composite.rs` merge modes; `cpu.rs` reference renderer; `oidn.rs`), `io/` (.rfr, PNG with document), `paths.rs` |
+| `crates/rfr-core` | `formula/` (`parse.rs` lexer and parsers for UFM syntax and FRM-like v1, `ast.rs` (program kinds), `check.rs` names/types → `ir.rs`, `cpu.rs` closures generic over the scalar with coloring hooks and transformations, `color.rs` formula colors, `library.rs` bundled sets, user formula folders indexed in the background and compiled on first use, `reload_file`), `formulas/` (`rfract/rfract.ufm` fractals, `rfract.ucl` colorings, `rfract.uxf` transformations, `fractint.ufm` FractInt escape-time types with FractInt's parameter layout, `fractalpark/` bundled set, `tools/import_fractalpark.py`), `math/` (`scalar.rs` f64 and dual numbers, `complex.rs` stdlib), `doc.rs` (.rfr model v2: layer tree, merge modes, masks), `gradient.rs` (OKLab gradients, opacity, LUT), `gradient_io.rs` (.ugr/.map/.ggr/.gpl/.cpt), `palette.rs` (generator, from RMandelbulb3D), `render/` (`mod.rs` plan tree, sample positions, coloring math, precision; `composite.rs` merge modes; `cpu.rs` reference renderer; `oidn.rs`), `io/` (.rfr, PNG with document, `upr.rs` and `par.rs` parameter file import into documents with notes), `paths.rs` |
 | `crates/rfr-gpu` | `codegen.rs` (layer plan → WGSL: fractal, transformations, colorings with local prefixes and parameter bases), `wgsl/` (`scalar_f32`, `scalar_dual`, `scalar_df64` layers, `cstd.wgsl` complex stdlib, `blend.wgsl` merge modes, `kernel.wgsl` layer kernel, `composite.wgsl` fill/merge/accumulate, `display.wgsl`), `renderer.rs` (op schedule with scratch slots, per-layer pipelines and buffers, progressive bands, readback); `tests/shaders.rs` (all programs validate, GPU/CPU parity incl. layers) |
-| `crates/rfr-app` | egui app: `app.rs` (layout, menus, files, shortcuts), `layers.rs` (layer tree, selection), `viewport.rs` (preview, navigation, Julia pick, color cycling), `inspector.rs` (layer/mask/fractal/transformation/coloring settings), `browser.rs` (formula list), `palette_editor.rs` (from RMandelbulb3D; opacity, import/export), `export.rs`, `doc.rs` (undo), `help.rs`/`manual.rs`, `theme.rs`, `widgets.rs`, `icons.rs`, `prefs.rs` |
+| `crates/rfr-app` | egui app: `app.rs` (layout, menus, files, shortcuts), `layers.rs` (layer tree, selection), `viewport.rs` (preview, navigation, Julia pick, color cycling), `inspector.rs` (layer/mask/fractal/transformation/coloring settings), `browser.rs` (formula list, user formulas by file, new formulas), `editor.rs` (formula editor), `palette_editor.rs` (from RMandelbulb3D; opacity, import/export), `export.rs`, `doc.rs` (undo), `help.rs`/`manual.rs`, `theme.rs`, `widgets.rs`, `icons.rs`, `prefs.rs` |
 | `crates/rfr-cli` | Command line (`render`, `formulas`, `formulas --check`, `info`) |
 | `docs/manual` | User manual: `NN-*.md` chapters, `images/`, `manual.css` |
 | `tools/` | `release.py`, `package.py`, `fetch_oidn.py`, `build_manual.py`, `make_icon.py`, `import_fractalpark.py` |
@@ -74,7 +74,12 @@ cargo fmt --all --check
   last one). CPU and GPU must keep the same formulas (`render/mod.rs`, `kernel.wgsl`).
 - The shader signature is the program, the chosen functions and the mode; parameter values,
   view and coloring are buffers (no recompiles while editing).
-- `rfr-cli formulas --check _dev/<UFM folder>` reports how much of the UFM database compiles.
+- `rfr-cli formulas --check _dev/<UFM folder>` reports how much of the UFM database compiles;
+  `rfr-cli --formula-dir <folder> params --check <files> [--thumbs dir] [--notes]` converts
+  `.upr`/`.par` files. Formulas of other programs' standard files map onto built-ins in
+  `io/upr.rs` (`standard`), FractInt types in `io/par.rs` (`type_formula`).
+- Arrays live per sample (`ir::Local::cap`, at most 4096 elements); colors are `Ty::Color`
+  (sRGB-encoded RGBA, `ColorOp`), never converted to numbers (`check::color_misuse`).
 - Colorings and transformations are programs of the same IR (`ProgramKind`): colorings run
   `init` after the fractal's init, `loop` after every iteration that continues, `final` at the
   end, and write `#index`/`#solid`; transformations change `#pixel` (local slot 0) before the
