@@ -1,0 +1,1 @@
+{"version":1,"image":{"width":1920,"height":1080,"samples":64},"view":{"center":["-0.7453","0.1127"],"radius":0.0065,"rotation":0},"layers":[{"name":"Mandelbrot","formula":"rfract:Mandelbrot","max_iter":1500,"outside_method":"smooth","outside":{"transfer":"sqrt","density":0.35,"offset":0.1}}]}

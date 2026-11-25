@@ -6,18 +6,23 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
+mod browser;
+mod doc;
+mod export;
 mod help;
 mod icons;
+mod inspector;
 mod manual;
+mod palette_editor;
 mod prefs;
 mod theme;
-// The control helpers are used by the inspector from stage 1 on.
-#[allow(dead_code)]
+mod viewport;
 mod widgets;
 
 use std::sync::Arc;
 
 fn main() -> eframe::Result {
+    let initial = std::env::args().nth(1).map(std::path::PathBuf::from);
     let mut wgpu_options = egui_wgpu::WgpuConfiguration::default();
     if let egui_wgpu::WgpuSetup::CreateNew(setup) = &mut wgpu_options.wgpu_setup {
         setup.device_descriptor = Arc::new(|adapter: &wgpu::Adapter| wgpu::DeviceDescriptor {
@@ -37,5 +42,5 @@ fn main() -> eframe::Result {
         wgpu_options,
         ..Default::default()
     };
-    eframe::run_native("RFract", options, Box::new(|cc| Ok(Box::new(app::App::new(cc)))))
+    eframe::run_native("RFract", options, Box::new(move |cc| Ok(Box::new(app::App::new(cc, initial)))))
 }

@@ -4,7 +4,7 @@ RFract is a 2D fractal generator in Rust: layered escape-time fractals, plus den
 post effects. It is the third sibling of RWildFire (flames) and RMandelbulb3D (3D) and shares
 their stack, UI conventions and release tooling.
 
-Status: stage 0 (foundation and distribution) done; stage 1 next.
+Status: stages 0 and 1 done (v0.2.0); stage 2 next.
 
 ---
 
@@ -243,6 +243,9 @@ GitHub release. The first public release is **1.0.0**, after all stages. Sizes a
   test from day one. Simple formula list in the layer panel (search by name and family).
 - **Exit**: smooth 1080p exploration of Mandelbrot/Julia families down to 1e-13, parity test
   green, all 534 bundled FractalPark formulas compile for CPU and GPU (report of exceptions).
+- **Done (v0.2.0)**: double-float renders cleanly to about 1e12 zoom at full HD; all 552
+  formulas compile and validate in f32, dual and double-float shaders; GPU/CPU parity below
+  1/255 mean difference for shallow views. Open points are listed in TODO.md.
 
 ### Stage 2 – Layers, coloring, transformations, gradients (L)
 

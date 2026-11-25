@@ -138,11 +138,13 @@ impl Plan {
     }
 }
 
-/// Pixel size relative to the coordinates below which f32 (24-bit mantissa, about 1.2e-7)
-/// shows rounding steps: 32 rounding steps per pixel.
-pub const SINGLE_LIMIT: f64 = 4e-6;
-/// The same for double-float and f64 (about 48 and 53 bits).
-pub const DOUBLE_LIMIT: f64 = 2e-13;
+/// Pixel size relative to the coordinates below which f32 (24-bit mantissa, about 6e-8 per
+/// unit) shows rounding steps: about 16 rounding steps per pixel (measured: identical to the
+/// f64 renderer at 16, slight staircases at 1.5).
+pub const SINGLE_LIMIT: f64 = 1e-6;
+/// The same for double-float (about 48 bits; the pixel offset is added exactly, so about half
+/// a rounding step per pixel still renders cleanly).
+pub const DOUBLE_LIMIT: f64 = 2e-15;
 
 /// Precision a view needs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

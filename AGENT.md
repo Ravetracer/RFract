@@ -40,10 +40,10 @@ next concrete steps are in `TODO.md`. Siblings with code to reuse: `../RWildFire
 
 | Path | Content |
 |------|---------|
-| `crates/rfr-core` | `formulas/fractalpark` (bundled FractalPark library, MIT; `tools/import_fractalpark.py`), `paths.rs` (settings/cache folders), `render/oidn.rs` (runtime-loaded OIDN). Stage 1 adds the document model, formula language, CPU renderer. |
-| `crates/rfr-gpu` | `GpuContext::required_limits`, `detect_adapter`. Stage 1 adds the renderer. |
-| `crates/rfr-app` | egui app: `app.rs` (layout, menus, status bar, preferences window), `help.rs`, `manual.rs` (embedded manual, from `build.rs`), `theme.rs`, `widgets.rs`, `icons.rs`, `prefs.rs` |
-| `crates/rfr-cli` | Command line (`info`, `--version`) |
+| `crates/rfr-core` | `formula/` (`parse.rs` lexer and parsers for UFM syntax and FRM-like v1, `ast.rs`, `check.rs` names/types → `ir.rs`, `cpu.rs` closures generic over the scalar, `library.rs` bundled sets), `formulas/` (`rfract/rfract.ufm` built-ins, `fractalpark/` bundled set, `tools/import_fractalpark.py`), `math/` (`scalar.rs` f64 and dual numbers, `complex.rs` stdlib), `doc.rs` (.rfr model), `gradient.rs` (OKLab gradients, LUT), `palette.rs` (generator, from RMandelbulb3D), `render/` (`mod.rs` plan, sample positions, coloring math, precision; `cpu.rs` reference renderer; `oidn.rs`), `io/` (.rfr, PNG with document), `paths.rs` |
+| `crates/rfr-gpu` | `codegen.rs` (IR → WGSL), `wgsl/` (`scalar_f32`, `scalar_dual`, `scalar_df64` layers, `cstd.wgsl` complex stdlib, `kernel.wgsl`, `display.wgsl`), `renderer.rs` (progressive bands, async compile, readback); `tests/shaders.rs` (all formulas validate, GPU/CPU parity) |
+| `crates/rfr-app` | egui app: `app.rs` (layout, menus, files, shortcuts), `viewport.rs` (preview, navigation, Julia pick), `inspector.rs`, `browser.rs` (formula list), `palette_editor.rs` (from RMandelbulb3D), `export.rs`, `doc.rs` (undo), `help.rs`/`manual.rs`, `theme.rs`, `widgets.rs`, `icons.rs`, `prefs.rs` |
+| `crates/rfr-cli` | Command line (`render`, `formulas`, `formulas --check`, `info`) |
 | `docs/manual` | User manual: `NN-*.md` chapters, `images/`, `manual.css` |
 | `tools/` | `release.py`, `package.py`, `fetch_oidn.py`, `build_manual.py`, `make_icon.py`, `import_fractalpark.py` |
 | `packaging/` | Linux desktop entry and AppRun, macOS Info.plist, INSTALL texts, release footer |
@@ -57,6 +57,24 @@ RAYON_NUM_THREADS=8 cargo test -j 8 --workspace -- --test-threads=8
 cargo clippy -j 8 --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 ```
+
+## Formula language and renderers
+
+- One IR for all front ends; every node carries its type and conversions are explicit. The CPU
+  back end (`formula/cpu.rs`) and the WGSL generator (`rfr-gpu/src/codegen.rs`) translate node
+  by node; `math/complex.rs` and `wgsl/cstd.wgsl` implement the stdlib function by function in
+  the same order. Change both sides together.
+- The complex stdlib is written once over a scalar layer: Rust `Scalar` (f64, `Dual`), WGSL
+  `s_*` functions (`scalar_f32`, `scalar_dual`, `scalar_df64`). Derivatives for distance
+  estimation come from dual numbers, never from hand-written rules.
+- Precision by zoom: `render::Plan::precision` (`SINGLE_LIMIT` 1e-6, `DOUBLE_LIMIT` 2e-15 of
+  the coordinates per pixel, both measured); `rfr_gpu::renderer::renderer_mode` picks the shader.
+- Smooth coloring: divergent orbits by the last radius with the growth rate estimated (and
+  snapped to integers), convergent ones by the step before the last (f32 cannot resolve the
+  last one). CPU and GPU must keep the same formulas (`render/mod.rs`, `kernel.wgsl`).
+- The shader signature is the program, the chosen functions and the mode; parameter values,
+  view and coloring are buffers (no recompiles while editing).
+- `rfr-cli formulas --check _dev/<UFM folder>` reports how much of the UFM database compiles.
 
 ## Design rules (from PLAN.md)
 

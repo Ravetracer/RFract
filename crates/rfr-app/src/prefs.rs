@@ -15,11 +15,28 @@ pub struct Prefs {
     pub ui_scale_percent: u32,
     /// Settings sections the user closed (`widgets::section` keys).
     pub closed_sections: Vec<String>,
+    /// Preview resolution in percent of the view size.
+    pub preview_percent: u32,
+    /// Resolution while navigating, in percent of the preview resolution.
+    pub navigate_percent: u32,
+    /// The preview stops refining after this many samples per pixel.
+    pub preview_samples: u32,
+    pub recent: Vec<PathBuf>,
+    pub last_dir: Option<PathBuf>,
 }
 
 impl Default for Prefs {
     fn default() -> Self {
-        Prefs { font_percent: 100, ui_scale_percent: 100, closed_sections: Vec::new() }
+        Prefs {
+            font_percent: 100,
+            ui_scale_percent: 100,
+            closed_sections: Vec::new(),
+            preview_percent: 100,
+            navigate_percent: 50,
+            preview_samples: 64,
+            recent: Vec::new(),
+            last_dir: None,
+        }
     }
 }
 
@@ -30,6 +47,21 @@ pub fn config_dir() -> PathBuf {
 impl Prefs {
     pub fn load() -> Prefs {
         std::fs::read_to_string(config_dir().join("prefs.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+    }
+
+    pub fn add_recent(&mut self, p: PathBuf) {
+        self.recent.retain(|r| *r != p);
+        self.recent.insert(0, p);
+        self.recent.truncate(12);
+    }
+
+    /// A file dialog in the last folder used.
+    pub fn dialog(&self) -> rfd::FileDialog {
+        let d = rfd::FileDialog::new();
+        match &self.last_dir {
+            Some(dir) if dir.is_dir() => d.set_directory(dir),
+            _ => d,
+        }
     }
 
     pub fn save(&self) -> Result<(), String> {

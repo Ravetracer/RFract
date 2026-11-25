@@ -6,9 +6,10 @@ them into stills and animations with glow, chromatic aberration, lighting and de
 
 ![RFract](images/cover.jpg)
 
-This manual describes version {{version}}. RFract is at an early stage: this version is the
-program shell (window, panels, preferences, help) and the release packages for Linux, Windows
-and macOS. Rendering, layers, formulas and animation follow in the next versions.
+This manual describes version {{version}}, an early development version: one fractal layer
+with 552 built-in formulas, smooth, banded and distance-estimate coloring, a gradient editor,
+GPU rendering with automatic double precision for deep views, and PNG export. Layers, more
+colorings, effects, deep zoom beyond double precision and animation follow in later versions.
 
 ## Related programs
 

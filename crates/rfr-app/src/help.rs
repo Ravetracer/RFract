@@ -21,7 +21,24 @@ pub struct Help {
     manual: crate::manual::Manual,
 }
 
-const SHORTCUTS: &[(&str, &str)] = &[("F1", "Help"), ("Ctrl+,", "Preferences"), ("Ctrl+Q", "Quit")];
+const SHORTCUTS: &[(&str, &str)] = &[
+    ("Ctrl+N", "New document"),
+    ("Ctrl+O", "Open (.rfr, PNG rendered by RFract)"),
+    ("Ctrl+S / Ctrl+Shift+S", "Save / Save as"),
+    ("Ctrl+E", "Export image"),
+    ("Ctrl+Z / Ctrl+Shift+Z", "Undo / Redo (view changes included)"),
+    ("Drag", "Move the view"),
+    ("Wheel", "Zoom at the cursor"),
+    ("Shift+drag, right drag", "Zoom into a box"),
+    ("Ctrl+drag", "Rotate the view"),
+    ("Double-click / right click", "Zoom in at the point / zoom out"),
+    ("Alt+click", "Julia set of the point (again: back to the Mandelbrot mode)"),
+    ("J", "Julia set of the point under the cursor, or back"),
+    ("Home", "Reset the view to the formula's suggestion"),
+    ("F1", "Help"),
+    ("Ctrl+,", "Preferences"),
+    ("Ctrl+Q", "Quit"),
+];
 
 impl Help {
     pub fn show(&mut self, ctx: &egui::Context) {

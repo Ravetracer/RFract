@@ -3,8 +3,10 @@
 A 2D fractal generator in Rust: layered fractals rendered on the GPU (wgpu), with denoising,
 post effects and animation.
 
-Status: early development. Version 0.1 is the program shell and the release pipeline; the
-renderer, layers, formulas and animation follow stage by stage (see [PLAN.md](PLAN.md)).
+Status: early development. Version 0.2 renders one fractal layer with 552 built-in formulas,
+smooth, banded and distance-estimate coloring, a gradient editor, double precision for deep
+views and PNG export. Layers, effects, deep zoom and animation follow stage by stage (see
+[PLAN.md](PLAN.md)).
 
 ## Download
 

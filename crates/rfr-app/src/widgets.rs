@@ -113,15 +113,6 @@ pub fn slider_u32(ui: &mut Ui, text: &str, tip: &str, v: &mut u32, range: std::o
     reset_on_double_click(r, v, default)
 }
 
-/// Unbounded number with drag-to-change.
-pub fn drag(ui: &mut Ui, text: &str, tip: &str, v: &mut f64, speed: f64, default: f64) -> Response {
-    label(ui, text, tip);
-    let r = ui.add(egui::DragValue::new(v).speed(speed).max_decimals(10));
-    ui.end_row();
-    let r = if tip.is_empty() { r } else { r.on_hover_text(tip) };
-    reset_on_double_click(r, v, default)
-}
-
 pub fn checkbox(ui: &mut Ui, text: &str, tip: &str, v: &mut bool) -> Response {
     label(ui, text, tip);
     let r = ui.checkbox(v, "");
@@ -175,4 +166,30 @@ pub fn segmented<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: &[(T,
 
 pub fn icon_button(ui: &mut Ui, icon: &str, tip: &str) -> Response {
     ui.add(egui::Button::new(RichText::new(icon).size(theme::fs(15.0))).frame(false).min_size(vec2(26.0, 26.0))).on_hover_text(tip)
+}
+
+/// egui color of a linear RGB color.
+pub fn to_color32(c: [f32; 3]) -> Color32 {
+    let s = rfr_core::gradient::linear_to_srgb;
+    Color32::from_rgb(s(c[0]), s(c[1]), s(c[2]))
+}
+
+/// A gradient strip of a fixed size.
+pub fn gradient_strip(ui: &mut Ui, g: &rfr_core::gradient::Gradient, width: f32, height: f32) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, height), egui::Sense::click());
+    let lut = g.lut();
+    let mut mesh = egui::Mesh::default();
+    let n = 256;
+    let w = rect.width() / n as f32;
+    for i in 0..n {
+        let c = lut[i * lut.len() / n];
+        let r = egui::Rect::from_min_max(
+            egui::pos2(rect.left() + i as f32 * w, rect.top()),
+            egui::pos2(rect.left() + (i + 1) as f32 * w + 0.5, rect.bottom()),
+        );
+        mesh.add_colored_rect(r, to_color32([c[0], c[1], c[2]]));
+    }
+    ui.painter().add(egui::Shape::mesh(mesh));
+    ui.painter().rect_stroke(rect, egui::CornerRadius::same(4), egui::Stroke::new(1.0, theme::BORDER), egui::StrokeKind::Outside);
+    resp
 }

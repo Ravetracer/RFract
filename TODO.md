@@ -3,22 +3,22 @@
 The stages and their scope are in PLAN.md. This file holds the next concrete steps and wishes
 that come up along the way.
 
-## Next: stage 1 – escape-time core and viewer
+## Next: stage 2 – layers, coloring, transformations, gradients
 
-- [ ] `.rfr` document model (layer-shaped, one layer used), serde JSON, version field
-- [ ] Complex math helpers, view transform (center as decimal strings, log2 zoom, rotation)
-- [ ] Minimal formula language: lexer, parser, type checker (UFM syntax subset)
-- [ ] CPU closures back end, WGSL emitter
-- [ ] Built-in formulas in `formula/lib/*.ufm`
-- [ ] FRM-like v1 front end (spec: `_dev/fractalpark/docs/specs/frm-like-language-v1.md`); embed
-      `crates/rfr-core/formulas/fractalpark` and compile all 534 for CPU and GPU
-- [ ] Formula list in the layer panel; default views from `index.json` as presets
-- [ ] Coloring: smooth iteration, distance estimation, solid / |z| inside
-- [ ] Gradient: stops, OKLab interpolation, offset, density, transfer functions
-- [ ] GPU renderer: progressive jittered AA, row bands, f32 + df64
-- [ ] CPU reference renderer, CPU/GPU parity test
-- [ ] Viewport navigation, Julia picker, undo/redo, save/load, PNG with embedded document
-- [ ] `rfr-cli render`
+- [ ] Layer stack: groups, masks, merge modes, opacity, per-layer passes in the GPU renderer
+- [ ] Coloring library (orbit traps, TIA, curvature, stripes, …)
+- [ ] Transformations (pre/post)
+- [ ] Gradient import/export (.map, .ugr, .ggr, .gpl, .cpt), separate alpha curve
+- [ ] Live palette rotation in the viewer
+
+## Open points from stage 1
+
+- Distance estimation in double-float views falls back to the smooth iteration count (needs a
+  dual double-float mode).
+- UFM compatibility: 18 % of the entries in the local UFM database compile (string compares of
+  enum parameters, classes, more `#` symbols are missing; stage 3).
+- Integer arithmetic: the CPU uses 64-bit, the GPU 32-bit integers (only differs on overflow).
+- The view's orbit display and a Julia preview inset are not there yet.
 
 ## Ideas
 
