@@ -443,6 +443,12 @@ impl Parser {
         loop {
             args.push(self.expr()?);
             if self.eat_op(")") {
+                // FractInt functions take one argument: f(a, b) is f((a, b)).
+                if self.fractint && args.len() == 2 {
+                    let b = args.pop().unwrap();
+                    let a = args.pop().unwrap();
+                    args.push(Expr::Complex(Box::new(a), Box::new(b)));
+                }
                 return Ok(args);
             }
             self.expect_op(",")?;
@@ -709,6 +715,7 @@ impl Parser {
     /// transformation's `transform` section (UFM transformations may omit the label).
     fn fractint_body(&mut self, f: &mut FormulaAst) -> Result<(), Error> {
         self.fractint = true;
+        f.fractint = true;
         let mut first: Vec<Stmt> = Vec::new();
         let mut first_expr: Option<Expr> = None;
         let mut colon = false;
@@ -754,7 +761,12 @@ impl Parser {
             }
         }
         if f.bailout.is_none() {
-            return err(self.line(), "the FractInt formula has no bailout condition (its last expression)");
+            // A final assignment: its value is the condition (iterate while it is not zero).
+            match f.body.last() {
+                Some(Stmt::Assign { target: Target::Var(n), .. }) => f.bailout = Some(Expr::Ident(n.clone())),
+                Some(Stmt::Assign { target: Target::Sys(n), .. }) => f.bailout = Some(Expr::Sys(n.clone())),
+                _ => return err(self.line(), "the FractInt formula has no bailout condition (its last expression)"),
+            }
         }
         Ok(())
     }
@@ -1159,6 +1171,7 @@ impl Parser {
             maxiter: None,
             skipped_sections: Vec::new(),
             transform: Vec::new(),
+            fractint: false,
         };
         let mut seen_section = false;
         loop {
@@ -1326,6 +1339,35 @@ pub struct Entry<'a> {
     pub body: &'a str,
 }
 
+/// An entry name without a FractInt symmetry suffix (`Mandelbrot(XAXIS)` → `Mandelbrot`).
+fn strip_symmetry(name: &str) -> String {
+    if let Some(open) = name.rfind('(')
+        && name.ends_with(')')
+    {
+        let sym = name[open + 1..name.len() - 1].trim().to_ascii_uppercase();
+        if [
+            "XAXIS",
+            "YAXIS",
+            "XYAXIS",
+            "ORIGIN",
+            "PI_SYM",
+            "NOSYM",
+            "XAXIS_NOPARM",
+            "XAXIS_NOREAL",
+            "XAXIS_NOIMAG",
+            "YAXIS_NOPARM",
+            "XYAXIS_NOPARM",
+            "ORIGIN_NOPARM",
+            "PI_SYM_NOPARM",
+        ]
+        .contains(&sym.as_str())
+        {
+            return name[..open].trim().to_string();
+        }
+    }
+    name.to_string()
+}
+
 /// Splits a UFM formula file into entries (`name { … }`), skipping `comment { … }`
 /// blocks. Braces inside strings and `;` comments are ignored.
 pub fn split_entries(src: &str) -> Vec<Entry<'_>> {
@@ -1380,7 +1422,7 @@ pub fn split_entries(src: &str) -> Vec<Entry<'_>> {
                 let body_end = if depth == 0 { j - 1 } else { j };
                 if !name.eq_ignore_ascii_case("comment") && !name.is_empty() {
                     out.push(Entry {
-                        name: name.lines().last().unwrap_or("").trim().to_string(),
+                        name: strip_symmetry(name.lines().last().unwrap_or("").trim()),
                         line: name_line.max(body_line),
                         body: &src[body_start..body_end],
                     });
@@ -1397,7 +1439,18 @@ pub fn split_entries(src: &str) -> Vec<Entry<'_>> {
 
 /// Parses one entry of a UFM syntax file.
 pub fn parse_ufm_entry(e: &Entry) -> Result<FormulaAst, Error> {
-    let toks = lex(e.body, e.line)?;
+    let mut toks = lex(e.body, e.line)?;
+    // FractInt also accepts `end if`.
+    let mut k = 0;
+    while k + 1 < toks.len() {
+        if matches!(&toks[k].tok, Tok::Ident(a) if a.eq_ignore_ascii_case("end"))
+            && matches!(&toks[k + 1].tok, Tok::Ident(b) if b.eq_ignore_ascii_case("if"))
+        {
+            toks[k].tok = Tok::Ident("endif".into());
+            toks.remove(k + 1);
+        }
+        k += 1;
+    }
     let mut p = Parser { toks, pos: 0, dialect: Dialect::Ufm, fractint: false };
     p.formula_body(e.name.clone())
 }

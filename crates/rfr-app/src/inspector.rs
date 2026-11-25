@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use egui::{RichText, Ui};
 use rfr_core::doc::{Coloring, Document, InsideMethod, Layer, LayerKind, MaskSource, MergeMode, OutsideMethod, Transfer, TransformRef};
 use rfr_core::formula::ir::{Func, Param, Program};
-use rfr_core::formula::library::library;
+use rfr_core::formula::library::{Entry, Set, library};
 use rfr_core::formula::{ParamKind, ParamValue};
 use rfr_core::render::resolve_value;
 
@@ -151,13 +151,26 @@ fn coloring(ui: &mut Ui, id: &str, c: &mut Coloring, inside: bool, actions: &mut
     widgets::slider(ui, "Offset", "Shifts the colors along the gradient (1 is a full turn)", &mut c.offset, 0.0..=1.0, 0.0);
 }
 
+/// Entries grouped by their file (consecutive entries of one family).
+fn by_file<'a>(entries: impl Iterator<Item = &'a Entry>) -> Vec<(String, Vec<&'a Entry>)> {
+    let mut out: Vec<(String, Vec<&Entry>)> = Vec::new();
+    for e in entries {
+        match out.last_mut() {
+            Some((f, list)) if *f == e.family => list.push(e),
+            _ => out.push((e.family.clone(), vec![e])),
+        }
+    }
+    out
+}
+
 /// The coloring formula picker and its parameters (Formula method).
 fn coloring_formula(ui: &mut Ui, id: &str, c: &mut Coloring) {
     let current = library().get(&c.formula).map(|e| e.title.clone()).unwrap_or_else(|| c.formula.clone());
     widgets::grid(ui, &format!("{id}-formula"), |ui| {
         widgets::label(ui, "Algorithm", "The coloring formula; it runs along every orbit and picks the gradient position");
         egui::ComboBox::from_id_salt((id, "coloring-formula")).selected_text(current).height(400.0).width(200.0).show_ui(ui, |ui| {
-            for e in library().colorings() {
+            let lib = library();
+            let mut pick = |ui: &mut Ui, e: &Entry| {
                 if ui.selectable_label(c.formula == e.id, &e.title).clicked() && c.formula != e.id {
                     c.formula = e.id.clone();
                     c.params.clear();
@@ -165,12 +178,23 @@ fn coloring_formula(ui: &mut Ui, id: &str, c: &mut Coloring) {
                     c.transfer = Transfer::Linear;
                     c.density = 1.0;
                 }
+            };
+            for e in lib.colorings().filter(|e| e.set != Set::User) {
+                pick(ui, e);
+            }
+            // User colorings, one collapsible group per file.
+            for (file, list) in by_file(lib.colorings().filter(|e| e.set == Set::User)) {
+                egui::CollapsingHeader::new(format!("{file} ({})", list.len())).id_salt((id, "user-coloring", file)).show(ui, |ui| {
+                    for e in list {
+                        pick(ui, e);
+                    }
+                });
             }
         });
         ui.end_row();
     });
-    if let Some(p) = library().get(&c.formula).and_then(|e| e.program.as_ref().ok()) {
-        params_ui(ui, &format!("{id}-coloring"), p, &mut c.params);
+    if let Some(p) = library().get(&c.formula).and_then(|e| e.program().ok()) {
+        params_ui(ui, &format!("{id}-coloring"), &p, &mut c.params);
     }
 }
 
@@ -256,8 +280,8 @@ fn transforms_ui(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
                     }
                 });
             });
-            if let Some(p) = library().get(&t.formula).and_then(|e| e.program.as_ref().ok()) {
-                params_ui(ui, &format!("transform-{k}"), p, &mut t.params);
+            if let Some(p) = library().get(&t.formula).and_then(|e| e.program().ok()) {
+                params_ui(ui, &format!("transform-{k}"), &p, &mut t.params);
             }
         });
     }
@@ -268,12 +292,25 @@ fn transforms_ui(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
         l.transforms.swap(a, b);
     }
     ui.menu_button(format!("{}  Add a transformation", icons::PLUS), |ui| {
-        for e in library().transforms() {
+        let lib = library();
+        let mut add = |ui: &mut Ui, e: &Entry| {
             if ui.button(&e.title).on_hover_text("Changes the points before the formula runs; transformations apply in order").clicked() {
                 l.transforms.push(TransformRef { formula: e.id.clone(), ..TransformRef::default() });
                 actions.push(Action::Message(format!("Added the transformation {}", e.title)));
                 ui.close();
             }
+        };
+        for e in lib.transforms().filter(|e| e.set != Set::User) {
+            add(ui, e);
+        }
+        for (file, list) in by_file(lib.transforms().filter(|e| e.set == Set::User)) {
+            ui.menu_button(format!("{file} ({})", list.len()), |ui| {
+                egui::ScrollArea::vertical().max_height(400.0).show(ui, |ui| {
+                    for e in list {
+                        add(ui, e);
+                    }
+                });
+            });
         }
     })
     .response
@@ -281,7 +318,8 @@ fn transforms_ui(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
 }
 
 fn fractal_sections(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
-    let entry = library().get(&l.formula);
+    let lib = library();
+    let entry = lib.get(&l.formula);
     let sec = widgets::section(ui, "Formula", true);
     if sec.reset {
         l.params.clear();
@@ -298,7 +336,7 @@ fn fractal_sections(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
                 ui.label(RichText::new(format!("Unknown formula '{}'", l.formula)).color(theme::WARN));
             }
         }
-        let program = entry.and_then(|e| e.program.as_ref().ok()).cloned();
+        let program = entry.and_then(|e| e.program().ok());
         if let Some(p) = &program {
             params_ui(ui, "formula", p, &mut l.params);
         }

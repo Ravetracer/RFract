@@ -240,4 +240,6 @@ pub struct FormulaAst {
     pub maxiter: Option<u32>,
     /// Sections that were present but are not supported yet (reported, skipped).
     pub skipped_sections: Vec<String>,
+    /// Written in FractInt syntax (unknown names start at zero).
+    pub fractint: bool,
 }

@@ -33,7 +33,7 @@ longer.
 
 ## Formula files
 
-RFract reads formulas in two languages:
+RFract reads formulas in three languages:
 
 - **UFM syntax** (`.ufm`): sections `init:`, `loop:`, `bailout:` and `default:` (parameters
   with `param … endparam`, function parameters with `func … endfunc`). `|z|` is the squared
@@ -43,6 +43,22 @@ RFract reads formulas in two languages:
   (`formulas/rfract/rfract.ufm` in the source code).
 - **FractalPark FRM-like v1** (`.frm` with the `; @language: frm-like/1` header): the language
   of the bundled FractalPark formulas.
+- **FractInt formulas** (`.frm`): `name { init : loop, bailout }`, with FractInt's predefined
+  names and functions. A symmetry after the name (`Mandelbrot(XAXIS)`) is ignored.
+
+### Your formula folders
+
+*File › Preferences › Formula folders* lists folders with your own formula files: `.ufm` and
+`.frm` (fractals), `.ucl` (colorings) and `.uxf` (transformations), subfolders included. RFract
+reads the folders in the background when it starts and when the list changes (*Rescan* after
+you changed files); the status bar reports how many formulas it found.
+
+The formulas appear in the browser under *User formulas*, one group per file; user colorings
+and transformations appear in the coloring picker and in *Add a transformation*. A formula
+compiles when you pick it; if it does not compile, the view shows why and the browser hides it
+afterwards. Documents store user formulas as `user:<file path in the folder>:<entry name>`, so
+a document opens on another computer as long as the same file lies in one of its formula
+folders.
 
 The command line checks formula files and reports what does not compile yet:
 

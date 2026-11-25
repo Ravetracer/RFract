@@ -26,6 +26,8 @@ Commands:
   help                       This text
 
 Options:
+  --formula-dir <dir>        Also use the formula files in <dir> (repeatable; ids
+                             user:<path in dir>:<entry>, as in the app's formula folders)
   -V, --version              Print the version";
 
 fn info() {
@@ -134,7 +136,7 @@ fn list_formulas() {
     use std::io::Write;
     let mut out = std::io::stdout().lock();
     for e in &library().entries {
-        let state = match &e.program {
+        let state = match &e.program() {
             Ok(p) if p.has_julia => "  mandelbrot/julia",
             Ok(_) => "",
             Err(_) => "  (does not compile)",
@@ -352,7 +354,21 @@ fn collect(p: &Path, out: &mut Vec<PathBuf>) {
 }
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    // Formula folders apply to every command.
+    let mut dirs = Vec::new();
+    while let Some(i) = args.iter().position(|a| a == "--formula-dir") {
+        if i + 1 >= args.len() {
+            eprintln!("error: --formula-dir needs a folder");
+            return ExitCode::FAILURE;
+        }
+        dirs.push(PathBuf::from(args.remove(i + 1)));
+        args.remove(i);
+    }
+    if !dirs.is_empty() {
+        let n = rfr_core::formula::library::set_user_folders(&dirs);
+        eprintln!("{n} formulas in the formula folders");
+    }
     let rest = args.get(1..).unwrap_or(&[]);
     let result = match args.first().map(String::as_str) {
         None | Some("help" | "-h" | "--help") => {

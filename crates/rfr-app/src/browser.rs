@@ -10,9 +10,14 @@ use rfr_core::formula::library::{Entry, Set, library};
 use crate::layers::{Selection, target, target_mut};
 use crate::{icons, theme};
 
+/// Files with the ids of their matching formulas.
+type FileGroups = Vec<(String, Vec<String>)>;
+
 #[derive(Default)]
 pub struct Browser {
     search: String,
+    /// User formulas grouped by file: (library generation, search) → (file, entry ids).
+    user_groups: Option<((u64, String), FileGroups)>,
 }
 
 fn matches(e: &Entry, q: &str) -> bool {
@@ -20,7 +25,8 @@ fn matches(e: &Entry, q: &str) -> bool {
 }
 
 fn item(ui: &mut Ui, e: &Entry, current: &str) -> bool {
-    let julia = e.program.as_ref().is_ok_and(|p| p.has_julia);
+    // Only formulas compiled already (listing must not compile user formulas).
+    let julia = e.status() == Some(true) && e.program().is_ok_and(|p| p.has_julia);
     let tip = format!(
         "{}\n{} · {}{}\nClick to use this formula (with its suggested view).",
         e.id,
@@ -78,20 +84,57 @@ impl Browser {
                                 continue;
                             }
                             list.sort_by_key(|e| e.title.to_lowercase());
-                            egui::CollapsingHeader::new(format!("{fam} ({})", list.len())).id_salt(("fam", fam)).default_open(!q.is_empty()).show(
-                                ui,
-                                |ui| {
+                            egui::CollapsingHeader::new(format!("{fam} ({})", list.len()))
+                                .id_salt(("fam", fam, q.is_empty()))
+                                .default_open(!q.is_empty())
+                                .show(ui, |ui| {
                                     for e in list {
                                         if item(ui, e, &current) {
                                             picked = Some(e.id.clone());
                                         }
                                     }
-                                },
-                            );
+                                });
                         }
                     })
                     .header_response
                     .on_hover_text("Formulas from the FractalPark project (MIT license)");
+            }
+            let key = (rfr_core::formula::library::generation(), q.clone());
+            if self.user_groups.as_ref().is_none_or(|(k, _)| *k != key) {
+                let mut groups: FileGroups = Vec::new();
+                for e in lib.usable().filter(|e| e.set == Set::User && matches(e, &q)) {
+                    match groups.last_mut() {
+                        Some((fam, ids)) if *fam == e.family => ids.push(e.id.clone()),
+                        _ => groups.push((e.family.clone(), vec![e.id.clone()])),
+                    }
+                }
+                self.user_groups = Some((key, groups));
+            }
+            if let Some((_, groups)) = &self.user_groups
+                && !groups.is_empty()
+            {
+                let total: usize = groups.iter().map(|(_, ids)| ids.len()).sum();
+                egui::CollapsingHeader::new(RichText::new(format!("User formulas ({total})")).strong())
+                    .id_salt("set-user")
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        for (file, ids) in groups {
+                            egui::CollapsingHeader::new(format!("{file} ({})", ids.len()))
+                                .id_salt(("user-file", file, &q))
+                                .default_open(!q.is_empty() && total < 200)
+                                .show(ui, |ui| {
+                                    for id in ids {
+                                        if let Some(e) = lib.get(id)
+                                            && item(ui, e, &current)
+                                        {
+                                            picked = Some(e.id.clone());
+                                        }
+                                    }
+                                });
+                        }
+                    })
+                    .header_response
+                    .on_hover_text("Formulas from your formula folders (File › Preferences). Each one compiles when you pick it.");
             }
             if !q.is_empty() && picked.is_none() && lib.usable().all(|e| !matches(e, &q)) {
                 ui.label(RichText::new("No formula matches.").color(theme::TEXT_MUTED));

@@ -11,6 +11,12 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
   `#randomrange`, assignments to parameters, FractInt syntax inside UFM files and the
   `$define`/`$ifdef` preprocessor, several statements per line.
 - Coloring *Direct color (hue by angle)*.
+- Formula folders (File › Preferences): RFract indexes the user's .ufm, .frm, .ucl and .uxf
+  files in the background and lists them in the browser under *User formulas*, in the coloring
+  picker and in *Add a transformation*; formulas compile when they are picked.
+- FractInt .frm formula files (symmetry suffixes ignored, `rotskew`, `magxmag`, variables that
+  start at zero, `f(a, b)` as `f((a, b))`, `end if`, a final assignment as the bailout).
+- rfr-cli: `--formula-dir <folder>` makes the formulas of a folder available to every command.
 - Color parameters in the inspector (color picker).
 
 ### Changed

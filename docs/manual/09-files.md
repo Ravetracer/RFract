@@ -28,3 +28,12 @@ rfr-cli info
 `render` takes a document, a PNG rendered by RFract or a formula id (`rfr-cli formulas` lists
 them) and renders on the graphics card; `--cpu` uses the CPU reference renderer instead.
 `info` shows the graphics card, the denoiser and the settings folder.
+
+Documents that use formulas from your formula folders need the folders on the command line
+too: `--formula-dir <folder>` (once per folder) makes their formulas available, with the same
+ids as in the app:
+
+```
+rfr-cli --formula-dir ~/formulas render picture.rfr -o picture.png
+rfr-cli --formula-dir ~/formulas render "user:fractint.frm:Daisy" -o daisy.png
+```

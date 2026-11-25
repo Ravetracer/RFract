@@ -23,6 +23,8 @@ pub struct Prefs {
     pub preview_samples: u32,
     pub recent: Vec<PathBuf>,
     pub last_dir: Option<PathBuf>,
+    /// Folders with the user's formula files (.ufm, .ucl, .uxf, .frm), searched recursively.
+    pub formula_folders: Vec<PathBuf>,
 }
 
 impl Default for Prefs {
@@ -36,6 +38,7 @@ impl Default for Prefs {
             preview_samples: 64,
             recent: Vec::new(),
             last_dir: None,
+            formula_folders: Vec::new(),
         }
     }
 }

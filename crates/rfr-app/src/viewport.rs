@@ -24,7 +24,8 @@ pub struct Viewport {
     gpu: Option<GpuRenderer>,
     texture: Option<(egui::TextureId, u64)>,
     /// What the renderer currently has: document, size, fast mode.
-    last: Option<(Document, (u32, u32), bool)>,
+    /// Document, size, fast mode and formula library generation of the current plan.
+    last: Option<(Document, (u32, u32), bool, u64)>,
     plan_error: Option<String>,
     render_size: (u32, u32),
     pass_start: Instant,
@@ -141,7 +142,7 @@ impl Viewport {
     pub fn set_julia(&mut self, doc: &mut Document, sel: &Selection, seed: Option<[f64; 2]>) -> Option<String> {
         let view = doc.view.clone();
         let layer = target_mut(doc, sel)?;
-        let has_julia = rfr_core::formula::library::library().get(&layer.formula).and_then(|e| e.program.as_ref().ok()).is_some_and(|p| p.has_julia);
+        let has_julia = rfr_core::formula::library::library().get(&layer.formula).and_then(|e| e.program().ok()).is_some_and(|p| p.has_julia);
         if !has_julia {
             return Some("This formula has no Julia mode".into());
         }
@@ -302,7 +303,8 @@ impl Viewport {
             self.phase = (self.phase + dt * self.cycle_speed).rem_euclid(1.0);
         }
         let gpu = self.gpu.as_mut()?;
-        let changed = self.cycling || self.last.as_ref().is_none_or(|(d, s, f)| d != doc || *s != size || *f != fast);
+        let generation = rfr_core::formula::library::generation();
+        let changed = self.cycling || self.last.as_ref().is_none_or(|(d, s, f, g)| d != doc || *s != size || *f != fast || *g != generation);
         if changed {
             match Plan::sized(doc, size.0, size.1) {
                 Ok(mut plan) => {
@@ -315,7 +317,7 @@ impl Viewport {
                 }
                 Err(e) => self.plan_error = Some(e),
             }
-            self.last = Some((doc.clone(), size, fast));
+            self.last = Some((doc.clone(), size, fast, generation));
             self.render_size = size;
             self.pass_start = Instant::now();
             self.converged_after = None;

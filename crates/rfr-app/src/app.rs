@@ -62,6 +62,8 @@ pub struct App {
     allow_close: bool,
     denoiser: Option<String>,
     denoiser_rx: Option<Receiver<String>>,
+    /// Indexing of the formula folders: entries found and the time it took.
+    scan_rx: Option<Receiver<(usize, Duration)>>,
     status: Option<(String, Instant, bool)>,
 }
 
@@ -97,12 +99,31 @@ impl App {
             allow_close: false,
             denoiser: None,
             denoiser_rx: Some(rx),
+            scan_rx: None,
             status: None,
         };
+        app.rescan_formulas(&cc.egui_ctx);
         if let Some(p) = initial {
             app.open_path(&p);
         }
         app
+    }
+
+    /// Indexes the formula folders in the background (the library swaps them in when done).
+    fn rescan_formulas(&mut self, ctx: &egui::Context) {
+        let folders = self.prefs.formula_folders.clone();
+        if folders.is_empty() && rfr_core::formula::library::generation() == 0 {
+            return;
+        }
+        let (tx, rx) = channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let t = Instant::now();
+            let n = rfr_core::formula::library::set_user_folders(&folders);
+            let _ = tx.send((n, t.elapsed()));
+            ctx.request_repaint();
+        });
+        self.scan_rx = Some(rx);
     }
 
     fn notify(&mut self, msg: impl Into<String>) {
@@ -336,7 +357,7 @@ impl App {
                     action = Some(Action::Export);
                 }
                 ui.separator();
-                if item(ui, "Preferences…", "Ctrl+,").on_hover_text("Interface size, preview quality").clicked() {
+                if item(ui, "Preferences…", "Ctrl+,").on_hover_text("Interface size, preview quality, formula folders").clicked() {
                     self.prefs_open = true;
                 }
                 if item(ui, "Quit", "Ctrl+Q").on_hover_text("Close RFract").clicked() {
@@ -467,6 +488,7 @@ impl App {
         }
         let mut open = true;
         let before = self.prefs.clone();
+        let mut rescan = false;
         egui::Window::new("Preferences").open(&mut open).resizable(false).collapsible(false).default_width(420.0).show(ctx, |ui| {
             let d = Prefs::default();
             let p = &mut self.prefs;
@@ -518,6 +540,36 @@ impl App {
                     );
                 });
             }
+            if widgets::section(ui, "Formula folders", false).open {
+                ui.label(
+                    RichText::new("Folders with your formula files (.ufm, .frm fractals, .ucl colorings, .uxf transformations), searched with their subfolders.")
+                        .size(theme::fs(11.5))
+                        .color(theme::TEXT_MUTED),
+                );
+                let mut remove = None;
+                for (i, f) in p.formula_folders.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        if widgets::icon_button(ui, icons::TRASH, "Remove this folder from the list (the files stay)").clicked() {
+                            remove = Some(i);
+                        }
+                        ui.label(f.display().to_string()).on_hover_text(f.display().to_string());
+                    });
+                }
+                if let Some(i) = remove {
+                    p.formula_folders.remove(i);
+                }
+                ui.horizontal(|ui| {
+                    if ui.button(format!("{}  Add folder…", icons::FOLDER_PLUS)).on_hover_text("Choose a folder with formula files").clicked()
+                        && let Some(dir) = rfd::FileDialog::new().pick_folder()
+                        && !p.formula_folders.contains(&dir)
+                    {
+                        p.formula_folders.push(dir);
+                    }
+                    if ui.button(format!("{}  Rescan", icons::REFRESH)).on_hover_text("Read the formula folders again (after you changed files)").clicked() {
+                        rescan = true;
+                    }
+                });
+            }
             ui.add_space(6.0);
             ui.label(
                 RichText::new(format!("Settings folder: {}", crate::prefs::config_dir().display())).size(theme::fs(11.0)).color(theme::TEXT_MUTED),
@@ -533,6 +585,10 @@ impl App {
         }
         if self.prefs != before {
             self.save_prefs();
+        }
+        if rescan || self.prefs.formula_folders != before.formula_folders {
+            self.rescan_formulas(ctx);
+            self.notify("Reading the formula folders…");
         }
     }
 
@@ -608,6 +664,14 @@ impl eframe::App for App {
         {
             self.denoiser = Some(s);
             self.denoiser_rx = None;
+        }
+        if let Some(rx) = &self.scan_rx
+            && let Ok((n, t)) = rx.try_recv()
+        {
+            self.scan_rx = None;
+            let folders = self.prefs.formula_folders.len();
+            self.notify(format!("Formula folders: {n} formulas in {folders} folder(s), indexed in {:.1} s", t.as_secs_f64()));
+            ctx.request_repaint();
         }
         // Closing with unsaved changes asks first.
         if ctx.input(|i| i.viewport().close_requested()) && self.doc.modified() && !self.allow_close {

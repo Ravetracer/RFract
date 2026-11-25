@@ -30,11 +30,12 @@ pub struct Prog {
 impl Prog {
     /// Resolves library entry `id` of `kind` with the stored parameter values.
     pub fn resolve(id: &str, params: &BTreeMap<String, ParamValue>, kind: ProgramKind) -> Result<Prog, String> {
-        let entry = library().get(id).ok_or_else(|| format!("unknown formula '{id}'"))?;
+        let lib = library();
+        let entry = lib.get(id).ok_or_else(|| format!("unknown formula '{id}'"))?;
         if entry.kind != kind {
             return Err(format!("'{}' is not a {}", entry.title, kind_name(kind)));
         }
-        let program = entry.program.clone().map_err(|e| format!("'{}' does not compile: {e}", entry.title))?;
+        let program = entry.program().map_err(|e| format!("'{}' does not compile: {e}", entry.title))?;
         let values = program.params.iter().map(|p| resolve_value(p.kind, &p.default, params.get(&p.name))).collect();
         Ok(Prog { id: id.to_string(), program, values })
     }

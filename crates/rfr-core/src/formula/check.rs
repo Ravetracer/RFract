@@ -307,12 +307,27 @@ impl<'a> Ck<'a> {
                 "ismand" => return Ok(self.sys(Sys::IsMand)),
                 "rand" => return Ok(self.sys(Sys::Random)),
                 "center" => return Ok(self.sys(Sys::Center)),
+                // (rotation in degrees, skew) and (magnification, x magnification).
+                "rotskew" => {
+                    let a = self.sys(Sys::Angle);
+                    let deg = Expr { ty: Ty::Real, kind: Kind::Arith(Arith::Mul, Box::new(a), Box::new(real(180.0 / std::f64::consts::PI))) };
+                    return Ok(Expr { ty: Ty::Complex, kind: Kind::Complex(Box::new(deg), Box::new(real(0.0))) });
+                }
+                "magxmag" => {
+                    let m = self.sys(Sys::Magn);
+                    return Ok(Expr { ty: Ty::Complex, kind: Kind::Complex(Box::new(m), Box::new(real(1.0))) });
+                }
                 "p1" | "p2" | "p3" | "p4" | "p5" | "p6" => {
                     let i = self.implicit_param(&key, ParamKind::Complex);
                     return Ok(Expr { ty: self.params[i].ty, kind: Kind::Param(i) });
                 }
                 _ => {}
             }
+        }
+        if self.ast.fractint {
+            // FractInt variables start at zero.
+            let i = self.local(name, Ty::Complex);
+            return Ok(Expr { ty: self.locals[i].ty, kind: Kind::Local(i) });
         }
         err(line, format!("unknown name '{name}'"))
     }
