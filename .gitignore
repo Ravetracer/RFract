@@ -1,0 +1,10 @@
+/target/
+/dist/
+/oidn/
+/_dev/
+/docs/manual/build/
+/docs/manual/manual.html
+__pycache__/
+*.pyc
+.idea/
+.vscode/

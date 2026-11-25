@@ -1,0 +1,34 @@
+RFract @VERSION@ for macOS (@ARCH@)
+===================================
+
+Builds: arm64 for Apple silicon (M1 and later), x86_64 for Intel Macs. macOS 11 or newer.
+
+1. Unpack the zip and move RFract.app to /Applications.
+
+2. The app is not signed by Apple (no paid developer account), so macOS puts it in
+   quarantine and refuses to open it ("RFract is damaged" or "cannot be opened").
+   Remove the quarantine flag once in the Terminal:
+
+     xattr -dr com.apple.quarantine /Applications/RFract.app
+
+   If macOS still refuses, sign it locally (ad hoc) and try again:
+
+     codesign --force --deep --sign - /Applications/RFract.app
+
+3. Start RFract from the Applications folder.
+
+Command line tool
+-----------------
+rfr-cli is inside the app:
+
+  /Applications/RFract.app/Contents/MacOS/rfr-cli info
+
+Optionally link it onto your path:
+
+  sudo ln -s /Applications/RFract.app/Contents/MacOS/rfr-cli /usr/local/bin/rfr-cli
+
+Movies (later versions)
+-----------------------
+Install ffmpeg, for example with Homebrew: brew install ffmpeg
+
+Settings are kept in ~/Library/Application Support/rfract, caches in ~/Library/Caches/rfract.

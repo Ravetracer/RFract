@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=RFract
+GenericName=Fractal Generator
+Comment=Explore, compose and render 2D fractals
+Exec=rfr-app %f
+Icon=rfract
+Terminal=false
+Categories=Graphics;2DGraphics;
+Keywords=fractal;mandelbrot;julia;render;layers;

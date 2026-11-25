@@ -1,0 +1,20 @@
+RFract @VERSION@ for Windows (x64)
+==================================
+
+Unpack the zip anywhere (for example to C:\Programs\RFract) and start rfr-app.exe.
+Keep the DLL files next to the programs: they are the AI denoiser (Intel Open Image
+Denoise).
+
+  rfr-app.exe      the program
+  rfr-cli.exe      the command line tool; run it in a terminal (PowerShell or cmd),
+                   "rfr-cli info" shows the GPU and the denoiser
+
+The programs are not signed. Windows SmartScreen may show "Windows protected your PC" on
+the first start: click "More info", then "Run anyway".
+
+Needed
+------
+  A graphics card with DirectX 12 or Vulkan support (Windows 10 or 11).
+  For movies (later versions): ffmpeg (https://ffmpeg.org, for example "winget install ffmpeg").
+
+Settings are kept in %APPDATA%\rfract, caches in %LOCALAPPDATA%\rfract.

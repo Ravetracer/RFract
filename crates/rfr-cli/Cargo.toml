@@ -1,0 +1,10 @@
+[package]
+name = "rfr-cli"
+description = "RFract command line tool"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rfr-core = { path = "../rfr-core" }
+rfr-gpu = { path = "../rfr-gpu" }

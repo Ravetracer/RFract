@@ -1,0 +1,11 @@
+[package]
+name = "rfr-gpu"
+description = "RFract GPU renderer (wgpu)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+pollster = "1.0.1"
+rfr-core = { path = "../rfr-core" }
+wgpu = "30.0.1"

@@ -1,0 +1,39 @@
+RFract @VERSION@ for Linux (x86_64)
+===================================
+
+This package
+------------
+  rfr-app          the program (start it from a terminal or a launcher)
+  rfr-cli          the command line tool ("rfr-cli info" shows the GPU and the denoiser)
+  lib/             Intel Open Image Denoise (the AI denoiser; loaded when present)
+  rfract.desktop, rfract.png        launcher entry and icon
+  RFract-Manual-@VERSION@.pdf       the manual (also in the program: Help > Manual)
+
+Unpack it anywhere and run ./rfr-app. Keep lib/ next to the programs.
+
+Optional launcher entry (adjust the path in Exec= first):
+  mkdir -p ~/.local/share/applications ~/.local/share/icons/hicolor/256x256/apps
+  cp rfract.desktop ~/.local/share/applications/
+  cp rfract.png ~/.local/share/icons/hicolor/256x256/apps/
+
+Libraries the programs need
+---------------------------
+The programs only link against the C library (glibc 2.35 or newer: Ubuntu 22.04, Debian 12,
+Fedora 36 and later). Everything else is loaded at run time and is part of every desktop
+system; on minimal or headless systems install:
+
+  Graphics (required for the GPU renderer)
+    a Vulkan driver and the Vulkan loader (libvulkan.so.1)
+      Debian/Ubuntu: libvulkan1 mesa-vulkan-drivers   (NVIDIA: the proprietary driver)
+      Fedora:        vulkan-loader mesa-vulkan-drivers
+      Arch:          vulkan-icd-loader + vulkan-radeon / vulkan-intel / nvidia-utils
+  Window (rfr-app only)
+    Wayland: libwayland-client.so.0, libxkbcommon.so.0
+    X11:     libX11, libXcursor, libXrandr, libXi, libxkbcommon-x11
+      Debian/Ubuntu: libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 libxcursor1 libxrandr2 libxi6
+  File dialogs (rfr-app only)
+    xdg-desktop-portal with a backend (GNOME, KDE or GTK); present on desktop systems
+  Movies (optional, later versions)
+    ffmpeg on the search path
+
+More: the manual, chapter "Installation".

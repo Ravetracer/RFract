@@ -1,0 +1,15 @@
+RFract
+Copyright (C) 2026 Christian Nielebock
+
+RFract is free software: you can redistribute it and/or modify it under the terms of the GNU
+Lesser General Public License as published by the Free Software Foundation, either version 3
+of the License, or (at your option) any later version (see LICENSE and COPYING).
+
+Parts of the code come from RWildFire and RMandelbulb3D by the same author and are used here
+under the same license.
+
+Release packages include Intel Open Image Denoise (Apache License 2.0) and oneTBB (Apache
+License 2.0); their license files are in the folder oidn-license of each package.
+
+Ultra Fractal and FractInt are named only to describe file formats RFract reads. No formula
+files of either program are part of RFract.

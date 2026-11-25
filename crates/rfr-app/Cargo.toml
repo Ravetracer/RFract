@@ -1,0 +1,23 @@
+[package]
+name = "rfr-app"
+description = "RFract fractal generator (desktop application)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+eframe = { version = "0.36.2", default-features = false, features = ["wgpu", "default_fonts", "x11", "wayland"] }
+egui = "0.36.2"
+egui-phosphor = "0.14.0"
+egui-wgpu = "0.36.2"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+rfd = "0.17.2"
+rfr-core = { path = "../rfr-core" }
+rfr-gpu = { path = "../rfr-gpu" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+wgpu = "30"
+
+[build-dependencies]
+# The Windows program icon (only used when building for Windows).
+winresource = "0.1"
