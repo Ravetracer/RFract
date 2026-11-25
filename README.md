@@ -1,7 +1,7 @@
 # RFract
 
-A 2D fractal generator in Rust: layered fractals in the spirit of Ultra Fractal and FractInt,
-rendered on the GPU (wgpu), with denoising, post effects and animation.
+A 2D fractal generator in Rust: layered fractals rendered on the GPU (wgpu), with denoising,
+post effects and animation.
 
 Status: early development. Version 0.1 is the program shell and the release pipeline; the
 renderer, layers, formulas and animation follow stage by stage (see [PLAN.md](PLAN.md)).

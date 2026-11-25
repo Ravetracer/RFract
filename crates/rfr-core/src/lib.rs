@@ -1,9 +1,15 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
-//! RFract core: everything that does not need a GPU or a window. For now the platform folders,
-//! the runtime-loaded denoiser and system information; the document model, the formula
-//! language and the CPU renderer follow in stage 1 (see PLAN.md).
+//! RFract core: everything that does not need a GPU or a window: the document model, the
+//! formula language and library, gradients, the CPU reference renderer, the denoiser glue and
+//! the platform folders.
 
+pub mod doc;
+pub mod formula;
+pub mod gradient;
+pub mod io;
+pub mod math;
+pub mod palette;
 pub mod paths;
 pub mod render;
 

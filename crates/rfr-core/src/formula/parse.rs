@@ -1,0 +1,1056 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
+
+//! Lexer and parser for formula sources: FractalPark FRM-like v1 files (one formula with a
+//! directive preamble) and UFM syntax files (any number of `name { … }` entries).
+
+use super::ast::*;
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Tok {
+    Ident(String),
+    Sys(String),
+    Param(String),
+    Num(f64, bool),
+    Str(String),
+    Op(&'static str),
+    Newline,
+    Eof,
+}
+
+#[derive(Clone, Debug)]
+struct Token {
+    tok: Tok,
+    line: usize,
+}
+
+/// A parse or check error with its line (1-based, 0 when unknown).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Error {
+    pub line: usize,
+    pub msg: String,
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.line > 0 { write!(f, "line {}: {}", self.line, self.msg) } else { f.write_str(&self.msg) }
+    }
+}
+
+pub fn err<T>(line: usize, msg: impl Into<String>) -> Result<T, Error> {
+    Err(Error { line, msg: msg.into() })
+}
+
+const OPS: [&str; 26] =
+    ["||", "&&", "<=", ">=", "==", "!=", "<", ">", "+", "-", "*", "/", "^", "%", "!", "=", "(", ")", ",", "|", ":", "{", "}", "[", "]", "."];
+
+fn lex(src: &str, first_line: usize) -> Result<Vec<Token>, Error> {
+    let mut out = Vec::new();
+    let b = src.as_bytes();
+    let mut i = 0;
+    let mut line = first_line;
+    while i < b.len() {
+        let c = b[i];
+        match c {
+            b'\n' => {
+                out.push(Token { tok: Tok::Newline, line });
+                line += 1;
+                i += 1;
+            }
+            b' ' | b'\t' | b'\r' => i += 1,
+            b';' => {
+                while i < b.len() && b[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            // Line continuation (UFM syntax): a backslash before the end of the line.
+            b'\\' => {
+                i += 1;
+                while i < b.len() && (b[i] == b' ' || b[i] == b'\t' || b[i] == b'\r') {
+                    i += 1;
+                }
+                if i < b.len() && b[i] == b'\n' {
+                    i += 1;
+                    line += 1;
+                }
+            }
+            b'"' => {
+                let start = i + 1;
+                i += 1;
+                while i < b.len() && b[i] != b'"' && b[i] != b'\n' {
+                    i += 1;
+                }
+                out.push(Token { tok: Tok::Str(src[start..i].to_string()), line });
+                if i < b.len() && b[i] == b'"' {
+                    i += 1;
+                }
+            }
+            b'0'..=b'9' => i = lex_number(src, i, line, &mut out)?,
+            b'.' if i + 1 < b.len() && b[i + 1].is_ascii_digit() => i = lex_number(src, i, line, &mut out)?,
+            b'#' | b'@' => {
+                let start = i + 1;
+                i += 1;
+                while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
+                    i += 1;
+                }
+                let name = src[start..i].to_string();
+                if name.is_empty() {
+                    return err(line, format!("'{}' without a name", c as char));
+                }
+                out.push(Token { tok: if c == b'#' { Tok::Sys(name) } else { Tok::Param(name) }, line });
+            }
+            c if c.is_ascii_alphabetic() || c == b'_' => {
+                let start = i;
+                while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
+                    i += 1;
+                }
+                out.push(Token { tok: Tok::Ident(src[start..i].to_string()), line });
+            }
+            _ => {
+                let rest = &src[i..];
+                match OPS.iter().find(|op| rest.starts_with(**op)) {
+                    Some(op) => {
+                        out.push(Token { tok: Tok::Op(op), line });
+                        i += op.len();
+                    }
+                    None => {
+                        let ch = rest.chars().next().unwrap_or('?');
+                        return err(line, format!("unexpected character '{ch}'"));
+                    }
+                }
+            }
+        }
+    }
+    out.push(Token { tok: Tok::Newline, line });
+    out.push(Token { tok: Tok::Eof, line });
+    Ok(out)
+}
+
+fn lex_number(src: &str, mut i: usize, line: usize, out: &mut Vec<Token>) -> Result<usize, Error> {
+    let b = src.as_bytes();
+    let start = i;
+    let mut int = true;
+    while i < b.len() && b[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i < b.len() && b[i] == b'.' && !(i + 1 < b.len() && b[i + 1] == b'.') {
+        int = false;
+        i += 1;
+        while i < b.len() && b[i].is_ascii_digit() {
+            i += 1;
+        }
+    }
+    if i < b.len() && (b[i] == b'e' || b[i] == b'E') {
+        let mut j = i + 1;
+        if j < b.len() && (b[j] == b'+' || b[j] == b'-') {
+            j += 1;
+        }
+        if j < b.len() && b[j].is_ascii_digit() {
+            int = false;
+            i = j;
+            while i < b.len() && b[i].is_ascii_digit() {
+                i += 1;
+            }
+        }
+    }
+    let text = &src[start..i];
+    let v: f64 = text.parse().or_else(|_| format!("{text}0").parse()).map_err(|_| Error { line, msg: format!("bad number '{text}'") })?;
+    out.push(Token { tok: Tok::Num(v, int), line });
+    Ok(i)
+}
+
+struct Parser {
+    toks: Vec<Token>,
+    pos: usize,
+    dialect: Dialect,
+}
+
+const FRM_SECTIONS: [&str; 4] = ["parameters", "init", "loop", "bailout"];
+
+const SECTIONS: [&str; 14] = [
+    "global",
+    "init",
+    "loop",
+    "bailout",
+    "final",
+    "default",
+    "parameters",
+    "switch",
+    "transform",
+    "perturbinit",
+    "perturbloop",
+    "builtin",
+    "deriv",
+    "loop2",
+];
+
+impl Parser {
+    fn peek(&self) -> &Tok {
+        &self.toks[self.pos].tok
+    }
+    fn peek_at(&self, k: usize) -> &Tok {
+        &self.toks[(self.pos + k).min(self.toks.len() - 1)].tok
+    }
+    fn line(&self) -> usize {
+        self.toks[self.pos].line
+    }
+    fn next(&mut self) -> Tok {
+        let t = self.toks[self.pos].tok.clone();
+        if self.pos < self.toks.len() - 1 {
+            self.pos += 1;
+        }
+        t
+    }
+    fn is_op(&self, op: &str) -> bool {
+        matches!(self.peek(), Tok::Op(o) if *o == op)
+    }
+    fn eat_op(&mut self, op: &str) -> bool {
+        if self.is_op(op) {
+            self.next();
+            true
+        } else {
+            false
+        }
+    }
+    fn expect_op(&mut self, op: &str) -> Result<(), Error> {
+        if self.eat_op(op) { Ok(()) } else { err(self.line(), format!("expected '{op}', found {}", show(self.peek()))) }
+    }
+    fn is_kw(&self, kw: &str) -> bool {
+        matches!(self.peek(), Tok::Ident(s) if s.eq_ignore_ascii_case(kw))
+    }
+    fn skip_newlines(&mut self) {
+        while *self.peek() == Tok::Newline {
+            self.next();
+        }
+    }
+    fn end_of_statement(&mut self) -> Result<(), Error> {
+        match self.peek() {
+            Tok::Newline => {
+                self.skip_newlines();
+                Ok(())
+            }
+            Tok::Eof => Ok(()),
+            // UFM allows several statements on one line separated by commas.
+            Tok::Op(",") if self.dialect == Dialect::Ufm => {
+                self.next();
+                Ok(())
+            }
+            t => err(self.line(), format!("expected the end of the line, found {}", show(t))),
+        }
+    }
+    /// At `name:` that starts a section?
+    fn at_section(&self) -> Option<String> {
+        if let Tok::Ident(s) = self.peek() {
+            let l = s.to_ascii_lowercase();
+            let known = match self.dialect {
+                Dialect::Frm => FRM_SECTIONS.contains(&l.as_str()),
+                Dialect::Ufm => SECTIONS.contains(&l.as_str()),
+            };
+            if known && matches!(self.peek_at(1), Tok::Op(":")) {
+                return Some(l);
+            }
+        }
+        None
+    }
+
+    // ---- expressions ----
+
+    fn expr(&mut self) -> Result<Expr, Error> {
+        self.binary(0)
+    }
+
+    fn binary(&mut self, min_prec: u8) -> Result<Expr, Error> {
+        let mut lhs = self.unary()?;
+        loop {
+            let (op, prec, right) = match self.peek() {
+                Tok::Op("||") => (BinOp::Or, 1, false),
+                Tok::Op("&&") => (BinOp::And, 2, false),
+                Tok::Op("<") => (BinOp::Lt, 3, false),
+                Tok::Op(">") => (BinOp::Gt, 3, false),
+                Tok::Op("<=") => (BinOp::Le, 3, false),
+                Tok::Op(">=") => (BinOp::Ge, 3, false),
+                Tok::Op("==") => (BinOp::Eq, 3, false),
+                Tok::Op("!=") => (BinOp::Ne, 3, false),
+                Tok::Op("+") => (BinOp::Add, 4, false),
+                Tok::Op("-") => (BinOp::Sub, 4, false),
+                Tok::Op("*") => (BinOp::Mul, 5, false),
+                Tok::Op("/") => (BinOp::Div, 5, false),
+                Tok::Op("%") => (BinOp::Mod, 5, false),
+                Tok::Op("^") => (BinOp::Pow, 6, true),
+                _ => break,
+            };
+            if prec < min_prec {
+                break;
+            }
+            self.next();
+            let rhs = if op == BinOp::Pow && self.dialect == Dialect::Ufm {
+                // UFM: the exponent may carry its own unary minus (z^-2).
+                self.binary(prec)?
+            } else {
+                self.binary(if right { prec } else { prec + 1 })?
+            };
+            lhs = Expr::Binary(op, Box::new(lhs), Box::new(rhs));
+        }
+        Ok(lhs)
+    }
+
+    fn unary(&mut self) -> Result<Expr, Error> {
+        let op = match self.peek() {
+            Tok::Op("-") => Some(UnOp::Neg),
+            Tok::Op("!") => Some(UnOp::Not),
+            Tok::Op("+") => {
+                self.next();
+                return self.unary();
+            }
+            _ => None,
+        };
+        if let Some(op) = op {
+            self.next();
+            if self.dialect == Dialect::Ufm {
+                // -z^2 = -(z^2): the operand includes a following power.
+                let operand = self.binary(6)?;
+                return Ok(Expr::Unary(op, Box::new(operand)));
+            }
+            let operand = self.unary()?;
+            return Ok(Expr::Unary(op, Box::new(operand)));
+        }
+        self.primary()
+    }
+
+    fn primary(&mut self) -> Result<Expr, Error> {
+        let line = self.line();
+        match self.next() {
+            Tok::Num(v, int) => Ok(Expr::Num { v, int: int && self.dialect == Dialect::Ufm }),
+            Tok::Op("(") => {
+                let a = self.expr()?;
+                if self.eat_op(",") {
+                    let b = self.expr()?;
+                    self.expect_op(")")?;
+                    return Ok(Expr::Complex(Box::new(a), Box::new(b)));
+                }
+                self.expect_op(")")?;
+                Ok(a)
+            }
+            Tok::Op("|") => {
+                let e = self.binary_no_or()?;
+                self.expect_op("|")?;
+                Ok(Expr::Mag(Box::new(e)))
+            }
+            Tok::Ident(name) => {
+                let lower = name.to_ascii_lowercase();
+                if lower == "true" || lower == "false" {
+                    return Ok(Expr::Bool(lower == "true"));
+                }
+                if self.eat_op("(") {
+                    let args = self.args()?;
+                    return Ok(Expr::Call { name, param: false, args });
+                }
+                Ok(Expr::Ident(name))
+            }
+            Tok::Sys(name) => Ok(Expr::Sys(name)),
+            Tok::Param(name) => {
+                if self.eat_op("(") {
+                    let args = self.args()?;
+                    return Ok(Expr::Call { name, param: true, args });
+                }
+                Ok(Expr::Param(name))
+            }
+            t => err(line, format!("expected a value, found {}", show(&t))),
+        }
+    }
+
+    /// Inside `|…|`: a `|` ends the magnitude, so `||` cannot start inside it unless spaced.
+    fn binary_no_or(&mut self) -> Result<Expr, Error> {
+        self.binary(2)
+    }
+
+    fn args(&mut self) -> Result<Vec<Expr>, Error> {
+        let mut args = Vec::new();
+        if self.eat_op(")") {
+            return Ok(args);
+        }
+        loop {
+            args.push(self.expr()?);
+            if self.eat_op(")") {
+                return Ok(args);
+            }
+            self.expect_op(",")?;
+        }
+    }
+
+    // ---- statements ----
+
+    /// Statements until one of the `ends` keywords or a section header.
+    fn block(&mut self, ends: &[&str]) -> Result<Vec<Stmt>, Error> {
+        let mut out = Vec::new();
+        loop {
+            self.skip_newlines();
+            if *self.peek() == Tok::Eof || self.is_op("}") || self.at_section().is_some() || ends.iter().any(|e| self.is_kw(e)) {
+                return Ok(out);
+            }
+            out.push(self.statement()?);
+        }
+    }
+
+    fn statement(&mut self) -> Result<Stmt, Error> {
+        let line = self.line();
+        if self.is_kw("if") {
+            self.next();
+            let mut arms = vec![(self.expr()?, Vec::new())];
+            self.end_of_statement()?;
+            arms[0].1 = self.block(&["elseif", "else", "endif"])?;
+            let mut els = Vec::new();
+            loop {
+                if self.is_kw("elseif") {
+                    self.next();
+                    let c = self.expr()?;
+                    self.end_of_statement()?;
+                    let b = self.block(&["elseif", "else", "endif"])?;
+                    arms.push((c, b));
+                } else if self.is_kw("else") {
+                    self.next();
+                    // "else if" on one line (FractInt habit).
+                    self.end_of_statement()?;
+                    els = self.block(&["endif"])?;
+                } else if self.is_kw("endif") {
+                    self.next();
+                    self.end_of_statement()?;
+                    return Ok(Stmt::If { arms, els, line });
+                } else {
+                    return err(self.line(), "'if' without 'endif'");
+                }
+            }
+        }
+        if self.is_kw("while") && self.dialect == Dialect::Ufm {
+            self.next();
+            let cond = self.expr()?;
+            self.end_of_statement()?;
+            let body = self.block(&["endwhile"])?;
+            if !self.is_kw("endwhile") {
+                return err(self.line(), "'while' without 'endwhile'");
+            }
+            self.next();
+            self.end_of_statement()?;
+            return Ok(Stmt::While { cond, body, line });
+        }
+        if self.is_kw("repeat") && self.dialect == Dialect::Ufm {
+            self.next();
+            self.end_of_statement()?;
+            let body = self.block(&["until"])?;
+            if !self.is_kw("until") {
+                return err(self.line(), "'repeat' without 'until'");
+            }
+            self.next();
+            let cond = self.expr()?;
+            self.end_of_statement()?;
+            return Ok(Stmt::Repeat { body, cond, line });
+        }
+        if self.dialect == Dialect::Ufm {
+            let ty = match self.peek() {
+                Tok::Ident(s) => match s.to_ascii_lowercase().as_str() {
+                    "bool" => Some(DeclTy::Bool),
+                    "int" => Some(DeclTy::Int),
+                    "float" => Some(DeclTy::Float),
+                    "complex" => Some(DeclTy::Complex),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let (Some(ty), Tok::Ident(_)) = (ty, self.peek_at(1)) {
+                self.next();
+                let Tok::Ident(name) = self.next() else { unreachable!() };
+                let value = if self.eat_op("=") { Some(self.expr()?) } else { None };
+                self.end_of_statement()?;
+                return Ok(Stmt::Decl { ty, name, value, line });
+            }
+        }
+        // Assignment target
+        let target = match (self.peek().clone(), self.peek_at(1).clone()) {
+            (Tok::Ident(f), Tok::Op("(")) if f == "real" || f == "imag" => {
+                self.next();
+                self.next();
+                let var = match self.next() {
+                    Tok::Ident(v) => v,
+                    Tok::Sys(v) if v.eq_ignore_ascii_case("z") => "z".to_string(),
+                    t => return err(line, format!("expected a variable in {f}(…), found {}", show(&t))),
+                };
+                self.expect_op(")")?;
+                Target::Comp { re: f == "real", var }
+            }
+            (Tok::Ident(v), Tok::Op("=")) => {
+                self.next();
+                Target::Var(v)
+            }
+            (Tok::Sys(v), Tok::Op("=")) => {
+                self.next();
+                Target::Sys(v)
+            }
+            (t, _) => return err(line, format!("expected a statement, found {}", show(&t))),
+        };
+        self.expect_op("=")?;
+        let value = self.expr()?;
+        self.end_of_statement()?;
+        Ok(Stmt::Assign { target, value, line })
+    }
+
+    // ---- parameter declarations ----
+
+    /// FRM-like v1 `parameters:` body: `name: real|complex|function = default [domain [a, b]] [classic pN]`.
+    fn frm_params(&mut self) -> Result<Vec<ParamDecl>, Error> {
+        let mut out = Vec::new();
+        loop {
+            self.skip_newlines();
+            if self.at_section().is_some() || *self.peek() == Tok::Eof || self.is_op("}") {
+                return Ok(out);
+            }
+            let line = self.line();
+            let Tok::Ident(name) = self.next() else { return err(line, "expected a parameter name") };
+            self.expect_op(":")?;
+            let Tok::Ident(ty) = self.next() else { return err(line, "expected a parameter type") };
+            self.expect_op("=")?;
+            let (kind, default) = match ty.as_str() {
+                "real" => (ParamKind::Float, ParamValue::Float(self.signed_number()?)),
+                "complex" => {
+                    self.expect_op("(")?;
+                    let re = self.signed_number()?;
+                    self.expect_op(",")?;
+                    let im = self.signed_number()?;
+                    self.expect_op(")")?;
+                    (ParamKind::Complex, ParamValue::Complex([re, im]))
+                }
+                "function" => match self.next() {
+                    Tok::Ident(f) => (ParamKind::Func, ParamValue::Func(f)),
+                    t => return err(line, format!("expected a function name, found {}", show(&t))),
+                },
+                other => return err(line, format!("unknown parameter type '{other}'")),
+            };
+            let mut p = ParamDecl {
+                name: name.clone(),
+                kind,
+                default,
+                caption: name,
+                hint: String::new(),
+                min: None,
+                max: None,
+                items: Vec::new(),
+                classic: None,
+            };
+            if self.is_kw("domain") {
+                self.next();
+                self.expect_op("[")?;
+                p.min = Some(self.signed_number()?);
+                self.expect_op(",")?;
+                p.max = Some(self.signed_number()?);
+                self.expect_op("]")?;
+            }
+            if self.is_kw("classic") {
+                self.next();
+                match self.next() {
+                    Tok::Ident(slot) => p.classic = Some(slot),
+                    t => return err(line, format!("expected a classic slot, found {}", show(&t))),
+                }
+            }
+            self.end_of_statement()?;
+            out.push(p);
+        }
+    }
+
+    fn signed_number(&mut self) -> Result<f64, Error> {
+        let neg = self.eat_op("-");
+        match self.next() {
+            Tok::Num(v, _) => Ok(if neg { -v } else { v }),
+            t => err(self.line(), format!("expected a number, found {}", show(&t))),
+        }
+    }
+
+    /// A constant value in the `default:` section: number, complex, bool, string or function.
+    fn const_value(&mut self) -> Option<ParamValue> {
+        let save = self.pos;
+        let neg = self.eat_op("-");
+        let v = match self.next() {
+            Tok::Num(v, int) => {
+                let v = if neg { -v } else { v };
+                if int { ParamValue::Int(v as i64) } else { ParamValue::Float(v) }
+            }
+            Tok::Op("(") => {
+                let re = self.signed_number().ok();
+                let ok = self.eat_op(",");
+                let im = self.signed_number().ok();
+                if let (Some(re), true, Some(im), true) = (re, ok, im, self.eat_op(")")) {
+                    let s = if neg { -1.0 } else { 1.0 };
+                    ParamValue::Complex([s * re, s * im])
+                } else {
+                    self.pos = save;
+                    return None;
+                }
+            }
+            Tok::Ident(s) if s.eq_ignore_ascii_case("true") => ParamValue::Bool(true),
+            Tok::Ident(s) if s.eq_ignore_ascii_case("false") => ParamValue::Bool(false),
+            Tok::Ident(s) => {
+                // Function default: sin() or sin
+                if self.eat_op("(") {
+                    let _ = self.eat_op(")");
+                }
+                ParamValue::Func(s.to_ascii_lowercase())
+            }
+            _ => {
+                self.pos = save;
+                return None;
+            }
+        };
+        Some(v)
+    }
+
+    fn skip_line(&mut self) {
+        while !matches!(self.peek(), Tok::Newline | Tok::Eof) {
+            self.next();
+        }
+        self.skip_newlines();
+    }
+
+    /// UFM `default:` section.
+    fn ufm_default(&mut self, f: &mut FormulaAst) -> Result<(), Error> {
+        loop {
+            self.skip_newlines();
+            if self.at_section().is_some() || *self.peek() == Tok::Eof || self.is_op("}") {
+                return Ok(());
+            }
+            let Tok::Ident(word) = self.peek().clone() else {
+                self.skip_line();
+                continue;
+            };
+            let lower = word.to_ascii_lowercase();
+            let typed = match lower.as_str() {
+                "bool" => Some(ParamKind::Bool),
+                "int" => Some(ParamKind::Int),
+                "float" => Some(ParamKind::Float),
+                "complex" => Some(ParamKind::Complex),
+                "color" => Some(ParamKind::Float),
+                _ => None,
+            };
+            if typed.is_some() && matches!(self.peek_at(1), Tok::Ident(s) if s.eq_ignore_ascii_case("param")) {
+                self.next();
+                self.next();
+                let p = self.ufm_param_block(typed, word.eq_ignore_ascii_case("color"))?;
+                f.params.extend(p);
+                continue;
+            }
+            match lower.as_str() {
+                "param" => {
+                    self.next();
+                    let p = self.ufm_param_block(None, false)?;
+                    f.params.extend(p);
+                }
+                "func" => {
+                    self.next();
+                    let p = self.ufm_func_block()?;
+                    f.params.push(p);
+                }
+                "heading" => {
+                    while !(self.is_kw("endheading") || *self.peek() == Tok::Eof) {
+                        self.next();
+                    }
+                    self.next();
+                }
+                "title" | "center" | "magn" | "maxiter" => {
+                    self.next();
+                    if self.eat_op("=") {
+                        match (lower.as_str(), self.peek().clone()) {
+                            ("title", Tok::Str(s)) => {
+                                self.next();
+                                f.title = Some(s);
+                            }
+                            ("center", _) => {
+                                if let Some(ParamValue::Complex(c)) = self.const_value() {
+                                    f.center = Some(c);
+                                }
+                            }
+                            ("magn", _) => f.magn = self.const_value().map(|v| v.as_f64()),
+                            ("maxiter", _) => f.maxiter = self.const_value().map(|v| v.as_f64().max(1.0) as u32),
+                            _ => {}
+                        }
+                    }
+                    self.skip_line();
+                }
+                _ => self.skip_line(),
+            }
+        }
+    }
+
+    /// `[type] param name … endparam`. Returns nothing for color parameters (not supported yet).
+    fn ufm_param_block(&mut self, kind: Option<ParamKind>, color: bool) -> Result<Option<ParamDecl>, Error> {
+        let line = self.line();
+        let name = match self.next() {
+            Tok::Ident(n) => n,
+            t => return err(line, format!("expected a parameter name, found {}", show(&t))),
+        };
+        let mut p = ParamDecl {
+            name: name.clone(),
+            kind: kind.unwrap_or(ParamKind::Float),
+            default: ParamValue::Float(0.0),
+            caption: name,
+            hint: String::new(),
+            min: None,
+            max: None,
+            items: Vec::new(),
+            classic: None,
+        };
+        let mut default = None;
+        self.skip_newlines();
+        loop {
+            if self.is_kw("endparam") {
+                self.next();
+                break;
+            }
+            if *self.peek() == Tok::Eof || self.is_op("}") {
+                return err(line, "'param' without 'endparam'");
+            }
+            let Tok::Ident(key) = self.peek().clone() else {
+                self.skip_line();
+                continue;
+            };
+            self.next();
+            if !self.eat_op("=") {
+                self.skip_line();
+                continue;
+            }
+            match key.to_ascii_lowercase().as_str() {
+                "caption" => {
+                    if let Tok::Str(s) = self.peek().clone() {
+                        p.caption = s;
+                    }
+                }
+                "hint" => {
+                    if let Tok::Str(s) = self.peek().clone() {
+                        p.hint = s;
+                    }
+                }
+                "default" => default = self.const_value(),
+                "min" => p.min = self.const_value().map(|v| v.as_f64()),
+                "max" => p.max = self.const_value().map(|v| v.as_f64()),
+                "enum" => {
+                    while let Tok::Str(s) = self.peek().clone() {
+                        p.items.push(s);
+                        self.next();
+                    }
+                }
+                _ => {}
+            }
+            self.skip_line();
+        }
+        if color {
+            return Ok(None);
+        }
+        if kind.is_none() {
+            p.kind = match &default {
+                Some(ParamValue::Complex(_)) => ParamKind::Complex,
+                Some(ParamValue::Bool(_)) => ParamKind::Bool,
+                Some(ParamValue::Int(_)) if !p.items.is_empty() => ParamKind::Int,
+                _ if !p.items.is_empty() => ParamKind::Int,
+                _ => ParamKind::Float,
+            };
+        }
+        p.default = match (p.kind, default) {
+            (ParamKind::Bool, Some(v)) => ParamValue::Bool(v.as_f64() != 0.0),
+            (ParamKind::Bool, None) => ParamValue::Bool(false),
+            (ParamKind::Int, Some(v)) => ParamValue::Int(v.as_f64() as i64),
+            (ParamKind::Int, None) => ParamValue::Int(0),
+            (ParamKind::Complex, Some(v)) => ParamValue::Complex(v.as_complex()),
+            (ParamKind::Complex, None) => ParamValue::Complex([0.0, 0.0]),
+            (_, Some(v)) => ParamValue::Float(v.as_f64()),
+            (_, None) => ParamValue::Float(0.0),
+        };
+        Ok(Some(p))
+    }
+
+    fn ufm_func_block(&mut self) -> Result<ParamDecl, Error> {
+        let line = self.line();
+        let name = match self.next() {
+            Tok::Ident(n) => n,
+            t => return err(line, format!("expected a function parameter name, found {}", show(&t))),
+        };
+        let mut p = ParamDecl {
+            name: name.clone(),
+            kind: ParamKind::Func,
+            default: ParamValue::Func("ident".into()),
+            caption: name,
+            hint: String::new(),
+            min: None,
+            max: None,
+            items: Vec::new(),
+            classic: None,
+        };
+        self.skip_newlines();
+        loop {
+            if self.is_kw("endfunc") {
+                self.next();
+                return Ok(p);
+            }
+            if *self.peek() == Tok::Eof || self.is_op("}") {
+                return err(line, "'func' without 'endfunc'");
+            }
+            let Tok::Ident(key) = self.peek().clone() else {
+                self.skip_line();
+                continue;
+            };
+            self.next();
+            if self.eat_op("=") {
+                match key.to_ascii_lowercase().as_str() {
+                    "caption" => {
+                        if let Tok::Str(s) = self.peek().clone() {
+                            p.caption = s;
+                        }
+                    }
+                    "hint" => {
+                        if let Tok::Str(s) = self.peek().clone() {
+                            p.hint = s;
+                        }
+                    }
+                    "default" => {
+                        if let Some(v @ ParamValue::Func(_)) = self.const_value() {
+                            p.default = v;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            self.skip_line();
+        }
+    }
+
+    /// The body of one formula up to its closing brace (or the end).
+    fn formula_body(&mut self, name: String) -> Result<FormulaAst, Error> {
+        let mut f = FormulaAst {
+            name,
+            dialect: self.dialect,
+            params: Vec::new(),
+            global: Vec::new(),
+            init: Vec::new(),
+            body: Vec::new(),
+            bailout: None,
+            fin: Vec::new(),
+            title: None,
+            center: None,
+            magn: None,
+            maxiter: None,
+            skipped_sections: Vec::new(),
+        };
+        let mut seen_section = false;
+        loop {
+            self.skip_newlines();
+            if *self.peek() == Tok::Eof || self.is_op("}") {
+                break;
+            }
+            let Some(section) = self.at_section() else {
+                if !seen_section {
+                    // FractInt-style body without sections: not supported in these dialects.
+                    return err(self.line(), "expected a section such as 'init:'");
+                }
+                return err(self.line(), format!("unexpected {}", show(self.peek())));
+            };
+            seen_section = true;
+            self.next();
+            self.next();
+            match section.as_str() {
+                "parameters" => f.params = self.frm_params()?,
+                "default" => self.ufm_default(&mut f)?,
+                "global" => f.global = self.block(&[])?,
+                "init" => f.init = self.block(&[])?,
+                "loop" => f.body = self.block(&[])?,
+                "final" => f.fin = self.block(&[])?,
+                "bailout" => {
+                    self.skip_newlines();
+                    if self.at_section().is_none() && !self.is_op("}") {
+                        f.bailout = Some(self.expr()?);
+                        self.end_of_statement()?;
+                    }
+                }
+                other => {
+                    f.skipped_sections.push(other.to_string());
+                    // Skip to the next section.
+                    loop {
+                        self.skip_newlines();
+                        if self.at_section().is_some() || *self.peek() == Tok::Eof || self.is_op("}") {
+                            break;
+                        }
+                        self.skip_line();
+                    }
+                }
+            }
+        }
+        Ok(f)
+    }
+}
+
+fn show(t: &Tok) -> String {
+    match t {
+        Tok::Ident(s) => format!("'{s}'"),
+        Tok::Sys(s) => format!("'#{s}'"),
+        Tok::Param(s) => format!("'@{s}'"),
+        Tok::Num(v, _) => format!("'{v}'"),
+        Tok::Str(s) => format!("\"{s}\""),
+        Tok::Op(o) => format!("'{o}'"),
+        Tok::Newline => "the end of the line".into(),
+        Tok::Eof => "the end of the file".into(),
+    }
+}
+
+/// Parses a FractalPark FRM-like v1 definition (directive preamble plus one formula).
+pub fn parse_frm(src: &str) -> Result<FormulaAst, Error> {
+    let mut header = None;
+    let mut offset = 0;
+    for (i, raw) in src.split_inclusive('\n').enumerate() {
+        let l = raw.trim_end_matches(['\n', '\r']);
+        let t = l.trim();
+        let line_start = offset;
+        offset += raw.len();
+        if t.is_empty() || t.starts_with(';') {
+            if let Some(rest) = t.strip_prefix(';').map(str::trim).and_then(|r| r.strip_prefix('@')) {
+                let (key, value) = rest.split_once(':').map(|(k, v)| (k.trim(), v.trim())).unwrap_or((rest, ""));
+                let ok = match key {
+                    "language" => value == "frm-like/1",
+                    "stdlib" => value == "1",
+                    "numeric-profile" => value == "standard32",
+                    "classic-guards" => true,
+                    _ => false,
+                };
+                if !ok {
+                    return err(i + 1, format!("unsupported directive '@{key}: {value}'"));
+                }
+            }
+            continue;
+        }
+        header = Some((i, l, line_start));
+        break;
+    }
+    let Some((hi, hl, start)) = header else { return err(0, "no formula in the file") };
+    let Some((name, rest)) = hl.split_once('{') else { return err(hi + 1, "expected 'Name {'") };
+    let body = &src[start + (hl.len() - rest.len())..];
+    let toks = lex(body, hi + 1)?;
+    let mut p = Parser { toks, pos: 0, dialect: Dialect::Frm };
+    let f = p.formula_body(name.trim().to_string())?;
+    p.expect_op("}")?;
+    Ok(f)
+}
+
+/// One entry of a UFM syntax file: its name, the line it starts on and its body.
+#[derive(Clone, Debug)]
+pub struct Entry<'a> {
+    pub name: String,
+    pub line: usize,
+    pub body: &'a str,
+}
+
+/// Splits a UFM formula file into entries (`name { … }`), skipping `comment { … }`
+/// blocks. Braces inside strings and `;` comments are ignored.
+pub fn split_entries(src: &str) -> Vec<Entry<'_>> {
+    let b = src.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    let mut line = 1;
+    let mut name_start = 0;
+    let mut name_line = 1;
+    while i < b.len() {
+        match b[i] {
+            b'\n' => {
+                line += 1;
+                i += 1;
+                if name_start >= i - 1 || src[name_start..i].trim().is_empty() {
+                    name_start = i;
+                    name_line = line;
+                }
+            }
+            b';' => {
+                while i < b.len() && b[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'{' => {
+                let name = src[name_start..i].trim().to_string();
+                let body_start = i + 1;
+                let body_line = line;
+                // Find the matching brace.
+                let mut depth = 1;
+                let mut j = body_start;
+                let mut in_str = false;
+                while j < b.len() && depth > 0 {
+                    match b[j] {
+                        b'"' => in_str = !in_str,
+                        b'\n' => {
+                            in_str = false;
+                            line += 1;
+                        }
+                        b';' if !in_str => {
+                            while j < b.len() && b[j] != b'\n' {
+                                j += 1;
+                            }
+                            continue;
+                        }
+                        b'{' if !in_str => depth += 1,
+                        b'}' if !in_str => depth -= 1,
+                        _ => {}
+                    }
+                    j += 1;
+                }
+                let body_end = if depth == 0 { j - 1 } else { j };
+                if !name.eq_ignore_ascii_case("comment") && !name.is_empty() {
+                    out.push(Entry {
+                        name: name.lines().last().unwrap_or("").trim().to_string(),
+                        line: name_line.max(body_line),
+                        body: &src[body_start..body_end],
+                    });
+                }
+                i = j;
+                name_start = i;
+                name_line = line;
+            }
+            _ => i += 1,
+        }
+    }
+    out
+}
+
+/// Parses one entry of a UFM syntax file.
+pub fn parse_ufm_entry(e: &Entry) -> Result<FormulaAst, Error> {
+    let toks = lex(e.body, e.line)?;
+    let mut p = Parser { toks, pos: 0, dialect: Dialect::Ufm };
+    p.formula_body(e.name.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_frm_definition() {
+        let src = "; @language: frm-like/1\n; @stdlib: 1\n; @numeric-profile: standard32\nPowerJulia {\n  parameters:\n    power: real = 2 domain [1, 16] classic p1\n    offset: complex = (-0.75, 0.1) classic p2\n    transform: function = sin classic fn1\n  init:\n    z = pixel\n  loop:\n    z = transform(z ^ power) + offset\n    if real(z) > 0\n      real(z) = -z ^ 2\n    elseif imag(z) < 0\n      z = |z| + c\n    else\n      z = (0, 1)\n    endif\n  bailout:\n    |z| <= 4 && !ismand\n}\n";
+        let f = parse_frm(src).unwrap();
+        assert_eq!(f.name, "PowerJulia");
+        assert_eq!(f.params.len(), 3);
+        assert_eq!(f.params[0].max, Some(16.0));
+        assert_eq!(f.params[2].default, ParamValue::Func("sin".into()));
+        assert_eq!(f.body.len(), 2);
+        // -z ^ 2 is (-z) ^ 2 in FRM-like v1
+        let Stmt::If { arms, .. } = &f.body[1] else { panic!() };
+        let Stmt::Assign { value, .. } = &arms[0].1[0] else { panic!() };
+        assert!(matches!(value, Expr::Binary(BinOp::Pow, l, _) if matches!(**l, Expr::Unary(UnOp::Neg, _))));
+    }
+
+    #[test]
+    fn parses_ufm_entries() {
+        let src = "comment {\n a { b } \n}\nMy-Brot {\n; c\ninit:\n  z = 0, float k = 2\nloop:\n  z = -z^@power + #pixel\nbailout:\n  |z| <= @bailout\ndefault:\n  title = \"My Brot\"\n  center = (-0.5, 0)\n  maxiter = 250\n  param power\n    caption = \"Power\"\n    default = (2,0)\n  endparam\n  float param bailout\n    default = 4.0\n    min = 1\n  endparam\n  int param mode\n    enum = \"a\" \"b\"\n    default = 1\n  endparam\n  func fn1\n    default = sin()\n  endfunc\n}\n";
+        let e = split_entries(src);
+        assert_eq!(e.len(), 1);
+        assert_eq!(e[0].name, "My-Brot");
+        let f = parse_ufm_entry(&e[0]).unwrap();
+        assert_eq!(f.title.as_deref(), Some("My Brot"));
+        assert_eq!(f.maxiter, Some(250));
+        assert_eq!(f.init.len(), 2);
+        assert_eq!(f.params.len(), 4);
+        assert_eq!(f.params[0].kind, ParamKind::Complex);
+        assert_eq!(f.params[2].items, vec!["a", "b"]);
+        assert_eq!(f.params[3].default, ParamValue::Func("sin".into()));
+        // -z^p is -(z^p) in UFM syntax
+        let Stmt::Assign { value, .. } = &f.body[0] else { panic!() };
+        assert!(matches!(value, Expr::Binary(BinOp::Add, l, _) if matches!(**l, Expr::Unary(UnOp::Neg, _))));
+    }
+}

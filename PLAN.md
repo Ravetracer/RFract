@@ -1,7 +1,6 @@
 # RFract – project plan
 
-RFract is a 2D fractal generator in Rust: layered escape-time fractals in the spirit of Ultra
-Fractal, plus density, IFS and 2.5D modes, GPU rendering (wgpu), OIDN denoising, animation and
+RFract is a 2D fractal generator in Rust: layered escape-time fractals, plus density, IFS and 2.5D modes, GPU rendering (wgpu), OIDN denoising, animation and
 post effects. It is the third sibling of RWildFire (flames) and RMandelbulb3D (3D) and shares
 their stack, UI conventions and release tooling.
 
@@ -14,9 +13,8 @@ Status: stage 0 (foundation and distribution) done; stage 1 next.
 **Goals**
 
 - Layered fractal images: any number of layers, each with its own formula, transformations,
-  inside/outside coloring, gradient, merge mode, opacity and mask (the Ultra Fractal model).
-- Read the Ultra Fractal formula language (`.ufm`, `.ucl`, `.uxf`, `.ulb`) and parameter files
-  (`.upr`), FractInt formulas (`.frm`), parameters (`.par`) and palettes (`.map`).
+  inside/outside coloring, gradient, merge mode, opacity and mask.
+- Read UFM formula files (`.ufm`, `.ucl`, `.uxf`, `.ulb`) and UFM parameter files (`.upr`), FractInt formulas (`.frm`), parameters (`.par`) and palettes (`.map`).
 - GPU first (wgpu compute, WGSL generated per layer), with a CPU reference renderer of the same
   algorithm (Cranelift JIT) for tests, fallback and features the GPU cannot do.
 - Deep zoom far beyond double precision (perturbation, BLA, extended exponent).
@@ -33,7 +31,7 @@ Status: stage 0 (foundation and distribution) done; stage 1 next.
 - Full fractal-flame editing: that is RWildFire. RFract gets a light IFS layer only (see stage 5).
 - Full 3D scenes: that is RMandelBulb3D. RFract gets 2.5D height fields and a small set of 3D
   object layers that composite into the 2D stack (stage 6).
-- Exporting back to Ultra Fractal or FractInt formats.
+- Exporting back to UFM or FractInt formats.
 - Bundling third-party formula collections (licensing, see section 8).
 
 ---
@@ -42,16 +40,14 @@ Status: stage 0 (foundation and distribution) done; stage 1 next.
 
 | Source | Use |
 |--------|-----|
-| `_dev/Ultra Fractal - Formulas` | Public UF formula database: ~1140 coloring, ~480 transformation and several thousand fractal entries in 379 files; 328 files use no class imports (UF4 style). `common.ulb` is present; UF's built-in `Standard.ulb` is not public and must be re-created. Test corpus for the language compiler, never committed. |
+| UFM formula database in `_dev/` | ~1140 coloring, ~480 transformation and several thousand fractal entries in 379 files; 328 files use no class imports (classic style). `common.ulb` is present; the base class library `Standard.ulb` is not public and must be re-created. Test corpus for the language compiler, never committed. |
 | `_dev/frasrc-20.04p14` | FractInt 20.4 source ("copyrighted freeware"): reference for built-in fractal types, `.frm`/`.par`/`.map`/`.ifs`/`.l` formats, guessing/boundary tracing. Read for algorithms, do not copy code. Never committed. |
 | `crates/rfr-core/formulas/fractalpark` | **Bundled.** FractalPark's published formula library (534 Definitions in FRM-like v1, MIT, after FractalPark's own rights review: 339 independent rewrites, 106 adaptations, 89 own). Names, families, parameters and a default view per formula in `index.json`. Updated by `tools/import_fractalpark.py`; never copy its unpublished candidate folders or held GPL rows. |
 | `_dev/fractalpark` | FractalPark checkout: the FRM-like v1 spec (`docs/specs/frm-like-language-v1.md`, `docs/manuals/frm-like-v1.md`), stdlib semantics and its renderer as a behavior reference. |
 | `_dev/fract4d-formulas` | fract4d/formulas: the repository is MIT, but every formula file is in `orgform/`, which its README excludes from the MIT license (FractInt collection ORGFORM.ZIP, copyright unclear). **Not bundled**: test corpus for the FractInt front end, user import only. |
 | Gnofract 4D `formulas/` (github.com/fract4d/gnofract4d) | Program is BSD-licensed since 2.0 (GPL before). `gf4d.frm`, `gf4d.cfrm`, `gf4d.uxf`, `standard.ucl`, `fractint-builtin.frm` (FractInt built-in types written as formulas) are bundling candidates after a per-file header check. |
-| ultrafractal.com features / formula reference | Language semantics, layer model, merge modes, gradient model, coloring concepts. |
-| Xenodream / JUX | Shaded IFS, depth lighting, texture ideas. |
-| Chaotica, Fractorium, Apophysis | Density rendering, tone mapping (already covered by RWildFire). |
-| FRAX, Mandelbrowser, IceFractal | Deep zoom UX, 2.5D/3D height views, palettes, mobile-grade performance tricks. |
+| Fractorium, Apophysis | Density rendering, tone mapping (already covered by RWildFire). |
+| `_dev/inspiration.md` | Further references (local notes, not in the repository). |
 | `../RWildFire`, `../MandelBulb/RMandelbulb3D` | Code to reuse (section 4). |
 
 ---
@@ -65,7 +61,7 @@ Same shape as RMandelbulb3D (Rust 2024, `resolver = "3"`, toolchain pinned in
 
 | Crate | Content |
 |-------|---------|
-| `rfr-core` | Document model, complex/bignum math, formula language (parser, type checker, CPU closures, Cranelift JIT, WGSL emitter), built-in formula library (`formula/lib/*.rff`), coloring and transformation library, gradients and palettes, CPU reference renderer, compositing, post processing, denoiser glue, animation, video, IO (`.rfr`, PNG with parameters, UF/FractInt import) |
+| `rfr-core` | Document model, complex/bignum math, formula language (parser, type checker, CPU closures, Cranelift JIT, WGSL emitter), built-in formula library (`formula/lib/*.ufm`), coloring and transformation library, gradients and palettes, CPU reference renderer, compositing, post processing, denoiser glue, animation, video, IO (`.rfr`, PNG with parameters, UFM/FractInt import) |
 | `rfr-gpu` | wgpu renderer: per-layer generated WGSL, composite and accumulation passes, `df64.wgsl`, perturbation kernels, density kernels, post/display shaders, batch/tiled rendering |
 | `rfr-app` | egui/eframe application |
 | `rfr-cli` | Command line: render, animate, batch, formula check/import report, denoise |
@@ -100,20 +96,20 @@ Document
 
 ### 3.3 Formula language and compilers
 
-- One AST for all sources. Front ends: RFract's own syntax (= the Ultra Fractal language, so
-  UF formulas are native, not "converted"), FractInt `.frm` (small, maps onto the same AST),
+- One AST for all sources. Front ends: RFract's own syntax (= the UFM formula language, so
+  UFM formulas are native, not "converted"), FractInt `.frm` (small, maps onto the same AST),
   FractalPark FRM-like v1 (`frm-like/1`: typed, normative spec, the bundled library), and the
-  Gnofract 4D dialect (`.frm`/`.cfrm`/`.uxf`, close to UF) for user imports.
+  Gnofract 4D dialect (`.frm`/`.cfrm`/`.uxf`, close to UFM) for user imports.
 - Back ends, as in RMandelbulb3D: CPU closures, Cranelift JIT over the same register file
   (bit-identical helper calls for transcendentals), WGSL emitter (f32, df64, perturbation
   variant).
 - **One formula source**: built-in formulas exist once, as language text in
-  `formula/lib/*.rff`. Never hand-write a formula twice for CPU and GPU.
+  `formula/lib/*.ufm` (UFM syntax). Never hand-write a formula twice for CPU and GPU.
 - Parameters, iteration counts, gradients and all render settings live in buffers, so editing
   never recompiles. The shader signature is the hash of the formula/coloring/transform texts,
   merge modes and the precision variant of a layer. A fully baked shader (constants folded) is
   compiled in the background once the view rests.
-- UF5 classes: compiled by monomorphization (a class parameter is a compile-time choice, so
+- UFM classes: compiled by monomorphization (a class parameter is a compile-time choice, so
   virtual calls become static calls on the GPU). Dynamic arrays get a fixed upper bound on the
   GPU or force the CPU path for that layer, reported in the UI.
 - Automatic differentiation in the compiler (dual numbers) gives derivatives for distance
@@ -253,7 +249,7 @@ GitHub release. The first public release is **1.0.0**, after all stages. Sizes a
 - Layer stack with groups, masks (layer as mask, invert, feather), opacity, visibility, lock.
 - Merge modes: normal, multiply, screen, overlay, soft light, hard light, color dodge/burn,
   darken, lighten, difference, exclusion, addition, subtraction, hue, saturation, color,
-  luminance, alpha only (UF set plus common extras).
+  luminance, alpha only, plus common extras.
 - Separate inside/outside coloring with own gradient and alpha; direct (RGBA) coloring.
 - Coloring library: orbit traps (point, line, circle, cross, spiral, astroid, heart, rectangle,
   image trap), triangle inequality average, curvature average, stripe average, exponential
@@ -266,23 +262,23 @@ GitHub release. The first public release is **1.0.0**, after all stages. Sizes a
   import `.map`, `.ugr`, `.ggr`, `.gpl`, `.cpt`, `.grd` (Photoshop, basic), `.flame` palettes;
   export `.ugr`/`.map`/`.ggr`.
 - Live palette rotation (color cycling) in the viewer.
-- **Exit**: multi-layer images in the style of the UF showcase can be built from built-ins only.
+- **Exit**: rich multi-layer images can be built from built-ins only.
 
-### Stage 3 – Formula language compatibility: Ultra Fractal and FractInt (XL)
+### Stage 3 – Formula language compatibility: UFM and FractInt (XL)
 
-- **3a – classic UF language**: all sections (`global`, `init`, `loop`, `bailout`, `final`,
+- **3a – classic UFM language**: all sections (`global`, `init`, `loop`, `bailout`, `final`,
   `transform`, `default`, `switch`), all types (bool, int, float, complex, color, hyper),
   `@fn` function params, all param kinds (enum, func, color, image, heading), `#`-symbols
   (`#pixel`, `#z`, `#numiter`, `#maxiter`, `#solid`, `#index`, `#color`, `#screenpixel`, …),
   built-in functions and color functions (`rgba`, `blend`, `compose`, `hsl`, …), user
   functions, `while`/`repeat`, static arrays. Target: the 328 import-free files.
-- **3b – UF5 classes**: `class`/`extends`/virtual methods, `import`, `new @param_class`,
+- **3b – UFM classes**: `class`/`extends`/virtual methods, `import`, `new @param_class`,
   dynamic arrays; own implementation of the `Standard.ulb` base classes (formula, coloring,
   transform, gradient, generator interfaces) from the public formula reference; `common.ulb`
   from the user's folder. GPU via monomorphization, CPU fallback where needed.
 - Cranelift JIT for the CPU path; WGSL emitter for everything the GPU supports; per-layer
   report of what forced the CPU path.
-- `.upr` import (UF parameter sets: formulas by `file:entry`, layers, gradients, mappings).
+- `.upr` import (UFM parameter sets: formulas by `file:entry`, layers, gradients, mappings).
 - Compatibility report: `rfr-cli formulas <folder>` compiles every entry, renders a thumbnail,
   prints counts and failure reasons (like RMandelbulb3D's `m3f` report). Run locally over
   `_dev`; CI uses a small set of self-written test formulas.
@@ -290,10 +286,10 @@ GitHub release. The first public release is **1.0.0**, after all stages. Sizes a
   most used built-in types (Mandel/Julia variants, lambda,
   magnet, popcorn, Newton/complex Newton, Barnsley, Halley, Phoenix, Frothy basin, Lyapunov,
   Volterra–Lotka, quaternion/hypercomplex slices, …), `.par` import, `.map` palettes.
-- Formula editor and formula browser in the app; the user points RFract to their UF formula
-  folder (auto-detect the default UF folder) and FractInt folders.
-- **Exit**: ≥ 90 % of the classic UF entries in `_dev` compile and render, measured by the
-  report; selected `.upr` files from the UF showcase render recognizably.
+- Formula editor and formula browser in the app; the user points RFract to their UFM formula
+  folders and FractInt folders.
+- **Exit**: ≥ 90 % of the classic UFM entries in `_dev` compile and render, measured by the
+  report; selected `.upr` files render recognizably.
 
 ### Stage 4 – Deep zoom (L)
 
@@ -315,7 +311,7 @@ GitHub release. The first public release is **1.0.0**, after all stages. Sizes a
   Metropolis–Hastings sampling for zooms; strange attractors (Clifford, de Jong, Hopalong,
   Gumowski–Mira, Ikeda, Tinkerbell, Pickover, Lorenz/Rössler projections); log-density tone
   mapping (from RWildFire).
-- Light IFS layer: affine maps plus a small variation set, shaded by depth/orbit like JUX;
+- Light IFS layer: affine maps plus a small variation set, shaded by depth/orbit;
   `.ifs` import. Heavy flame work stays in RWildFire (optional later: render an RWildFire
   `.flame` into a layer through `rwf-core` as a dependency).
 - Lyapunov (Markus–Lyapunov sequences), generic root finding (Newton, Halley, Householder,
@@ -329,7 +325,7 @@ GitHub release. The first public release is **1.0.0**, after all stages. Sizes a
 
 - Height field from any layer value (smooth iteration, DE, potential, luminance): normals,
   Blinn-Phong/GGX lighting, several colored lights, shadows marched over the height field,
-  ambient occlusion, environment reflections, bump and normal maps from textures (UF "slope"
+  ambient occlusion, environment reflections, bump and normal maps from textures ("slope"
   colorings, done properly).
 - 3D height view: the field as a terrain under a perspective camera (GPU height-field
   raymarching), optional path tracing → OIDN.
@@ -396,7 +392,7 @@ GitHub release. The first public release is **1.0.0**, after all stages. Sizes a
 | Language: parser/type checker unit tests, JIT vs closures on random points for every built-in | CI |
 | WGSL validation of every built-in formula/coloring/transform with naga | CI |
 | GPU vs CPU render comparison, df64 and perturbation accuracy vs f64/bignum | local (needs GPU) |
-| UF/FractInt compatibility report over `_dev` | local |
+| UFM/FractInt compatibility report over `_dev` | local |
 | Golden images for built-in presets (small size, tolerance) | CI (CPU renderer) |
 | Packaging smoke test: package job starts the CLI (`--version`, tiny CPU render) | release workflow |
 
@@ -413,12 +409,13 @@ GitHub release. The first public release is **1.0.0**, after all stages. Sizes a
   - Bundled: FractalPark published set (MIT).
   - Candidate: Gnofract 4D formulas (BSD, check each file header first).
   - Not bundled: fract4d/formulas `orgform/` (excluded from its MIT license, rights unclear),
-    UF formula database, FractInt files – user imports and local test corpora only.
-- UF formula files belong to their authors: not bundled; RFract imports them from the user's
+    UFM formula database, FractInt files – user imports and local test corpora only.
+- UFM formula files belong to their authors: not bundled; RFract imports them from the user's
   folder.
 - FractInt is copyrighted freeware: formats and algorithms are re-implemented, no code copied,
   no files bundled.
-- "Ultra Fractal", "FractInt" only in descriptive use ("Import Ultra Fractal formulas").
+- Commercial fractal programs are never named in the program, its documentation or its code;
+  file formats are named by their extensions (UFM: `.ufm`, `.ucl`, `.uxf`, `.ulb`, `.upr`).
 - OIDN (Apache-2.0) bundled per platform with its license; ffmpeg not bundled (detected at run
   time, path configurable).
 - Unsigned packages: macOS `.app` with ad-hoc signature (Gatekeeper note in INSTALL text),
@@ -428,9 +425,8 @@ GitHub release. The first public release is **1.0.0**, after all stages. Sizes a
 
 ## 9. Open decisions
 
-Decided: LGPL-3.0-or-later; repository `github.com/Ravetracer/RFract`.
+Decided: LGPL-3.0-or-later; repository `github.com/Ravetracer/RFract`; RFract's own formulas use
+the UFM syntax and the `.ufm` extension (no extension of its own).
 
-1. Own formula file extension for RFract's own built-ins (`.rff` proposed) vs. using `.ufm`
-   directly.
-2. Light IFS layer only, or a real `.flame` layer through `rwf-core`.
-3. Whether to extract a shared crate with the siblings now or after stage 2 (suggested: after).
+1. Light IFS layer only, or a real `.flame` layer through `rwf-core`.
+2. Whether to extract a shared crate with the siblings now or after stage 2 (suggested: after).

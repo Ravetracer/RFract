@@ -16,6 +16,6 @@ RFract is the third program of a family:
 
 - **RWildFire** – fractal flames (a Rust port of JWildfire).
 - **RMandelbulb3D** – 3D fractals (a Rust re-implementation of Mandelbulb3D).
-- **RFract** – 2D fractals with layers, in the spirit of Ultra Fractal and FractInt.
+- **RFract** – 2D fractals with layers.
 
 The three share their look, their way of working and the denoiser.

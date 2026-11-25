@@ -1,7 +1,7 @@
 # AGENT.md – working on RFract
 
-Notes for coding agents (and humans). RFract is a 2D fractal generator in Rust (layers in the
-spirit of Ultra Fractal, GPU rendering, denoiser, animation). The staged plan is `PLAN.md`;
+Notes for coding agents (and humans). RFract is a 2D fractal generator in Rust (layered fractals,
+GPU rendering, denoiser, animation). The staged plan is `PLAN.md`;
 next concrete steps are in `TODO.md`. Siblings with code to reuse: `../RWildFire` (flames) and
 `../MandelBulb/RMandelbulb3D` (3D); `PLAN.md` section 4 lists what comes from where.
 
@@ -47,7 +47,7 @@ next concrete steps are in `TODO.md`. Siblings with code to reuse: `../RWildFire
 | `docs/manual` | User manual: `NN-*.md` chapters, `images/`, `manual.css` |
 | `tools/` | `release.py`, `package.py`, `fetch_oidn.py`, `build_manual.py`, `make_icon.py`, `import_fractalpark.py` |
 | `packaging/` | Linux desktop entry and AppRun, macOS Info.plist, INSTALL texts, release footer |
-| `_dev/` | Reference only, gitignored: UF formula database, FractInt source, `fractalpark` checkout (FRM-like v1 spec), `fract4d-formulas` (orgform, rights unclear: never bundled) |
+| `_dev/` | Reference only, gitignored: UFM formula database, FractInt source, `fractalpark` checkout (FRM-like v1 spec), `fract4d-formulas` (orgform, rights unclear: never bundled) |
 
 ## Build and test
 
@@ -63,6 +63,10 @@ cargo fmt --all --check
 - CPU and GPU implement the same algorithm step by step; change both together; parity tests.
 - One formula source (language text in `formula/lib`), never written twice per back end.
 - Parameters and settings live in buffers: editing never recompiles shaders.
+- Never name commercial fractal programs anywhere in the repository, the program or its
+  documentation (code comments and commit messages included). Name file formats by their
+  extensions (UFM: `.ufm`, `.ucl`, `.uxf`, `.ulb`, `.upr`). Inspiration notes live only in the
+  gitignored `_dev/inspiration.md`.
 - FractInt code is read for algorithms only, never copied. Bundle only formula sets with a clear
   license (PLAN.md section 8); credit them in NOTICE, THIRD_PARTY_NOTICES.md and Help › About.
 

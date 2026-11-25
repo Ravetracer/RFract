@@ -1,0 +1,532 @@
+comment {
+  RFract built-in formulas (UFM syntax).
+
+  RFract extensions: #ismand is true in Mandelbrot mode (the parameter plane) and false in
+  Julia mode; #c is the pixel in Mandelbrot mode and the seed in Julia mode. Formulas that read
+  them get the Mandelbrot/Julia switch in the layer settings.
+
+  |z| is the squared magnitude, so a bailout of 1e8 means a radius of 1e4.
+}
+
+Mandelbrot {
+; z -> z^power + c with an integer power.
+init:
+  if #ismand
+    z = @start
+  else
+    z = #pixel
+  endif
+loop:
+  z = z^@power + #c
+bailout:
+  |z| <= @bailout
+default:
+  title = "Mandelbrot"
+  center = (-0.5, 0)
+  magn = 1
+  maxiter = 500
+  int param power
+    caption = "Power"
+    default = 2
+    min = 2
+    max = 16
+    hint = "Exponent of z. 2 is the classic set, higher powers give more bulbs around the center."
+  endparam
+  complex param start
+    caption = "Start value"
+    default = (0, 0)
+    hint = "Value of z before the first iteration (Mandelbrot mode only). Moving it away from 0 distorts the set."
+  endparam
+  float param bailout
+    caption = "Bailout"
+    default = 1e8
+    min = 4
+    hint = "Escape threshold of |z|² (squared magnitude). Large values give smoother colors."
+  endparam
+}
+
+Multibrot {
+; z -> z^power + c with a real power.
+init:
+  if #ismand
+    z = 0
+  else
+    z = #pixel
+  endif
+loop:
+  z = z^@power + #c
+bailout:
+  |z| <= @bailout
+default:
+  title = "Multibrot (real power)"
+  center = (0, 0)
+  magn = 0.8
+  maxiter = 300
+  float param power
+    caption = "Power"
+    default = 2.5
+    min = -8
+    max = 16
+    hint = "Exponent of z; non-integer powers cut the set along the negative real axis."
+  endparam
+  float param bailout
+    caption = "Bailout"
+    default = 1e8
+    min = 4
+    hint = "Escape threshold of |z|² (squared magnitude)."
+  endparam
+}
+
+BurningShip {
+; Absolute values of both parts before squaring. The plane is mirrored (conjugated) so the
+; ship stands upright with the imaginary axis pointing up.
+init:
+  if #ismand
+    z = 0
+  else
+    z = conj(#pixel)
+  endif
+loop:
+  z = sqr(abs(z)) + conj(#c)
+bailout:
+  |z| <= @bailout
+default:
+  title = "Burning Ship"
+  center = (-0.4, 0.5)
+  magn = 0.8
+  maxiter = 500
+  float param bailout
+    caption = "Bailout"
+    default = 1e8
+    min = 4
+    hint = "Escape threshold of |z|² (squared magnitude)."
+  endparam
+}
+
+Tricorn {
+; Also called Mandelbar: the conjugate of z is raised to the power.
+init:
+  if #ismand
+    z = 0
+  else
+    z = #pixel
+  endif
+loop:
+  z = conj(z)^@power + #c
+bailout:
+  |z| <= @bailout
+default:
+  title = "Tricorn (Mandelbar)"
+  center = (-0.3, 0)
+  magn = 0.9
+  maxiter = 500
+  int param power
+    caption = "Power"
+    default = 2
+    min = 2
+    max = 16
+    hint = "Exponent of the conjugate."
+  endparam
+  float param bailout
+    caption = "Bailout"
+    default = 1e8
+    min = 4
+    hint = "Escape threshold of |z|² (squared magnitude)."
+  endparam
+}
+
+Celtic {
+; z² with the absolute value of its real part.
+init:
+  if #ismand
+    z = 0
+  else
+    z = #pixel
+  endif
+loop:
+  w = sqr(z)
+  z = (abs(real(w)), imag(w)) + #c
+bailout:
+  |z| <= @bailout
+default:
+  title = "Celtic"
+  center = (-0.5, 0)
+  magn = 0.9
+  maxiter = 500
+  float param bailout
+    caption = "Bailout"
+    default = 1e8
+    min = 4
+    hint = "Escape threshold of |z|² (squared magnitude)."
+  endparam
+}
+
+Buffalo {
+; Absolute values of both parts of z².
+init:
+  if #ismand
+    z = 0
+  else
+    z = #pixel
+  endif
+loop:
+  z = abs(sqr(z)) - abs(z) * @damping + #c
+bailout:
+  |z| <= @bailout
+default:
+  title = "Buffalo"
+  center = (-0.5, -0.4)
+  magn = 0.8
+  maxiter = 500
+  float param damping
+    caption = "Damping"
+    default = 1
+    min = 0
+    max = 2
+    hint = "How much of |z| is subtracted each iteration (1: the classic Buffalo, 0: plain absolute square)."
+  endparam
+  float param bailout
+    caption = "Bailout"
+    default = 1e8
+    min = 4
+    hint = "Escape threshold of |z|² (squared magnitude)."
+  endparam
+}
+
+Perpendicular {
+; Perpendicular Mandelbrot: the absolute real part enters the imaginary part.
+init:
+  if #ismand
+    z = 0
+  else
+    z = #pixel
+  endif
+loop:
+  x = real(z)
+  y = imag(z)
+  z = (x*x - y*y, -2 * abs(x) * y) + #c
+bailout:
+  |z| <= @bailout
+default:
+  title = "Perpendicular Mandelbrot"
+  center = (-0.5, 0)
+  magn = 0.9
+  maxiter = 500
+  float param bailout
+    caption = "Bailout"
+    default = 1e8
+    min = 4
+    hint = "Escape threshold of |z|² (squared magnitude)."
+  endparam
+}
+
+Phoenix {
+; z -> z² + Re(c) + Im(c) · previous z.
+init:
+  y = (0, 0)
+  if #ismand
+    z = 0
+  else
+    z = #pixel
+  endif
+loop:
+  t = z
+  z = sqr(z) + real(#c) + imag(#c) * y
+  y = t
+bailout:
+  |z| <= @bailout
+default:
+  title = "Phoenix"
+  center = (0, 0)
+  magn = 0.8
+  maxiter = 500
+  float param bailout
+    caption = "Bailout"
+    default = 1e8
+    min = 4
+    hint = "Escape threshold of |z|² (squared magnitude)."
+  endparam
+}
+
+Lambda {
+; The logistic map z -> c z (1 - z).
+init:
+  if #ismand
+    z = 0.5
+  else
+    z = #pixel
+  endif
+loop:
+  z = #c * z * (1 - z)
+bailout:
+  |z| <= @bailout
+default:
+  title = "Lambda (logistic)"
+  center = (1, 0)
+  magn = 0.5
+  maxiter = 500
+  float param bailout
+    caption = "Bailout"
+    default = 1e8
+    min = 4
+    hint = "Escape threshold of |z|² (squared magnitude)."
+  endparam
+}
+
+Magnet1 {
+; Magnet type I: escapes to infinity or converges to 1.
+init:
+  if #ismand
+    z = 0
+  else
+    z = #pixel
+  endif
+loop:
+  z = sqr((sqr(z) + #c - 1) / (2*z + #c - 2))
+bailout:
+  |z| <= @bailout && |z - 1| > @epsilon
+default:
+  title = "Magnet I"
+  center = (1.4, 0)
+  magn = 0.5
+  maxiter = 500
+  float param bailout
+    caption = "Bailout"
+    default = 1e4
+    min = 4
+    hint = "Escape threshold of |z|² (squared magnitude)."
+  endparam
+  float param epsilon
+    caption = "Convergence"
+    default = 1e-10
+    min = 0
+    hint = "The orbit stops once |z - 1|² falls below this value (it found the fixed point 1)."
+  endparam
+}
+
+Magnet2 {
+; Magnet type II.
+init:
+  if #ismand
+    z = 0
+  else
+    z = #pixel
+  endif
+loop:
+  c1 = #c - 1
+  c2 = #c - 2
+  z = sqr((z*z*z + 3*c1*z + c1*c2) / (3*sqr(z) + 3*c2*z + c1*c2 + 1))
+bailout:
+  |z| <= @bailout && |z - 1| > @epsilon
+default:
+  title = "Magnet II"
+  center = (1, 0)
+  magn = 0.5
+  maxiter = 500
+  float param bailout
+    caption = "Bailout"
+    default = 1e4
+    min = 4
+    hint = "Escape threshold of |z|² (squared magnitude)."
+  endparam
+  float param epsilon
+    caption = "Convergence"
+    default = 1e-10
+    min = 0
+    hint = "The orbit stops once |z - 1|² falls below this value."
+  endparam
+}
+
+Newton {
+; Newton's method for z^power = 1: every point flows to one of the roots.
+init:
+  z = #pixel
+loop:
+  z = z - @relax * (z^@power - 1) / (@power * z^(@power - 1))
+bailout:
+  |z - #zprev| > @epsilon
+default:
+  title = "Newton"
+  center = (0, 0)
+  magn = 0.7
+  maxiter = 200
+  int param power
+    caption = "Power"
+    default = 3
+    min = 2
+    max = 12
+    hint = "Degree of the polynomial z^n - 1: the number of roots."
+  endparam
+  complex param relax
+    caption = "Relaxation"
+    default = (1, 0)
+    hint = "Step factor. 1 is Newton's method; other values twist and enlarge the basins."
+  endparam
+  float param epsilon
+    caption = "Convergence"
+    default = 1e-12
+    min = 0
+    hint = "The orbit stops once a step |Δz|² is smaller than this value."
+  endparam
+}
+
+Nova {
+; Relaxed Newton for z^power - 1 plus c.
+init:
+  if #ismand
+    z = 1
+  else
+    z = #pixel
+  endif
+loop:
+  z = z - @relax * (z^@power - 1) / (@power * z^(@power - 1)) + #c
+bailout:
+  |z - #zprev| > @epsilon
+default:
+  title = "Nova"
+  center = (-0.4, 0)
+  magn = 0.8
+  maxiter = 200
+  int param power
+    caption = "Power"
+    default = 3
+    min = 2
+    max = 12
+    hint = "Degree of the polynomial."
+  endparam
+  complex param relax
+    caption = "Relaxation"
+    default = (1, 0)
+    hint = "Step factor of the Newton step."
+  endparam
+  float param epsilon
+    caption = "Convergence"
+    default = 1e-12
+    min = 0
+    hint = "The orbit stops once a step |Δz|² is smaller than this value."
+  endparam
+}
+
+Spider {
+; The constant follows the orbit: c -> c/2 + z.
+init:
+  k = #c
+  z = #pixel
+loop:
+  z = sqr(z) + k
+  k = k * 0.5 + z
+bailout:
+  |z| <= @bailout
+default:
+  title = "Spider"
+  center = (-0.4, 0)
+  magn = 0.8
+  maxiter = 500
+  float param bailout
+    caption = "Bailout"
+    default = 1e8
+    min = 4
+    hint = "Escape threshold of |z|² (squared magnitude)."
+  endparam
+}
+
+Manowar {
+; z -> z² + previous z + c.
+init:
+  z = #pixel
+  y = z
+loop:
+  t = z
+  z = sqr(z) + y + #c
+  y = t
+bailout:
+  |z| <= @bailout
+default:
+  title = "Manowar"
+  center = (-0.3, 0)
+  magn = 1.2
+  maxiter = 500
+  float param bailout
+    caption = "Bailout"
+    default = 1e8
+    min = 4
+    hint = "Escape threshold of |z|² (squared magnitude)."
+  endparam
+}
+
+Barnsley1 {
+; z -> (z ∓ 1) c, the sign chosen by the real part of z.
+init:
+  z = #pixel
+loop:
+  if real(z) >= 0
+    z = (z - 1) * #c
+  else
+    z = (z + 1) * #c
+  endif
+bailout:
+  |z| <= @bailout
+default:
+  title = "Barnsley 1"
+  center = (0, 0)
+  magn = 0.6
+  maxiter = 300
+  float param bailout
+    caption = "Bailout"
+    default = 1e8
+    min = 4
+    hint = "Escape threshold of |z|² (squared magnitude)."
+  endparam
+}
+
+Barnsley2 {
+; Like Barnsley 1, the sign chosen by Re(z) Im(c) + Re(c) Im(z).
+init:
+  z = #pixel
+loop:
+  if real(z) * imag(#c) + real(#c) * imag(z) >= 0
+    z = (z - 1) * #c
+  else
+    z = (z + 1) * #c
+  endif
+bailout:
+  |z| <= @bailout
+default:
+  title = "Barnsley 2"
+  center = (0, 0)
+  magn = 0.6
+  maxiter = 300
+  float param bailout
+    caption = "Bailout"
+    default = 1e8
+    min = 4
+    hint = "Escape threshold of |z|² (squared magnitude)."
+  endparam
+}
+
+Barnsley3 {
+; z² - 1, plus Re(z) c for points left of the imaginary axis.
+init:
+  z = #pixel
+loop:
+  x = real(z)
+  y = imag(z)
+  if x > 0
+    z = (x*x - y*y - 1, 2*x*y)
+  else
+    z = (x*x - y*y - 1 + real(#c)*x, 2*x*y + imag(#c)*x)
+  endif
+bailout:
+  |z| <= @bailout
+default:
+  title = "Barnsley 3"
+  center = (0, 0)
+  magn = 0.6
+  maxiter = 300
+  float param bailout
+    caption = "Bailout"
+    default = 1e8
+    min = 4
+    hint = "Escape threshold of |z|² (squared magnitude)."
+  endparam
+}

@@ -13,6 +13,6 @@ RFract bundles the published formula library of FractalPark
 Image Denoise (Apache License 2.0) and oneTBB (Apache
 License 2.0); their license files are in the folder oidn-license of each package.
 
-Ultra Fractal and FractInt are named only to describe file formats RFract reads. No formula
-files of either program are part of RFract. See THIRD_PARTY_NOTICES.md for all bundled
+FractInt is named only to describe file formats RFract reads; no FractInt files are part of
+RFract. See THIRD_PARTY_NOTICES.md for all bundled
 third-party material and its license texts.

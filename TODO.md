@@ -7,9 +7,9 @@ that come up along the way.
 
 - [ ] `.rfr` document model (layer-shaped, one layer used), serde JSON, version field
 - [ ] Complex math helpers, view transform (center as decimal strings, log2 zoom, rotation)
-- [ ] Minimal formula language: lexer, parser, type checker (UF syntax subset)
+- [ ] Minimal formula language: lexer, parser, type checker (UFM syntax subset)
 - [ ] CPU closures back end, WGSL emitter
-- [ ] Built-in formulas in `formula/lib/*.rff`
+- [ ] Built-in formulas in `formula/lib/*.ufm`
 - [ ] FRM-like v1 front end (spec: `_dev/fractalpark/docs/specs/frm-like-language-v1.md`); embed
       `crates/rfr-core/formulas/fractalpark` and compile all 534 for CPU and GPU
 - [ ] Formula list in the layer panel; default views from `index.json` as presets
