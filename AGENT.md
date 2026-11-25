@@ -37,14 +37,14 @@ next concrete steps are in `TODO.md`. Siblings with code to reuse: `../RWildFire
 
 | Path | Content |
 |------|---------|
-| `crates/rfr-core` | `paths.rs` (settings/cache folders), `render/oidn.rs` (runtime-loaded OIDN). Stage 1 adds the document model, formula language, CPU renderer. |
+| `crates/rfr-core` | `formulas/fractalpark` (bundled FractalPark library, MIT; `tools/import_fractalpark.py`), `paths.rs` (settings/cache folders), `render/oidn.rs` (runtime-loaded OIDN). Stage 1 adds the document model, formula language, CPU renderer. |
 | `crates/rfr-gpu` | `GpuContext::required_limits`, `detect_adapter`. Stage 1 adds the renderer. |
 | `crates/rfr-app` | egui app: `app.rs` (layout, menus, status bar, preferences window), `help.rs`, `manual.rs` (embedded manual, from `build.rs`), `theme.rs`, `widgets.rs`, `icons.rs`, `prefs.rs` |
 | `crates/rfr-cli` | Command line (`info`, `--version`) |
 | `docs/manual` | User manual: `NN-*.md` chapters, `images/`, `manual.css` |
-| `tools/` | `release.py`, `package.py`, `fetch_oidn.py`, `build_manual.py`, `make_icon.py` |
+| `tools/` | `release.py`, `package.py`, `fetch_oidn.py`, `build_manual.py`, `make_icon.py`, `import_fractalpark.py` |
 | `packaging/` | Linux desktop entry and AppRun, macOS Info.plist, INSTALL texts, release footer |
-| `_dev/` | Ultra Fractal formula database and FractInt source: reference only, gitignored, never committed or bundled |
+| `_dev/` | Reference only, gitignored: UF formula database, FractInt source, `fractalpark` checkout (FRM-like v1 spec), `fract4d-formulas` (orgform, rights unclear: never bundled) |
 
 ## Build and test
 
@@ -60,7 +60,8 @@ cargo fmt --all --check
 - CPU and GPU implement the same algorithm step by step; change both together; parity tests.
 - One formula source (language text in `formula/lib`), never written twice per back end.
 - Parameters and settings live in buffers: editing never recompiles shaders.
-- FractInt code is read for algorithms only, never copied; UF formula files are never bundled.
+- FractInt code is read for algorithms only, never copied. Bundle only formula sets with a clear
+  license (PLAN.md section 8); credit them in NOTICE, THIRD_PARTY_NOTICES.md and Help › About.
 
 ## User manual
 

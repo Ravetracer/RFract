@@ -28,7 +28,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 PKG = ROOT / "packaging"
-DOCS = ["README.md", "CHANGELOG.md", "LICENSE", "COPYING", "NOTICE"]
+DOCS = ["README.md", "CHANGELOG.md", "LICENSE", "COPYING", "NOTICE", "THIRD_PARTY_NOTICES.md"]
 
 
 def version() -> str:

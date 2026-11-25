@@ -44,6 +44,10 @@ Status: stage 0 (foundation and distribution) done; stage 1 next.
 |--------|-----|
 | `_dev/Ultra Fractal - Formulas` | Public UF formula database: ~1140 coloring, ~480 transformation and several thousand fractal entries in 379 files; 328 files use no class imports (UF4 style). `common.ulb` is present; UF's built-in `Standard.ulb` is not public and must be re-created. Test corpus for the language compiler, never committed. |
 | `_dev/frasrc-20.04p14` | FractInt 20.4 source ("copyrighted freeware"): reference for built-in fractal types, `.frm`/`.par`/`.map`/`.ifs`/`.l` formats, guessing/boundary tracing. Read for algorithms, do not copy code. Never committed. |
+| `crates/rfr-core/formulas/fractalpark` | **Bundled.** FractalPark's published formula library (534 Definitions in FRM-like v1, MIT, after FractalPark's own rights review: 339 independent rewrites, 106 adaptations, 89 own). Names, families, parameters and a default view per formula in `index.json`. Updated by `tools/import_fractalpark.py`; never copy its unpublished candidate folders or held GPL rows. |
+| `_dev/fractalpark` | FractalPark checkout: the FRM-like v1 spec (`docs/specs/frm-like-language-v1.md`, `docs/manuals/frm-like-v1.md`), stdlib semantics and its renderer as a behavior reference. |
+| `_dev/fract4d-formulas` | fract4d/formulas: the repository is MIT, but every formula file is in `orgform/`, which its README excludes from the MIT license (FractInt collection ORGFORM.ZIP, copyright unclear). **Not bundled**: test corpus for the FractInt front end, user import only. |
+| Gnofract 4D `formulas/` (github.com/fract4d/gnofract4d) | Program is BSD-licensed since 2.0 (GPL before). `gf4d.frm`, `gf4d.cfrm`, `gf4d.uxf`, `standard.ucl`, `fractint-builtin.frm` (FractInt built-in types written as formulas) are bundling candidates after a per-file header check. |
 | ultrafractal.com features / formula reference | Language semantics, layer model, merge modes, gradient model, coloring concepts. |
 | Xenodream / JUX | Shaded IFS, depth lighting, texture ideas. |
 | Chaotica, Fractorium, Apophysis | Density rendering, tone mapping (already covered by RWildFire). |
@@ -97,7 +101,9 @@ Document
 ### 3.3 Formula language and compilers
 
 - One AST for all sources. Front ends: RFract's own syntax (= the Ultra Fractal language, so
-  UF formulas are native, not "converted"), FractInt `.frm` (small, maps onto the same AST).
+  UF formulas are native, not "converted"), FractInt `.frm` (small, maps onto the same AST),
+  FractalPark FRM-like v1 (`frm-like/1`: typed, normative spec, the bundled library), and the
+  Gnofract 4D dialect (`.frm`/`.cfrm`/`.uxf`, close to UF) for user imports.
 - Back ends, as in RMandelbulb3D: CPU closures, Cranelift JIT over the same register file
   (bit-identical helper calls for transcendentals), WGSL emitter (f32, df64, perturbation
   variant).
@@ -233,8 +239,12 @@ CHANGELOG entry. Sizes are relative (S < M < L < XL).
   parity test.
 - Viewer navigation (pan, zoom, box zoom, rotate, history), Julia picker, undo/redo,
   save/load, PNG export with embedded document, `rfr-cli render`.
+- FractalPark FRM-like v1 front end: the 534 bundled Definitions become the formula library
+  of stage 1 (their default views give presets and browser thumbnails). They are a typed,
+  specified, normalized corpus – the best test bed for the compiler and the CPU/GPU parity
+  test from day one. Simple formula list in the layer panel (search by name and family).
 - **Exit**: smooth 1080p exploration of Mandelbrot/Julia families down to 1e-13, parity test
-  green.
+  green, all 534 bundled FractalPark formulas compile for CPU and GPU (report of exceptions).
 
 ### Stage 2 – Layers, coloring, transformations, gradients (L)
 
@@ -274,7 +284,8 @@ CHANGELOG entry. Sizes are relative (S < M < L < XL).
 - Compatibility report: `rfr-cli formulas <folder>` compiles every entry, renders a thumbnail,
   prints counts and failure reasons (like RMandelbulb3D's `m3f` report). Run locally over
   `_dev`; CI uses a small set of self-written test formulas.
-- FractInt: `.frm` front end, the most used built-in types (Mandel/Julia variants, lambda,
+- FractInt: `.frm` front end (tested against `_dev/fract4d-formulas/orgform`, 321 files), the
+  most used built-in types (Mandel/Julia variants, lambda,
   magnet, popcorn, Newton/complex Newton, Barnsley, Halley, Phoenix, Frothy basin, Lyapunov,
   Volterra–Lotka, quaternion/hypercomplex slices, …), `.par` import, `.map` palettes.
 - Formula editor and formula browser in the app; the user points RFract to their UF formula
@@ -393,8 +404,16 @@ CHANGELOG entry. Sizes are relative (S < M < L < XL).
 
 - RFract license: **LGPL-3.0-or-later** (compatible with code copied from RWildFire,
   LGPL-3.0+, and RMandelbulb3D, LGPL-2.1+ which may be used under 3.0).
+- Bundling policy: only formula sets with a clear license, kept in their own folder with the
+  license text and a SOURCE.md (repository, commit, counts), credited in NOTICE,
+  THIRD_PARTY_NOTICES.md (shipped in every package) and Help › About. Every formula keeps its
+  origin (set, source revision) in the library so the browser can show it.
+  - Bundled: FractalPark published set (MIT).
+  - Candidate: Gnofract 4D formulas (BSD, check each file header first).
+  - Not bundled: fract4d/formulas `orgform/` (excluded from its MIT license, rights unclear),
+    UF formula database, FractInt files – user imports and local test corpora only.
 - UF formula files belong to their authors: not bundled; RFract imports them from the user's
-  folder. Built-in formulas are RFract's own implementations.
+  folder.
 - FractInt is copyrighted freeware: formats and algorithms are re-implemented, no code copied,
   no files bundled.
 - "Ultra Fractal", "FractInt" only in descriptive use ("Import Ultra Fractal formulas").
@@ -409,6 +428,7 @@ CHANGELOG entry. Sizes are relative (S < M < L < XL).
 
 Decided: LGPL-3.0-or-later; repository `github.com/Ravetracer/RFract`.
 
-1. Own formula file extension for built-ins (`.rff` proposed) vs. using `.ufm` directly.
+1. Own formula file extension for RFract's own built-ins (`.rff` proposed) vs. using `.ufm`
+   directly.
 2. Light IFS layer only, or a real `.flame` layer through `rwf-core`.
 3. Whether to extract a shared crate with the siblings now or after stage 2 (suggested: after).

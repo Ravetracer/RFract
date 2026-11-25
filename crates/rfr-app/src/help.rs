@@ -67,5 +67,14 @@ fn about(ui: &mut egui::Ui) {
     ui.label("A 2D fractal generator in Rust: layered fractals, GPU rendering, denoising and animation.");
     ui.label("GPU rendering with wgpu; user interface with egui; denoising with Intel Open Image Denoise.");
     ui.label("License: GNU LGPL 3.0 or later.");
+    ui.add_space(8.0);
+    ui.label(RichText::new("Bundled material").strong());
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Built-in formulas from");
+        ui.hyperlink_to("FractalPark", "https://github.com/noodle-bag/fractalpark");
+        ui.label("(MIT license).");
+    });
+    ui.label("Intel Open Image Denoise and oneTBB (Apache License 2.0).");
+    ui.label(RichText::new("License texts: THIRD_PARTY_NOTICES.md in the program folder.").color(theme::TEXT_MUTED));
     ui.hyperlink_to("Source code and releases", "https://github.com/Ravetracer/RFract");
 }
