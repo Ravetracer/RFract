@@ -30,6 +30,10 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
   default VGA palette otherwise), `type=formula` from the formula folders. rfr-cli
   `params --check` covers .par files too.
 - UFM functions `isNaN` and `isInf`.
+- Formula editor: *Source* shows a formula's entry, checks it while typing and saves it back
+  into its file (the view follows); built-in formulas can be copied into the formula folder;
+  **+** above the formula list creates new formulas from templates.
+- The inspector shows why a formula does not compile.
 - Color parameters in the inspector (color picker).
 
 ### Changed

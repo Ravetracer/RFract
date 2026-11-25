@@ -18,6 +18,8 @@ pub struct Browser {
     search: String,
     /// User formulas grouped by file: (library generation, search) → (file, entry ids).
     user_groups: Option<((u64, String), FileGroups)>,
+    /// A new formula of this kind was asked for (the app creates and opens it).
+    pub new_formula: Option<rfr_core::formula::ProgramKind>,
 }
 
 fn matches(e: &Entry, q: &str) -> bool {
@@ -46,6 +48,27 @@ impl Browser {
         ui.horizontal(|ui| {
             ui.label(RichText::new(icons::FUNCTION).color(theme::ACCENT).size(theme::fs(15.0)));
             ui.label(RichText::new("Formulas").strong());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.menu_button(icons::PLUS, |ui| {
+                    use rfr_core::formula::ProgramKind;
+                    for (label, kind) in [
+                        ("Fractal formula", ProgramKind::Fractal),
+                        ("Coloring formula", ProgramKind::Coloring),
+                        ("Transformation", ProgramKind::Transform),
+                    ] {
+                        if ui
+                            .button(label)
+                            .on_hover_text("Create a new formula of this kind in your first formula folder and open it in the editor")
+                            .clicked()
+                        {
+                            self.new_formula = Some(kind);
+                            ui.close();
+                        }
+                    }
+                })
+                .response
+                .on_hover_text("New formula (in your first formula folder)");
+            });
         });
         ui.add(
             egui::TextEdit::singleline(&mut self.search).hint_text(format!("{}  Search name or family", icons::SEARCH)).desired_width(f32::INFINITY),

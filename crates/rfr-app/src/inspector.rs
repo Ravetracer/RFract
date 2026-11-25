@@ -27,6 +27,8 @@ pub enum Action {
     EditGradient(bool),
     /// Select this item in the layer tree.
     Select(Selection),
+    /// Open the formula editor on this library entry.
+    EditFormula(String),
 }
 
 /// Function names offered for function parameters.
@@ -164,7 +166,7 @@ fn by_file<'a>(entries: impl Iterator<Item = &'a Entry>) -> Vec<(String, Vec<&'a
 }
 
 /// The coloring formula picker and its parameters (Formula method).
-fn coloring_formula(ui: &mut Ui, id: &str, c: &mut Coloring) {
+fn coloring_formula(ui: &mut Ui, id: &str, c: &mut Coloring, actions: &mut Vec<Action>) {
     let current = library().get(&c.formula).map(|e| e.title.clone()).unwrap_or_else(|| c.formula.clone());
     widgets::grid(ui, &format!("{id}-formula"), |ui| {
         widgets::label(ui, "Algorithm", "The coloring formula; it runs along every orbit and picks the gradient position");
@@ -193,6 +195,16 @@ fn coloring_formula(ui: &mut Ui, id: &str, c: &mut Coloring) {
         });
         ui.end_row();
     });
+    if let Some(e) = library().get(&c.formula) {
+        ui.horizontal(|ui| {
+            if ui.small_button("Source").on_hover_text("Show the coloring formula's source (and edit user formulas)").clicked() {
+                actions.push(Action::EditFormula(e.id.clone()));
+            }
+            if let Err(err) = e.program() {
+                ui.label(RichText::new(format!("Does not compile: {err}")).color(theme::WARN));
+            }
+        });
+    }
     if let Some(p) = library().get(&c.formula).and_then(|e| e.program().ok()) {
         params_ui(ui, &format!("{id}-coloring"), &p, &mut c.params);
     }
@@ -328,9 +340,25 @@ fn fractal_sections(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
     if sec.open {
         match entry {
             Some(e) => {
-                ui.label(RichText::new(&e.title).strong().size(theme::fs(14.5)));
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(&e.title).strong().size(theme::fs(14.5)));
+                    if ui
+                        .small_button("Source")
+                        .on_hover_text(if e.set == Set::User {
+                            "Show and edit the formula's source"
+                        } else {
+                            "Show the formula's source (built-in formulas can be copied to change them)"
+                        })
+                        .clicked()
+                    {
+                        actions.push(Action::EditFormula(e.id.clone()));
+                    }
+                });
                 ui.label(RichText::new(format!("{} · {}", e.set.label(), e.family)).size(theme::fs(11.0)).color(theme::TEXT_MUTED))
                     .on_hover_text(&e.id);
+                if let Err(err) = e.program() {
+                    ui.label(RichText::new(format!("Does not compile: {err}")).color(theme::WARN));
+                }
             }
             None => {
                 ui.label(RichText::new(format!("Unknown formula '{}'", l.formula)).color(theme::WARN));
@@ -402,7 +430,7 @@ fn fractal_sections(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
             ],
         );
         if l.outside_method == OutsideMethod::Formula {
-            coloring_formula(ui, "outside", &mut l.outside);
+            coloring_formula(ui, "outside", &mut l.outside, actions);
         }
         widgets::grid(ui, "outside-grid", |ui| {
             if l.outside_method == OutsideMethod::Solid {
@@ -433,7 +461,7 @@ fn fractal_sections(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
             ],
         );
         if l.inside_method == InsideMethod::Formula {
-            coloring_formula(ui, "inside", &mut l.inside);
+            coloring_formula(ui, "inside", &mut l.inside, actions);
         }
         widgets::grid(ui, "inside-grid", |ui| {
             if l.inside_method == InsideMethod::Solid {

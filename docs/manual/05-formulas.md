@@ -66,6 +66,20 @@ afterwards. Documents store user formulas as `user:<file path in the folder>:<en
 a document opens on another computer as long as the same file lies in one of its formula
 folders.
 
+### Formula editor
+
+*Source* next to a formula's name (and below the coloring picker) opens the formula editor.
+It shows the formula's entry and checks it while you type: the line above the text says
+whether it compiles or names the line and the problem. **Save** (or Ctrl+S in the editor)
+writes the entry back into its file and the view shows the change; **Revert** goes back to the
+saved text.
+
+Built-in formulas open read-only. *Copy to my formulas* copies one into `my-formulas.ufm`
+(`.ucl`, `.uxf`) in your first formula folder, where you can change it; a copied fractal
+formula replaces the original on the selected layer. The **+** button above the formula list
+creates a new fractal formula, coloring or transformation from a small template in the same
+file and opens it.
+
 The command line checks formula files and reports what does not compile yet:
 
 ```

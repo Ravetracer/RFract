@@ -70,6 +70,7 @@ pub struct App {
     upr: Option<UprPicker>,
     /// A parameter file to open once the formula folders are indexed.
     pending_upr: Option<PathBuf>,
+    editor: crate::editor::Editor,
     /// Notes of the last import (what did not carry over), shown in a window.
     import_notes: Option<(String, Vec<String>)>,
     status: Option<(String, Instant, bool)>,
@@ -129,6 +130,7 @@ impl App {
             scan_rx: None,
             upr: None,
             pending_upr: None,
+            editor: Default::default(),
             import_notes: None,
             status: None,
         };
@@ -222,6 +224,57 @@ impl App {
         } else {
             self.warn(format!("Imported {name}: {} thing(s) did not carry over exactly (see the notes window)", im.notes.len()));
             self.import_notes = Some((name.to_string(), im.notes));
+        }
+    }
+
+    /// The formula editor and the requests for new formulas from the browser.
+    fn editor_window(&mut self, ctx: &egui::Context) {
+        if let Some(kind) = self.browser.new_formula.take() {
+            match rfr_core::formula::library::user_folders().first() {
+                None => self.warn("Add a formula folder in File › Preferences first; new formulas go there"),
+                Some(folder) => match self.editor.new_formula(folder, kind) {
+                    Ok(id) => {
+                        if let Some(e) = rfr_core::formula::library::library().get(&id)
+                            && let Err(err) = self.editor.open_entry(e)
+                        {
+                            self.warn(err);
+                        }
+                        // A new fractal formula goes onto the selected layer right away.
+                        if kind == rfr_core::formula::ProgramKind::Fractal
+                            && let Ok(d) = crate::browser::with_formula(&self.doc.doc, &self.selection, &id)
+                        {
+                            self.doc.replace(d);
+                        }
+                        self.notify(format!("New formula {id}"));
+                    }
+                    Err(e) => self.warn(e),
+                },
+            }
+        }
+        match self.editor.show(ctx) {
+            Some(crate::editor::EditorAction::Message(m)) => self.notify(m),
+            Some(crate::editor::EditorAction::Warn(m)) => self.warn(m),
+            Some(crate::editor::EditorAction::Use(id)) => {
+                let lib = rfr_core::formula::library::library();
+                if let Some(e) = lib.get(&id) {
+                    let kind = e.kind;
+                    if let Err(err) = self.editor.open_entry(e) {
+                        self.warn(err);
+                    }
+                    if kind == rfr_core::formula::ProgramKind::Fractal {
+                        match crate::browser::with_formula(&self.doc.doc, &self.selection, &id) {
+                            Ok(d) => {
+                                self.doc.replace(d);
+                                self.notify(format!("Copied to {id}; the layer uses the copy"));
+                            }
+                            Err(err) => self.warn(err),
+                        }
+                    } else {
+                        self.notify(format!("Copied to {id}; pick it in the coloring or transformation list"));
+                    }
+                }
+            }
+            None => {}
         }
     }
 
@@ -916,6 +969,14 @@ impl eframe::App for App {
                     }
                 }
                 InspectorAction::EditGradient(inside) => self.gradient_window = Some(inside),
+                InspectorAction::EditFormula(id) => {
+                    let lib = rfr_core::formula::library::library();
+                    match lib.get(&id).map(|e| self.editor.open_entry(e)) {
+                        Some(Ok(())) => {}
+                        Some(Err(e)) => self.warn(e),
+                        None => self.warn(format!("Unknown formula '{id}'")),
+                    }
+                }
                 InspectorAction::Select(s) => self.selection = s,
             }
         }
@@ -954,6 +1015,7 @@ impl eframe::App for App {
         self.help.show(&ctx);
         self.prefs_window(&ctx);
         self.upr_window(&ctx);
+        self.editor_window(&ctx);
         self.pending_dialog(&ctx);
 
         // One undo step per gesture.

@@ -8,6 +8,7 @@
 mod app;
 mod browser;
 mod doc;
+mod editor;
 mod export;
 mod help;
 mod icons;

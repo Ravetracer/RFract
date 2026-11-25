@@ -278,67 +278,103 @@ pub fn scan_folders(folders: &[PathBuf]) -> Vec<Arc<Entry>> {
         let mut files = Vec::new();
         formula_files(root, &mut files);
         for f in files {
-            let rel: String =
-                f.strip_prefix(root).unwrap_or(&f).components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join("/");
-            let Some(text) = read_text(&f) else { continue };
-            let ext = f.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
-            let kind = match ext.as_str() {
-                "ucl" => ProgramKind::Coloring,
-                "uxf" => ProgramKind::Transform,
-                _ => ProgramKind::Fractal,
-            };
-            let family = rel.clone();
-            if text.contains("@language: frm-like/1") {
-                let id = format!("user:{rel}");
-                if seen.insert(id.clone()) {
-                    let title = f.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| rel.clone());
-                    out.push(Arc::new(Entry {
-                        id,
-                        title,
-                        family,
-                        set: Set::User,
-                        kind,
-                        dialect: Dialect::Frm,
-                        entry: String::new(),
-                        view: DefaultView::default(),
-                        origin: Origin::File(f.clone()),
-                        program: OnceLock::new(),
-                    }));
-                }
-                continue;
-            }
-            let pre = super::parse::preprocess(&text);
-            for e in super::parse::split_entries(&pre) {
-                let id = format!("user:{rel}:{}", e.name);
-                if !seen.insert(id.clone()) {
-                    continue;
-                }
-                let ast = super::parse::parse_ufm_entry(&e);
-                let (title, view) = match &ast {
-                    Ok(a) => (a.title.clone().unwrap_or_else(|| e.name.clone()), view_of(a)),
-                    Err(_) => (e.name.clone(), DefaultView::default()),
-                };
-                let entry = Entry {
-                    id,
-                    title,
-                    family: family.clone(),
-                    set: Set::User,
-                    kind,
-                    dialect: Dialect::Ufm,
-                    entry: e.name.clone(),
-                    view,
-                    origin: Origin::File(f.clone()),
-                    program: OnceLock::new(),
-                };
-                // Entries that do not even parse are known to fail.
-                out.push(Arc::new(match ast {
-                    Err(err) => entry.compiled(Err(err)),
-                    Ok(_) => entry,
-                }));
-            }
+            scan_file(root, &f, &mut seen, &mut out);
         }
     }
     out
+}
+
+/// The entries of one formula file below `root` (ids already in `seen` are skipped).
+fn scan_file(root: &Path, f: &Path, seen: &mut std::collections::HashSet<String>, out: &mut Vec<Arc<Entry>>) {
+    let rel: String =
+        f.strip_prefix(root).unwrap_or(f).components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join("/");
+    let Some(text) = read_text(f) else { return };
+    let ext = f.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    let kind = match ext.as_str() {
+        "ucl" => ProgramKind::Coloring,
+        "uxf" => ProgramKind::Transform,
+        _ => ProgramKind::Fractal,
+    };
+    let family = rel.clone();
+    if text.contains("@language: frm-like/1") {
+        let id = format!("user:{rel}");
+        if seen.insert(id.clone()) {
+            let title = f.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| rel.clone());
+            out.push(Arc::new(Entry {
+                id,
+                title,
+                family,
+                set: Set::User,
+                kind,
+                dialect: Dialect::Frm,
+                entry: String::new(),
+                view: DefaultView::default(),
+                origin: Origin::File(f.to_path_buf()),
+                program: OnceLock::new(),
+            }));
+        }
+        return;
+    }
+    let pre = super::parse::preprocess(&text);
+    for e in super::parse::split_entries(&pre) {
+        let id = format!("user:{rel}:{}", e.name);
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        let ast = super::parse::parse_ufm_entry(&e);
+        let (title, view) = match &ast {
+            Ok(a) => (a.title.clone().unwrap_or_else(|| e.name.clone()), view_of(a)),
+            Err(_) => (e.name.clone(), DefaultView::default()),
+        };
+        let entry = Entry {
+            id,
+            title,
+            family: family.clone(),
+            set: Set::User,
+            kind,
+            dialect: Dialect::Ufm,
+            entry: e.name.clone(),
+            view,
+            origin: Origin::File(f.to_path_buf()),
+            program: OnceLock::new(),
+        };
+        // Entries that do not even parse are known to fail.
+        out.push(Arc::new(match ast {
+            Err(err) => entry.compiled(Err(err)),
+            Ok(_) => entry,
+        }));
+    }
+}
+
+/// Reads one formula file of the formula folders again (after it was edited) and swaps its
+/// entries in; returns how many it has. Other entries keep their compiled programs.
+pub fn reload_file(path: &Path) -> Result<usize, String> {
+    let folders = user_folders();
+    let root = folders.iter().find(|r| path.starts_with(r)).ok_or_else(|| format!("{} is not in a formula folder", path.display()))?;
+    let mut fresh = Vec::new();
+    scan_file(root, path, &mut std::collections::HashSet::new(), &mut fresh);
+    let n = fresh.len();
+    let current = library();
+    let mut all: Vec<Arc<Entry>> = Vec::with_capacity(current.entries.len() + n);
+    let mut inserted = false;
+    for e in &current.entries {
+        if e.path() == Some(path) {
+            if !inserted {
+                all.append(&mut fresh);
+                inserted = true;
+            }
+            continue;
+        }
+        all.push(e.clone());
+    }
+    if !inserted {
+        all.append(&mut fresh);
+    }
+    if let Ok(mut g) = USER.write() {
+        *g = Some(Arc::new(Library::new(all)));
+    }
+    GENERATION.fetch_add(1, Ordering::Relaxed);
+    Ok(n)
 }
 
 fn view_of(a: &FormulaAst) -> DefaultView {
