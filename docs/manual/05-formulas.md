@@ -46,6 +46,12 @@ RFract reads formulas in three languages:
 - **FractInt formulas** (`.frm`): `name { init : loop, bailout }`, with FractInt's predefined
   names and functions. A symmetry after the name (`Mandelbrot(XAXIS)`) is ignored.
 
+The browser's *RFract › FractInt types* group holds FractInt's escape-time fractal types
+(lambda, the fn types, phoenix, Barnsley, Man-o-war, spider, Marks, Halley, complex Newton,
+popcorn Julia, tetrate, unity, Lyapunov and more) with FractInt's parameter layout, so `.par`
+files carry over; mandel, julia, magnet and newton use RFract's own formulas. Color the
+*lyapunov* type with the coloring *Value of z*.
+
 ### Your formula folders
 
 *File › Preferences › Formula folders* lists folders with your own formula files: `.ufm` and

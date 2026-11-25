@@ -500,3 +500,22 @@ default:
     hint = "Gradient positions per iteration (0.01: one turn of the gradient every 100 iterations)."
   endparam
 }
+
+ZValue {
+; The real part of the final z as the gradient position; negative values are solid. For
+; formulas that compute their result into z (such as the FractInt type lyapunov).
+final:
+  if real(#z) < 0
+    #solid = true
+  else
+    ; Clamped below 1: the gradient's end (huge values would only show rounding).
+    #index = min(real(#z) * @scale, 0.999999)
+  endif
+default:
+  title = "Value of z"
+  float param scale
+    caption = "Scale"
+    default = 1
+    hint = "Factor of real(z); positions beyond 1 show the end of the gradient."
+  endparam
+}

@@ -13,26 +13,15 @@ use std::path::Path;
 use crate::doc::{Coloring, Document, InsideMethod, Layer, MergeMode, OutsideMethod, Transfer, TransformRef};
 use crate::formula::ProgramKind;
 use crate::formula::ir::Func;
-use crate::formula::library::{Library, Set, library};
+use crate::formula::library::{Library, library};
 use crate::formula::{ParamKind, ParamValue};
 use crate::gradient::Gradient;
 
-/// One image of a parameter file.
-#[derive(Clone, Debug)]
-pub struct UprImage {
-    pub name: String,
-    pub doc: Document,
-    /// What could not be carried over exactly.
-    pub notes: Vec<String>,
-}
+pub use super::ImportedImage as UprImage;
 
 /// Reads every image of a `.upr` file.
 pub fn read(path: &Path) -> Result<Vec<UprImage>, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let text = match String::from_utf8(bytes) {
-        Ok(s) => s,
-        Err(e) => e.into_bytes().iter().map(|&b| b as char).collect(),
-    };
+    let text = super::read_text_lossy(path)?;
     let images = parse(&text);
     if images.is_empty() {
         return Err(format!("{}: no images in this parameter file", path.display()));
@@ -277,15 +266,7 @@ fn resolve(lib: &Library, kind: ProgramKind, sec: &Section, notes: &mut Vec<Stri
     let entry = sec.get("entry")?;
     let base = file.rsplit(['/', '\\']).next().unwrap_or(file);
     let is_standard = base.to_ascii_lowercase().starts_with("standard.");
-    let found = |exact: bool| {
-        lib.entries.iter().find(|e| {
-            e.set == Set::User
-                && e.kind == kind
-                && (if exact { e.entry == entry } else { e.entry.eq_ignore_ascii_case(entry) })
-                && e.path().and_then(|p| p.file_name()).is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(base))
-        })
-    };
-    if let Some(e) = found(true).or_else(|| found(false)) {
+    if let Some(e) = lib.find_in_file(kind, base, entry) {
         if let Err(err) = e.program() {
             notes.push(format!("{base}:{entry} does not compile ({err})"));
             return None;

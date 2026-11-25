@@ -20,11 +20,11 @@ Commands:
       -H, --height <px>      Image height (default: the document's)
       -s, --samples <n>      Samples per pixel (default: the document's)
       --cpu                  Render on the CPU (the reference renderer)
-      --entry <name>         The image of a .upr parameter file (default: the first)
+      --entry <name>         The image of a parameter file (.upr, .par; default: the first)
   formulas                   List the built-in formulas with their ids
   formulas --check <path>…   Compile formula files (.ufm, .ucl, .uxf, .frm) or folders and report
-  upr --check <path>… [--thumbs <dir>] [--notes]
-                             Convert .upr parameter files and report what does not carry over
+  params --check <path>… [--thumbs <dir>] [--notes]
+                             Convert parameter files (.upr, .par) and report what does not carry over
   info                       Program version, GPU, denoiser and settings folders
   help                       This text
 
@@ -78,11 +78,11 @@ fn render(args: &[String]) -> Result<(), String> {
         }
         i += 1;
     }
-    let input = input.ok_or("render needs an input (document, PNG, .upr file or formula id)")?;
+    let input = input.ok_or("render needs an input (document, PNG, parameter file or formula id)")?;
     let path = Path::new(&input);
-    let is_upr = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("upr"));
+    let is_upr = rfr_core::io::is_parameter_file(path);
     let doc = if path.exists() && is_upr {
-        let images = rfr_core::io::upr::read(path)?;
+        let images = rfr_core::io::read_parameter_file(path)?;
         let im = match &entry {
             Some(name) => images.iter().find(|i| i.name.eq_ignore_ascii_case(name)).ok_or_else(|| {
                 format!("no image '{name}' in {}; it has: {}", path.display(), images.iter().map(|i| i.name.as_str()).collect::<Vec<_>>().join(", "))
@@ -169,7 +169,7 @@ fn list_formulas() {
     }
 }
 
-/// Converts every image of the `.upr` files below `paths`; reports how many convert without
+/// Converts every image of the parameter files (`.upr`, `.par`) below `paths`; reports how many convert without
 /// notes and build a render plan, and the notes by frequency. `--thumbs <dir>` renders a
 /// small picture of each image there.
 fn check_upr(args: &[String]) -> Result<(), String> {
@@ -191,7 +191,7 @@ fn check_upr(args: &[String]) -> Result<(), String> {
     for p in &paths {
         if p.is_dir() {
             if let Ok(rd) = std::fs::read_dir(p) {
-                files.extend(rd.flatten().map(|e| e.path()).filter(|f| f.extension().is_some_and(|e| e.eq_ignore_ascii_case("upr"))));
+                files.extend(rd.flatten().map(|e| e.path()).filter(|f| rfr_core::io::is_parameter_file(f)));
             }
         } else {
             files.push(p.clone());
@@ -205,7 +205,7 @@ fn check_upr(args: &[String]) -> Result<(), String> {
     let (mut total, mut clean, mut planned) = (0, 0, 0);
     let mut reasons: std::collections::BTreeMap<String, usize> = Default::default();
     for f in &files {
-        let images = match rfr_core::io::upr::read(f) {
+        let images = match rfr_core::io::read_parameter_file(f) {
             Ok(v) => v,
             Err(e) => {
                 eprintln!("{e}");
@@ -514,7 +514,7 @@ fn main() -> ExitCode {
             Ok(())
         }
         Some("render") => render(rest),
-        Some("upr") if rest.first().map(String::as_str) == Some("--check") => check_upr(&rest[1..]),
+        Some("params" | "upr") if rest.first().map(String::as_str) == Some("--check") => check_upr(&rest[1..]),
         Some("formulas") if rest.first().map(String::as_str) == Some("--check") => check_formulas(&rest[1..]),
         Some("formulas") => {
             list_formulas();

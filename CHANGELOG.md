@@ -21,7 +21,14 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
   transformations and gradients are converted, standard formulas map onto built-in ones, and
   an *Import notes* window lists what did not carry over. rfr-cli renders .upr images
   (`--entry`) and checks whole folders (`upr --check`, optional thumbnails).
-- Formula *Pixel (plane only)* and coloring *Iteration count*.
+- Formula *Pixel (plane only)* and colorings *Iteration count* and *Value of z*.
+- FractInt types: 40 escape-time types of FractInt (lambda, fn types, phoenix, Barnsley,
+  Man-o-war, spider, Marks, Halley, complex Newton, popcorn Julia, tetrate, unity, Lyapunov,
+  …) as formulas with FractInt's parameter layout.
+- FractInt parameter files (.par): types, parameters, functions, view (corners with rotation,
+  center-mag), iteration limit, inside color, palettes (`colors=` and .map files, FractInt's
+  default VGA palette otherwise), `type=formula` from the formula folders. rfr-cli
+  `params --check` covers .par files too.
 - UFM functions `isNaN` and `isInf`.
 - Color parameters in the inspector (color picker).
 

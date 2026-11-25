@@ -20,6 +20,7 @@ include!(concat!(env!("OUT_DIR"), "/bundled_formulas.rs"));
 const RFRACT_UFM: &str = include_str!("../../formulas/rfract/rfract.ufm");
 const RFRACT_UCL: &str = include_str!("../../formulas/rfract/rfract.ucl");
 const RFRACT_UXF: &str = include_str!("../../formulas/rfract/rfract.uxf");
+const FRACTINT_UFM: &str = include_str!("../../formulas/rfract/fractint.ufm");
 const FRACTALPARK_INDEX: &str = include_str!("../../formulas/fractalpark/index.json");
 
 /// Where a formula comes from.
@@ -146,6 +147,19 @@ impl Library {
     pub fn get(&self, id: &str) -> Option<&Entry> {
         self.index.get(id).map(|&i| &*self.entries[i])
     }
+    /// The user formula `entry` of kind `kind` in a file called `file` (any folder; the name's
+    /// case is ignored when no entry matches exactly).
+    pub fn find_in_file(&self, kind: ProgramKind, file: &str, entry: &str) -> Option<&Entry> {
+        let base = file.rsplit(['/', '\\']).next().unwrap_or(file);
+        let in_file = |e: &&Entry| {
+            e.set == Set::User
+                && e.kind == kind
+                && e.path().and_then(|p| p.file_name()).is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(base))
+        };
+        let all = || self.entries.iter().map(|e| &**e).filter(in_file);
+        all().find(|e| e.entry == entry).or_else(|| all().find(|e| e.entry.eq_ignore_ascii_case(entry)))
+    }
+
     /// Fractal formulas that compiled (user formulas count until they fail).
     pub fn usable(&self) -> impl Iterator<Item = &Entry> {
         self.entries.iter().map(|e| &**e).filter(|e| e.status() != Some(false) && e.kind == ProgramKind::Fractal)
@@ -187,6 +201,12 @@ struct FpProfile {
 }
 
 static USER: RwLock<Option<Arc<Library>>> = RwLock::new(None);
+static FOLDERS: RwLock<Vec<PathBuf>> = RwLock::new(Vec::new());
+
+/// The formula folders of the last [`set_user_folders`].
+pub fn user_folders() -> Vec<PathBuf> {
+    FOLDERS.read().map(|f| f.clone()).unwrap_or_default()
+}
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// The library: the bundled formulas plus the user formulas indexed last.
@@ -211,6 +231,9 @@ fn bundled() -> &'static Arc<Library> {
 pub fn set_user_folders(folders: &[PathBuf]) -> usize {
     let user = scan_folders(folders);
     let n = user.len();
+    if let Ok(mut f) = FOLDERS.write() {
+        *f = folders.to_vec();
+    }
     let mut all = bundled().entries.clone();
     all.extend(user);
     if let Ok(mut g) = USER.write() {
@@ -359,6 +382,7 @@ fn build() -> Vec<Arc<Entry>> {
     ufm_entries(RFRACT_UCL, ProgramKind::Coloring, "rfract-coloring", "Coloring", &mut entries);
     ufm_entries(RFRACT_UXF, ProgramKind::Transform, "rfract-transform", "Transformation", &mut entries);
     ufm_entries(RFRACT_UFM, ProgramKind::Fractal, "rfract", "RFract", &mut entries);
+    ufm_entries(FRACTINT_UFM, ProgramKind::Fractal, "fractint", "FractInt types", &mut entries);
     let index: FpIndex = serde_json::from_str(FRACTALPARK_INDEX).unwrap_or(FpIndex { rows: Vec::new() });
     let mut seen: HashMap<String, usize> = HashMap::new();
     for row in index.rows {

@@ -26,7 +26,7 @@ enum Action {
     New,
     Open,
     OpenPath(PathBuf),
-    /// An image of a parameter file (.upr): the file and the image's name.
+    /// An image of a parameter file (.upr, .par): the file and the image's name.
     OpenUprImage(PathBuf, String),
     Save,
     SaveAs,
@@ -77,7 +77,7 @@ pub struct App {
 
 struct UprPicker {
     path: PathBuf,
-    images: Vec<rfr_core::io::upr::UprImage>,
+    images: Vec<rfr_core::io::ImportedImage>,
     search: String,
     /// Library generation the images were converted with.
     generation: u64,
@@ -86,12 +86,12 @@ struct UprPicker {
 impl UprPicker {
     fn read(p: &Path) -> Result<UprPicker, String> {
         let generation = rfr_core::formula::library::generation();
-        Ok(UprPicker { path: p.to_path_buf(), images: rfr_core::io::upr::read(p)?, search: String::new(), generation })
+        Ok(UprPicker { path: p.to_path_buf(), images: rfr_core::io::read_parameter_file(p)?, search: String::new(), generation })
     }
 }
 
 fn is_upr(p: &Path) -> bool {
-    p.extension().is_some_and(|e| e.eq_ignore_ascii_case("upr"))
+    rfr_core::io::is_parameter_file(p)
 }
 
 impl App {
@@ -341,7 +341,9 @@ impl App {
                 self.notify("New document");
             }
             Action::Open => {
-                if let Some(p) = self.prefs.dialog().add_filter("RFract documents, images and parameter files", &["rfr", "png", "upr"]).pick_file() {
+                if let Some(p) =
+                    self.prefs.dialog().add_filter("RFract documents, images and parameter files", &["rfr", "png", "upr", "par"]).pick_file()
+                {
                     if is_upr(&p) {
                         // Pick the image first; the unsaved-changes question comes with the pick.
                         self.open_upr(&p);

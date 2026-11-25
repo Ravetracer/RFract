@@ -6,9 +6,9 @@
 **Ctrl+O** opens `.rfr` files and PNG images rendered by RFract. Drop a file onto the window to
 open it. RFract asks before it discards unsaved changes.
 
-## Parameter files (.upr)
+## Parameter files (.upr, .par)
 
-**Ctrl+O** also opens `.upr` parameter files. A file with several images shows their list
+**Ctrl+O** also opens `.upr` and FractInt `.par` parameter files. A file with several images shows their list
 (with a search); click one to open it as a new document. RFract converts the layers (caption,
 opacity, merge mode, visibility), the view (center, magnification, rotation), the formulas
 with their parameters, the inside and outside colorings, the transformations and the gradient
@@ -27,6 +27,16 @@ instead.
     Differences to expect: one view for all layers (the bottom layer's), no stretched or
     skewed views, and colors that may differ in density where a standard coloring is mapped
     onto a built-in method. Parameter files stored in the compressed format are not read.
+
+FractInt `.par` files bring the fractal type with its parameters and functions, the view
+(`corners=`, including rotated corners, or `center-mag=`), the iteration limit, the inside
+color (a palette entry, `maxiter`, `bof60`, `bof61`, `zmag`, `atan`, `epscross`) and the
+256-color palette, colored by the iteration count as in FractInt. A palette given as
+`colors=@name.map` is looked up next to the parameter file, in a `maps` folder beside it and
+in the formula folders; without a palette the image uses FractInt's default (VGA) palette.
+`type=formula` images take their formula from the formula folders (`formulafile=`,
+`formulaname=`). The escape-time types are RFract's *FractInt types* (see the Formulas
+chapter); orbit, attractor, IFS, L-system and cellular types are not available yet.
 
 ## Export
 

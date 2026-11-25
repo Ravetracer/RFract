@@ -61,10 +61,25 @@ impl Browser {
                     .id_salt("set-rfract")
                     .default_open(true)
                     .show(ui, |ui| {
-                        for e in builtin {
+                        for e in builtin.iter().filter(|e| e.family == "RFract") {
                             if item(ui, e, &current) {
                                 picked = Some(e.id.clone());
                             }
+                        }
+                        let fractint: Vec<&&Entry> = builtin.iter().filter(|e| e.family == "FractInt types").collect();
+                        if !fractint.is_empty() {
+                            egui::CollapsingHeader::new(format!("FractInt types ({})", fractint.len()))
+                                .id_salt(("fractint-types", &q))
+                                .default_open(!q.is_empty())
+                                .show(ui, |ui| {
+                                    for e in fractint {
+                                        if item(ui, e, &current) {
+                                            picked = Some(e.id.clone());
+                                        }
+                                    }
+                                })
+                                .header_response
+                                .on_hover_text("FractInt's escape-time types with their parameter layout (for .par files)");
                         }
                     });
             }

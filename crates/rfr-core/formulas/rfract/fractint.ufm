@@ -1,0 +1,1326 @@
+comment {
+  Escape-time fractal types of FractInt, written in UFM syntax for RFract.
+
+  Every entry keeps FractInt's parameter layout so parameter files (.par) carry over: the
+  real parameters p1, p2, … of a .par file fill the complex parameters @p1 = (p1, p2),
+  @p2 = (p3, p4), @p3 = (p5, p6); function= fills @fn1, @fn2; bailout= fills @bailout
+  (compared with |z|, the squared magnitude). The Mandelbrot-style types start at the point
+  (plus @p1, the perturbation), the Julia-style types use @p1 as the constant.
+}
+
+lambda {
+; z = p1 · z · (1 − z), starting at the point.
+init:
+  z = #pixel
+loop:
+  z = @p1 * z * (1 - z)
+bailout:
+  |z| <= @bailout
+default:
+  title = "lambda"
+  center = (0.5, 0)
+  magn = 1
+  maxiter = 150
+  complex param p1
+    caption = "Lambda"
+    default = (0.85, 0.6)
+    hint = "The constant lambda."
+  endparam
+  float param bailout
+    caption = "Bailout"
+    default = 4
+    hint = "Escape threshold of |z| (squared magnitude)."
+  endparam
+}
+
+mandellambda {
+; z = c · z · (1 − z) with c the point, starting at 0.5 (plus p1).
+init:
+  z = 0.5 + @p1
+loop:
+  z = #pixel * z * (1 - z)
+bailout:
+  |z| <= @bailout
+default:
+  title = "mandellambda"
+  center = (1, 0)
+  magn = 0.5
+  maxiter = 150
+  complex param p1
+    caption = "Perturbation"
+    default = (0, 0)
+    hint = "Added to the start value 0.5."
+  endparam
+  float param bailout
+    caption = "Bailout"
+    default = 4
+    hint = "Escape threshold of |z| (squared magnitude)."
+  endparam
+}
+
+lambdafn {
+; z = p1 · fn1(z), starting at the point.
+init:
+  z = #pixel
+loop:
+  z = @p1 * @fn1(z)
+bailout:
+  |z| <= @bailout
+default:
+  title = "lambdafn"
+  center = (0, 0)
+  magn = 0.5
+  maxiter = 150
+  complex param p1
+    caption = "Lambda"
+    default = (1, 0.4)
+    hint = "The factor in front of the function."
+  endparam
+  func fn1
+    caption = "Function"
+    default = sin()
+  endfunc
+  float param bailout
+    caption = "Bailout"
+    default = 4096
+    hint = "Escape threshold of |z| (squared magnitude); the functions grow fast."
+  endparam
+}
+
+mandelfn {
+; z = c · fn1(z) with c the point, starting at the point (plus p1).
+init:
+  z = #pixel + @p1
+loop:
+  z = #pixel * @fn1(z)
+bailout:
+  |z| <= @bailout
+default:
+  title = "mandelfn"
+  center = (0, 0)
+  magn = 0.25
+  maxiter = 150
+  complex param p1
+    caption = "Perturbation"
+    default = (0, 0)
+    hint = "Added to the start value."
+  endparam
+  func fn1
+    caption = "Function"
+    default = sin()
+  endfunc
+  float param bailout
+    caption = "Bailout"
+    default = 4096
+    hint = "Escape threshold of |z| (squared magnitude)."
+  endparam
+}
+
+manowar {
+; z = z² + z_previous + c with c the point.
+init:
+  z = #pixel + @p1
+  complex zold = z
+loop:
+  complex t = z
+  z = sqr(z) + zold + #pixel
+  zold = t
+bailout:
+  |z| <= @bailout
+default:
+  title = "manowar"
+  center = (-0.5, 0)
+  magn = 1
+  maxiter = 150
+  complex param p1
+    caption = "Perturbation"
+    default = (0, 0)
+    hint = "Added to the start value."
+  endparam
+  float param bailout
+    caption = "Bailout"
+    default = 4
+    hint = "Escape threshold of |z| (squared magnitude)."
+  endparam
+}
+
+manowarj {
+; z = z² + z_previous + p1, starting at the point.
+init:
+  z = #pixel
+  complex zold = z
+loop:
+  complex t = z
+  z = sqr(z) + zold + @p1
+  zold = t
+bailout:
+  |z| <= @bailout
+default:
+  title = "manowarj"
+  center = (-0.5, 0)
+  magn = 1
+  maxiter = 150
+  complex param p1
+    caption = "Constant"
+    default = (0, 0)
+    hint = "The Julia constant."
+  endparam
+  float param bailout
+    caption = "Bailout"
+    default = 4
+    hint = "Escape threshold of |z| (squared magnitude)."
+  endparam
+}
+
+spider {
+; z = z² + c, then c = c/2 + z; c and z start at the point.
+init:
+  z = #pixel + @p1
+  complex k = #pixel
+loop:
+  z = sqr(z) + k
+  k = k / 2 + z
+bailout:
+  |z| <= @bailout
+default:
+  title = "spider"
+  center = (-0.5, 0)
+  magn = 1
+  maxiter = 150
+  complex param p1
+    caption = "Perturbation"
+    default = (0, 0)
+    hint = "Added to the start value."
+  endparam
+  float param bailout
+    caption = "Bailout"
+    default = 4
+    hint = "Escape threshold of |z| (squared magnitude)."
+  endparam
+}
+
+barnsleym1 {
+; (z − 1) · c where real(z) ≥ 0, else (z + 1) · c; c is the point.
+init:
+  z = #pixel + @p1
+loop:
+  if real(z) >= 0
+    z = (z - 1) * #pixel
+  else
+    z = (z + 1) * #pixel
+  endif
+bailout:
+  |z| <= @bailout
+default:
+  title = "barnsleym1"
+  center = (0, 0)
+  magn = 1
+  maxiter = 150
+  complex param p1
+    caption = "Perturbation"
+    default = (0, 0)
+    hint = "Added to the start value."
+  endparam
+  float param bailout
+    caption = "Bailout"
+    default = 4
+    hint = "Escape threshold of |z| (squared magnitude)."
+  endparam
+}
+
+barnsleyj1 {
+; (z − 1) · p1 where real(z) ≥ 0, else (z + 1) · p1.
+init:
+  z = #pixel
+loop:
+  if real(z) >= 0
+    z = (z - 1) * @p1
+  else
+    z = (z + 1) * @p1
+  endif
+bailout:
+  |z| <= @bailout
+default:
+  title = "barnsleyj1"
+  center = (0, 0)
+  magn = 1
+  maxiter = 150
+  complex param p1
+    caption = "Constant"
+    default = (0.6, 1.1)
+    hint = "The Julia constant."
+  endparam
+  float param bailout
+    caption = "Bailout"
+    default = 4
+    hint = "Escape threshold of |z| (squared magnitude)."
+  endparam
+}
+
+barnsleym2 {
+; Like barnsleym1, the side decided by real(z)·imag(c) + imag(z)·real(c).
+init:
+  z = #pixel + @p1
+loop:
+  if real(z) * imag(#pixel) + imag(z) * real(#pixel) >= 0
+    z = (z - 1) * #pixel
+  else
+    z = (z + 1) * #pixel
+  endif
+bailout:
+  |z| <= @bailout
+default:
+  title = "barnsleym2"
+  center = (0, 0)
+  magn = 1
+  maxiter = 150
+  complex param p1
+    caption = "Perturbation"
+    default = (0, 0)
+    hint = "Added to the start value."
+  endparam
+  float param bailout
+    caption = "Bailout"
+    default = 4
+    hint = "Escape threshold of |z| (squared magnitude)."
+  endparam
+}
+
+barnsleyj2 {
+; Like barnsleyj1, the side decided by real(z)·imag(p1) + imag(z)·real(p1).
+init:
+  z = #pixel
+loop:
+  if real(z) * imag(@p1) + imag(z) * real(@p1) >= 0
+    z = (z - 1) * @p1
+  else
+    z = (z + 1) * @p1
+  endif
+bailout:
+  |z| <= @bailout
+default:
+  title = "barnsleyj2"
+  center = (0, 0)
+  magn = 1
+  maxiter = 150
+  complex param p1
+    caption = "Constant"
+    default = (0.6, 1.1)
+    hint = "The Julia constant."
+  endparam
+  float param bailout
+    caption = "Bailout"
+    default = 4
+    hint = "Escape threshold of |z| (squared magnitude)."
+  endparam
+}
+
+barnsleym3 {
+; z² − 1 where real(z) > 0, else z² − 1 + c·real(z); c is the point.
+init:
+  z = #pixel + @p1
+loop:
+  float x = real(z)
+  if x > 0
+    z = sqr(z) - 1
+  else
+    z = sqr(z) - 1 + #pixel * x
+  endif
+bailout:
+  |z| <= @bailout
+default:
+  title = "barnsleym3"
+  center = (0, 0)
+  magn = 1
+  maxiter = 150
+  complex param p1
+    caption = "Perturbation"
+    default = (0, 0)
+    hint = "Added to the start value."
+  endparam
+  float param bailout
+    caption = "Bailout"
+    default = 4
+    hint = "Escape threshold of |z| (squared magnitude)."
+  endparam
+}
+
+barnsleyj3 {
+; z² − 1 where real(z) > 0, else z² − 1 + p1·real(z).
+init:
+  z = #pixel
+loop:
+  float x = real(z)
+  if x > 0
+    z = sqr(z) - 1
+  else
+    z = sqr(z) - 1 + @p1 * x
+  endif
+bailout:
+  |z| <= @bailout
+default:
+  title = "barnsleyj3"
+  center = (0, 0)
+  magn = 1
+  maxiter = 150
+  complex param p1
+    caption = "Constant"
+    default = (0.1, 0.36)
+    hint = "The Julia constant."
+  endparam
+  float param bailout
+    caption = "Bailout"
+    default = 4
+    hint = "Escape threshold of |z| (squared magnitude)."
+  endparam
+}
+
+phoenix {
+; z' = z² + p + q·y with y the previous z; p = real(p1), q = imag(p1). A degree
+; (real(p2)) of 3 or more gives z^(d−1)·(z + p) + q·y, −3 or less z^(−d−2)·(z² + p) + q·y.
+init:
+  z = #pixel
+  complex y = 0
+loop:
+  complex t = z
+  float p = real(@p1)
+  float q = imag(@p1)
+  int d = round(real(@p2))
+  if d >= 3
+    z = z^(d - 1) * (z + p) + q * y
+  elseif d <= -3
+    z = z^(-d - 2) * (sqr(z) + p) + q * y
+  else
+    z = sqr(z) + p + q * y
+  endif
+  y = t
+bailout:
+  |z| <= @bailout
+default:
+  title = "phoenix"
+  center = (0, 0)
+  magn = 1
+  maxiter = 150
+  complex param p1
+    caption = "p, q"
+    default = (0.56667, -0.5)
+    hint = "p (real part) is added, q (imaginary part) multiplies the previous z."
+  endparam
+  complex param p2
+    caption = "Degree"
+    default = (0, 0)
+    hint = "Real part: the power of z (0 or 2: z²)."
+  endparam
+  float param bailout
+    caption = "Bailout"
+    default = 4
+    hint = "Escape threshold of |z| (squared magnitude)."
+  endparam
+}
+
+mandphoenix {
+; The Mandelbrot form of phoenix: p and q from the point, z starts at p1.
+init:
+  z = @p1
+  complex y = 0
+loop:
+  complex t = z
+  float p = real(#pixel)
+  float q = imag(#pixel)
+  int d = round(real(@p2))
+  if d >= 3
+    z = z^(d - 1) * (z + p) + q * y
+  elseif d <= -3
+    z = z^(-d - 2) * (sqr(z) + p) + q * y
+  else
+    z = sqr(z) + p + q * y
+  endif
+  y = t
+bailout:
+  |z| <= @bailout
+default:
+  title = "mandphoenix"
+  center = (-0.5, 0)
+  magn = 1
+  maxiter = 150
+  complex param p1
+    caption = "Start value"
+    default = (0, 0)
+    hint = "Value of z before the first iteration."
+  endparam
+  complex param p2
+    caption = "Degree"
+    default = (0, 0)
+    hint = "Real part: the power of z (0 or 2: z²)."
+  endparam
+  float param bailout
+    caption = "Bailout"
+    default = 4
+    hint = "Escape threshold of |z| (squared magnitude)."
+  endparam
+}
+
+phoenixcplx {
+; z' = z² + p1 + p2·y with complex p1, p2 and y the previous z.
+init:
+  z = #pixel
+  complex y = 0
+loop:
+  complex t = z
+  z = sqr(z) + @p1 + @p2 * y
+  y = t
+bailout:
+  |z| <= @bailout
+default:
+  title = "phoenixcplx"
+  center = (0, 0)
+  magn = 1
+  maxiter = 150
+  complex param p1
+    caption = "p"
+    default = (0.2, 0)
+    hint = "Added in every step."
+  endparam
+  complex param p2
+    caption = "q"
+    default = (0.3, 0)
+    hint = "Multiplies the previous z."
+  endparam
+  float param bailout
+    caption = "Bailout"
+    default = 4
+    hint = "Escape threshold of |z| (squared magnitude)."
+  endparam
+}
+
+mandphoenixclx {
+; The Mandelbrot form of phoenixcplx: p is the point, z starts at p1.
+init:
+  z = @p1
+  complex y = 0
+loop:
+  complex t = z
+  z = sqr(z) + #pixel + @p2 * y
+  y = t
+bailout:
+  |z| <= @bailout
+default:
+  title = "mandphoenixclx"
+  center = (-0.5, 0)
+  magn = 1
+  maxiter = 150
+  complex param p1
+    caption = "Start value"
+    default = (0, 0)
+    hint = "Value of z before the first iteration."
+  endparam
+  complex param p2
+    caption = "q"
+    default = (0.5, 0)
+    hint = "Multiplies the previous z."
+  endparam
+  float param bailout
+    caption = "Bailout"
+    default = 4
+    hint = "Escape threshold of |z| (squared magnitude)."
+  endparam
+}
+
+complexnewton {
+; Newton's method for z^a = b with complex a = p1, b = p2; stops when it settles.
+init:
+  z = #pixel
+  complex zp = z + 1
+loop:
+  zp = z
+  z = z - (z^@p1 - @p2) / (@p1 * z^(@p1 - 1))
+bailout:
+  |z - zp| > @epsilon
+default:
+  title = "complexnewton"
+  center = (0, 0)
+  magn = 1
+  maxiter = 150
+  complex param p1
+    caption = "Degree a"
+    default = (3, 0)
+    hint = "The complex power."
+  endparam
+  complex param p2
+    caption = "Root b"
+    default = (1, 0)
+    hint = "The value of z^a to solve for."
+  endparam
+  float param epsilon
+    caption = "Precision"
+    default = 1e-12
+    hint = "The orbit ends when z moves less than this (squared)."
+  endparam
+}
+
+halley {
+; Halley's method for z^(n+1) − z = 0 (n = real(p1)), relaxed by p2; stops when it settles.
+init:
+  z = #pixel
+  complex zp = z + 1
+loop:
+  zp = z
+  float n = round(real(@p1))
+  complex f = z^(n + 1) - z
+  complex f1 = (n + 1) * z^n - 1
+  complex f2 = (n + 1) * n * z^(n - 1)
+  z = z - @p2 * f / (f1 - f * f2 / (2 * f1))
+bailout:
+  |z - zp| > @epsilon
+default:
+  title = "halley"
+  center = (0, 0)
+  magn = 1
+  maxiter = 150
+  complex param p1
+    caption = "Order"
+    default = (6, 0)
+    hint = "Real part: n in z^(n+1) − z."
+  endparam
+  complex param p2
+    caption = "Relaxation"
+    default = (1, 0)
+    hint = "Step factor (1 is Halley's method)."
+  endparam
+  float param epsilon
+    caption = "Precision"
+    default = 1e-8
+    hint = "The orbit ends when z moves less than this (squared)."
+  endparam
+}
+
+fn+fn {
+; z = p1 · fn1(z) + p2 · fn2(z), starting at the point.
+init:
+  z = #pixel
+loop:
+  z = @p1 * @fn1(z) + @p2 * @fn2(z)
+bailout:
+  |z| <= @bailout
+default:
+  title = "fn+fn"
+  center = (0, 0)
+  magn = 0.5
+  maxiter = 150
+  complex param p1
+    caption = "Factor 1"
+    default = (1, 0)
+  endparam
+  complex param p2
+    caption = "Factor 2"
+    default = (1, 0)
+  endparam
+  func fn1
+    caption = "Function 1"
+    default = sin()
+  endfunc
+  func fn2
+    caption = "Function 2"
+    default = sqr()
+  endfunc
+  float param bailout
+    caption = "Bailout"
+    default = 4096
+    hint = "Escape threshold of |z| (squared magnitude)."
+  endparam
+}
+
+fn*fn {
+; z = fn1(z) · fn2(z), starting at the point.
+init:
+  z = #pixel
+loop:
+  z = @fn1(z) * @fn2(z)
+bailout:
+  |z| <= @bailout
+default:
+  title = "fn*fn"
+  center = (0, 0)
+  magn = 0.5
+  maxiter = 150
+  func fn1
+    caption = "Function 1"
+    default = sin()
+  endfunc
+  func fn2
+    caption = "Function 2"
+    default = sqr()
+  endfunc
+  float param bailout
+    caption = "Bailout"
+    default = 4096
+    hint = "Escape threshold of |z| (squared magnitude)."
+  endparam
+}
+
+fn*z+z {
+; z = p1 · z · fn1(z) + p2 · z, starting at the point.
+init:
+  z = #pixel
+loop:
+  z = @p1 * z * @fn1(z) + @p2 * z
+bailout:
+  |z| <= @bailout
+default:
+  title = "fn*z+z"
+  center = (0, 0)
+  magn = 0.5
+  maxiter = 150
+  complex param p1
+    caption = "Factor 1"
+    default = (1, 0)
+  endparam
+  complex param p2
+    caption = "Factor 2"
+    default = (1, 0)
+  endparam
+  func fn1
+    caption = "Function"
+    default = sin()
+  endfunc
+  float param bailout
+    caption = "Bailout"
+    default = 4096
+    hint = "Escape threshold of |z| (squared magnitude)."
+  endparam
+}
+
+sqr(fn) {
+; z = fn1(z)², starting at the point.
+init:
+  z = #pixel
+loop:
+  z = sqr(@fn1(z))
+bailout:
+  |z| <= @bailout
+default:
+  title = "sqr(fn)"
+  center = (0, 0)
+  magn = 0.5
+  maxiter = 150
+  func fn1
+    caption = "Function"
+    default = sin()
+  endfunc
+  float param bailout
+    caption = "Bailout"
+    default = 4096
+    hint = "Escape threshold of |z| (squared magnitude)."
+  endparam
+}
+
+sqr(1/fn) {
+; z = (1 / fn1(z))², starting at the point.
+init:
+  z = #pixel
+loop:
+  z = sqr(1 / @fn1(z))
+bailout:
+  |z| <= @bailout
+default:
+  title = "sqr(1/fn)"
+  center = (0, 0)
+  magn = 0.5
+  maxiter = 150
+  func fn1
+    caption = "Function"
+    default = exp()
+  endfunc
+  float param bailout
+    caption = "Bailout"
+    default = 4096
+    hint = "Escape threshold of |z| (squared magnitude)."
+  endparam
+}
+
+fn(z)+fn(pix) {
+; z = fn1(z) + p2 · fn2(point), starting at the point (plus p1).
+init:
+  z = #pixel + @p1
+  complex k = @p2 * @fn2(#pixel)
+loop:
+  z = @fn1(z) + k
+bailout:
+  |z| <= @bailout
+default:
+  title = "fn(z)+fn(pix)"
+  center = (0, 0)
+  magn = 0.4
+  maxiter = 150
+  complex param p1
+    caption = "Perturbation"
+    default = (0, 0)
+  endparam
+  complex param p2
+    caption = "Factor"
+    default = (1, 0)
+  endparam
+  func fn1
+    caption = "Function of z"
+    default = sin()
+  endfunc
+  func fn2
+    caption = "Function of the point"
+    default = sqr()
+  endfunc
+  float param bailout
+    caption = "Bailout"
+    default = 4096
+    hint = "Escape threshold of |z| (squared magnitude)."
+  endparam
+}
+
+julfn+zsqrd {
+; z = fn1(z) + z² + p1, starting at the point.
+init:
+  z = #pixel
+loop:
+  z = @fn1(z) + sqr(z) + @p1
+bailout:
+  |z| <= @bailout
+default:
+  title = "julfn+zsqrd"
+  center = (0, 0)
+  magn = 1
+  maxiter = 150
+  complex param p1
+    caption = "Constant"
+    default = (-0.5, 0.5)
+  endparam
+  func fn1
+    caption = "Function"
+    default = sin()
+  endfunc
+  float param bailout
+    caption = "Bailout"
+    default = 64
+    hint = "Escape threshold of |z| (squared magnitude)."
+  endparam
+}
+
+manfn+zsqrd {
+; z = fn1(z) + z² + c with c the point.
+init:
+  z = #pixel + @p1
+loop:
+  z = @fn1(z) + sqr(z) + #pixel
+bailout:
+  |z| <= @bailout
+default:
+  title = "manfn+zsqrd"
+  center = (-0.5, 0)
+  magn = 1
+  maxiter = 150
+  complex param p1
+    caption = "Perturbation"
+    default = (0, 0)
+  endparam
+  func fn1
+    caption = "Function"
+    default = sin()
+  endfunc
+  float param bailout
+    caption = "Bailout"
+    default = 64
+    hint = "Escape threshold of |z| (squared magnitude)."
+  endparam
+}
+
+lambda(fn||fn) {
+; z = p1 · fn1(z) while |z| < real(p2) (the shift value), p1 · fn2(z) beyond.
+init:
+  z = #pixel
+loop:
+  if |z| < real(@p2)
+    z = @p1 * @fn1(z)
+  else
+    z = @p1 * @fn2(z)
+  endif
+bailout:
+  |z| <= @bailout
+default:
+  title = "lambda(fn||fn)"
+  center = (0, 0)
+  magn = 0.5
+  maxiter = 150
+  complex param p1
+    caption = "Lambda"
+    default = (1, 0.1)
+  endparam
+  complex param p2
+    caption = "Shift value"
+    default = (1, 0)
+    hint = "Real part: |z| where the second function takes over."
+  endparam
+  func fn1
+    caption = "Function 1"
+    default = sin()
+  endfunc
+  func fn2
+    caption = "Function 2"
+    default = sqr()
+  endfunc
+  float param bailout
+    caption = "Bailout"
+    default = 4096
+    hint = "Escape threshold of |z| (squared magnitude)."
+  endparam
+}
+
+manlam(fn||fn) {
+; The Mandelbrot form of lambda(fn||fn): lambda is the point.
+init:
+  z = #pixel + @p1
+loop:
+  if |z| < real(@p2)
+    z = #pixel * @fn1(z)
+  else
+    z = #pixel * @fn2(z)
+  endif
+bailout:
+  |z| <= @bailout
+default:
+  title = "manlam(fn||fn)"
+  center = (0, 0)
+  magn = 0.5
+  maxiter = 150
+  complex param p1
+    caption = "Perturbation"
+    default = (0, 0)
+  endparam
+  complex param p2
+    caption = "Shift value"
+    default = (10, 0)
+    hint = "Real part: |z| where the second function takes over."
+  endparam
+  func fn1
+    caption = "Function 1"
+    default = sin()
+  endfunc
+  func fn2
+    caption = "Function 2"
+    default = sqr()
+  endfunc
+  float param bailout
+    caption = "Bailout"
+    default = 4096
+    hint = "Escape threshold of |z| (squared magnitude)."
+  endparam
+}
+
+julia(fn||fn) {
+; z = fn1(z) + p1 while |z| < real(p2), fn2(z) + p1 beyond.
+init:
+  z = #pixel
+loop:
+  if |z| < real(@p2)
+    z = @fn1(z) + @p1
+  else
+    z = @fn2(z) + @p1
+  endif
+bailout:
+  |z| <= @bailout
+default:
+  title = "julia(fn||fn)"
+  center = (0, 0)
+  magn = 0.5
+  maxiter = 150
+  complex param p1
+    caption = "Constant"
+    default = (0, 0)
+  endparam
+  complex param p2
+    caption = "Shift value"
+    default = (8, 0)
+    hint = "Real part: |z| where the second function takes over."
+  endparam
+  func fn1
+    caption = "Function 1"
+    default = sin()
+  endfunc
+  func fn2
+    caption = "Function 2"
+    default = sqr()
+  endfunc
+  float param bailout
+    caption = "Bailout"
+    default = 4096
+    hint = "Escape threshold of |z| (squared magnitude)."
+  endparam
+}
+
+mandel(fn||fn) {
+; The Mandelbrot form of julia(fn||fn): the constant is the point.
+init:
+  z = #pixel + @p1
+loop:
+  if |z| < real(@p2)
+    z = @fn1(z) + #pixel
+  else
+    z = @fn2(z) + #pixel
+  endif
+bailout:
+  |z| <= @bailout
+default:
+  title = "mandel(fn||fn)"
+  center = (0, 0)
+  magn = 0.5
+  maxiter = 150
+  complex param p1
+    caption = "Perturbation"
+    default = (0, 0)
+  endparam
+  complex param p2
+    caption = "Shift value"
+    default = (0.5, 0)
+    hint = "Real part: |z| where the second function takes over."
+  endparam
+  func fn1
+    caption = "Function 1"
+    default = sin()
+  endfunc
+  func fn2
+    caption = "Function 2"
+    default = sqr()
+  endfunc
+  float param bailout
+    caption = "Bailout"
+    default = 4096
+    hint = "Escape threshold of |z| (squared magnitude)."
+  endparam
+}
+
+marksmandel {
+; z = c^(e − 1) · z² + c with c the point and e = real(p2).
+init:
+  z = #pixel + @p1
+  complex k = #pixel^(real(@p2) - 1)
+loop:
+  z = k * sqr(z) + #pixel
+bailout:
+  |z| <= @bailout
+default:
+  title = "marksmandel"
+  center = (0, 0)
+  magn = 1
+  maxiter = 150
+  complex param p1
+    caption = "Perturbation"
+    default = (0, 0)
+  endparam
+  complex param p2
+    caption = "Exponent"
+    default = (1, 0)
+    hint = "Real part: e in c^(e − 1)."
+  endparam
+  float param bailout
+    caption = "Bailout"
+    default = 4
+    hint = "Escape threshold of |z| (squared magnitude)."
+  endparam
+}
+
+marksjulia {
+; z = p1^(e − 1) · z² + p1, starting at the point, e = real(p2).
+init:
+  z = #pixel
+  complex k = @p1^(real(@p2) - 1)
+loop:
+  z = k * sqr(z) + @p1
+bailout:
+  |z| <= @bailout
+default:
+  title = "marksjulia"
+  center = (0, 0)
+  magn = 1
+  maxiter = 150
+  complex param p1
+    caption = "Constant"
+    default = (0.1, 0.9)
+  endparam
+  complex param p2
+    caption = "Exponent"
+    default = (1, 0)
+    hint = "Real part: e in p1^(e − 1)."
+  endparam
+  float param bailout
+    caption = "Bailout"
+    default = 4
+    hint = "Escape threshold of |z| (squared magnitude)."
+  endparam
+}
+
+marksmandelpwr {
+; z = c · fn1(z) + point with c = z₀^(z₀ − 1), z₀ the point.
+init:
+  z = #pixel + @p1
+  complex k = #pixel^(#pixel - 1)
+loop:
+  z = k * @fn1(z) + #pixel
+bailout:
+  |z| <= @bailout
+default:
+  title = "marksmandelpwr"
+  center = (-0.5, 0)
+  magn = 1
+  maxiter = 150
+  complex param p1
+    caption = "Perturbation"
+    default = (0, 0)
+  endparam
+  func fn1
+    caption = "Function"
+    default = sqr()
+  endfunc
+  float param bailout
+    caption = "Bailout"
+    default = 4
+    hint = "Escape threshold of |z| (squared magnitude)."
+  endparam
+}
+
+julzpower {
+; z = z^p2 + p1, starting at the point.
+init:
+  z = #pixel
+loop:
+  z = z^@p2 + @p1
+bailout:
+  |z| <= @bailout
+default:
+  title = "julzpower"
+  center = (0, 0)
+  magn = 1
+  maxiter = 150
+  complex param p1
+    caption = "Constant"
+    default = (0.3, 0.6)
+  endparam
+  complex param p2
+    caption = "Exponent"
+    default = (2, 0)
+  endparam
+  float param bailout
+    caption = "Bailout"
+    default = 4
+    hint = "Escape threshold of |z| (squared magnitude)."
+  endparam
+}
+
+mandelzpower {
+; z = z^p2 + c with c the point.
+init:
+  z = #pixel + @p1
+loop:
+  z = z^@p2 + #pixel
+bailout:
+  |z| <= @bailout
+default:
+  title = "mandelzpower"
+  center = (-0.5, 0)
+  magn = 1
+  maxiter = 150
+  complex param p1
+    caption = "Perturbation"
+    default = (0, 0)
+  endparam
+  complex param p2
+    caption = "Exponent"
+    default = (2, 0)
+  endparam
+  float param bailout
+    caption = "Bailout"
+    default = 4
+    hint = "Escape threshold of |z| (squared magnitude)."
+  endparam
+}
+
+tetrate {
+; z = c^z with c the point (power towers).
+init:
+  z = #pixel + @p1
+loop:
+  z = #pixel^z
+bailout:
+  |z| <= @bailout
+default:
+  title = "tetrate"
+  center = (0, 0)
+  magn = 0.5
+  maxiter = 150
+  complex param p1
+    caption = "Perturbation"
+    default = (0, 0)
+  endparam
+  float param bailout
+    caption = "Bailout"
+    default = 1e6
+    hint = "Escape threshold of |z| (squared magnitude)."
+  endparam
+}
+
+popcornjul {
+; x' = x − h·fn1(y + fn2(c·y)), y' = y − h·fn3(x + fn4(c·x)); h = real(p1), c = real(p2).
+init:
+  z = #pixel
+loop:
+  float h = real(@p1)
+  float k = real(@p2)
+  float x = real(z)
+  float y = imag(z)
+  z = (x - h * real(@fn1(y + @fn2(k * y))), y - h * real(@fn3(x + @fn4(k * x))))
+bailout:
+  |z| <= @bailout
+default:
+  title = "popcornjul"
+  center = (0, 0)
+  magn = 0.67
+  maxiter = 150
+  complex param p1
+    caption = "Step"
+    default = (0.05, 0)
+  endparam
+  complex param p2
+    caption = "Constant"
+    default = (3, 0)
+  endparam
+  func fn1
+    caption = "Function 1"
+    default = sin()
+  endfunc
+  func fn2
+    caption = "Function 2"
+    default = tan()
+  endfunc
+  func fn3
+    caption = "Function 3"
+    default = sin()
+  endfunc
+  func fn4
+    caption = "Function 4"
+    default = tan()
+  endfunc
+  float param bailout
+    caption = "Bailout"
+    default = 4
+    hint = "Escape threshold of |z| (squared magnitude)."
+  endparam
+}
+
+unity {
+; z' = (2 − (x² + y²)) · z: points settle on the unit circle or escape.
+init:
+  z = #pixel
+loop:
+  z = (2 - |z|) * z
+bailout:
+  |z| <= @bailout && abs(|z| - 1) > 1e-6
+default:
+  title = "unity"
+  center = (0, 0)
+  magn = 1
+  maxiter = 150
+  float param bailout
+    caption = "Bailout"
+    default = 4
+    hint = "Escape threshold of |z| (squared magnitude)."
+  endparam
+}
+
+lyapunov {
+; Lyapunov exponent of the logistic map x = r·x·(1 − x) with the rate switching between
+; a (imaginary part of the point) and b (real part) in the sequence A, the bits of the
+; order (real(p1)), B. Population seed imag(p1) (0.5 when outside 0…1), real(p2) settling
+; cycles (0: half the iteration limit). The orbit ends after one step; z holds the palette
+; position (−1 where the exponent is positive: chaos). Color it with "Value of z".
+init:
+  float a = imag(#pixel)
+  float b = real(#pixel)
+  int order = round(real(@p1))
+  int bits[33]
+  int nb = 0
+  int t = order
+  while t > 0 && nb < 32
+    bits[nb] = t % 2
+    t = t / 2
+    nb = nb + 1
+  endwhile
+  int seq[35]
+  seq[0] = 1
+  int len = 1
+  int j = nb - 1
+  while j >= 0
+    seq[len] = bits[j]
+    len = len + 1
+    j = j - 1
+  endwhile
+  seq[len] = 0
+  len = len + 1
+  float x = imag(@p1)
+  if x <= 0 || x >= 1
+    x = 0.5
+  endif
+  int filter = round(real(@p2))
+  if filter <= 0
+    filter = #maxiter / 2
+  endif
+  int i = 0
+  while i < filter
+    int k = 0
+    while k < len
+      float r = b
+      if seq[k] == 1
+        r = a
+      endif
+      x = r * x * (1 - x)
+      k = k + 1
+    endwhile
+    i = i + 1
+  endwhile
+  float total = 0
+  int cycles = #maxiter / 2
+  i = 0
+  while i < cycles
+    int k = 0
+    while k < len
+      float r = b
+      if seq[k] == 1
+        r = a
+      endif
+      x = r * x * (1 - x)
+      total = total + log(abs(r - 2 * r * x) + 1e-300)
+      k = k + 1
+    endwhile
+    i = i + 1
+  endwhile
+  if total > 0 || isnan(total) || isinf(total)
+    z = (-1, 0)
+  else
+    float lyap = 1 - exp(total / (len * max(cycles, 1)))
+    z = ((1 + floor(lyap * 255)) / 256, 0)
+  endif
+loop:
+  z = z
+bailout:
+  false
+default:
+  title = "lyapunov"
+  center = (3.0, 3.0)
+  magn = 1.5
+  maxiter = 300
+  complex param p1
+    caption = "Order, seed"
+    default = (0, 0.5)
+    hint = "Real part: the sequence of a and b as bits; imaginary part: the start population."
+  endparam
+  complex param p2
+    caption = "Settling cycles"
+    default = (0, 0)
+    hint = "Real part: sequence cycles before the exponent is measured (0: half the iterations)."
+  endparam
+}
