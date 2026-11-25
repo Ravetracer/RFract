@@ -4,6 +4,10 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-25
+
+Stage 0: foundation and distribution.
+
 ### Added
 
 - Program shell: window with the final panel layout (layers, inspector, timeline, explore

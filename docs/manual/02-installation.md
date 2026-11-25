@@ -1,7 +1,8 @@
 # Installation
 
 Download the package for your system from the releases page:
-<https://github.com/Ravetracer/RFract/releases>.
+<https://github.com/Ravetracer/RFract/releases>. The first release there is 1.0; development
+versions (0.x) are only available as build artifacts of the project's "Release" workflow runs.
 
 | System | Package |
 |--------|---------|

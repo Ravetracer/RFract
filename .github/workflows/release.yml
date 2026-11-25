@@ -3,6 +3,8 @@
 #
 # - Pushing a tag vX.Y.Z (tools/release.py makes it) builds and publishes release X.Y.Z with
 #   the CHANGELOG.md section of that version as the release notes.
+# - Development versions (tags v0.*) only build the packages and attach them to the run as
+#   artifacts: the first public release is 1.0.0, after all stages of PLAN.md.
 # - Running the workflow by hand (Actions > Release > Run workflow) only builds the packages;
 #   they are attached to the run as artifacts.
 name: Release
@@ -142,7 +144,7 @@ jobs:
           path: dist/*.zip
 
   release:
-    if: github.ref_type == 'tag'
+    if: github.ref_type == 'tag' && !startsWith(github.ref_name, 'v0.')
     needs: [version, linux, windows, macos]
     runs-on: ubuntu-22.04
     steps:

@@ -8,8 +8,10 @@ renderer, layers, formulas and animation follow stage by stage (see [PLAN.md](PL
 
 ## Download
 
-Packages for Linux, Windows and macOS: <https://github.com/Ravetracer/RFract/releases>.
-The builds are not signed; see INSTALL.txt in each package.
+The first public release (1.0.0) follows once all stages of the plan are done. Until then,
+development builds for Linux, Windows and macOS are attached as artifacts to the "Release"
+workflow runs of the `v0.*` tags (Actions tab). The builds are not signed; see INSTALL.txt in
+each package.
 
 ## Build
 
