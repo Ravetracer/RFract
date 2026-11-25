@@ -10,6 +10,7 @@ use std::hash::{Hash, Hasher};
 
 use rfr_core::formula::ParamValue;
 use rfr_core::formula::ir::*;
+use rfr_core::render::{LayerPlan, Prog};
 
 /// Scalar mode of a shader.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -27,13 +28,19 @@ const SCALAR_DUAL: &str = include_str!("wgsl/scalar_dual.wgsl");
 const SCALAR_DF64: &str = include_str!("wgsl/scalar_df64.wgsl");
 const CSTD: &str = include_str!("wgsl/cstd.wgsl");
 const KERNEL: &str = include_str!("wgsl/kernel.wgsl");
+const BLEND: &str = include_str!("wgsl/blend.wgsl");
 
-/// Parameters the `P` uniform can hold.
-pub const MAX_PARAMS: usize = 64;
+/// Parameters the `P` uniform can hold (all programs of a layer together).
+pub const MAX_PARAMS: usize = 256;
 
 struct Gen<'a> {
     prog: &'a Program,
     funcs: Vec<Option<Func>>,
+    /// Name prefix of this program's locals (`l` fractal, `t0_` transformations, `ko` / `ki`
+    /// colorings).
+    prefix: String,
+    /// Index of this program's first parameter in `P`.
+    base: usize,
 }
 
 /// A WGSL float literal that fits f32 (WGSL rejects literals outside its range).
@@ -62,13 +69,16 @@ impl Gen<'_> {
                 format!("s_cc({}, {})", lit(hi as f64), lit(lo as f64))
             }
             Kind::Complex(a, b) => format!("Cx({}, {})", self.expr(a), self.expr(b)),
-            Kind::Local(i) => format!("l{i}"),
-            Kind::Param(i) => match self.prog.params[*i].ty {
-                Ty::Bool => format!("(P.p[{i}].x != 0.0)"),
-                Ty::Int => format!("i32(P.p[{i}].x)"),
-                Ty::Real => format!("s_c(P.p[{i}].x)"),
-                Ty::Complex => format!("c_f(P.p[{i}].x, P.p[{i}].y)"),
-            },
+            Kind::Local(i) => format!("{}{i}", self.prefix),
+            Kind::Param(i) => {
+                let k = self.base + i;
+                match self.prog.params[*i].ty {
+                    Ty::Bool => format!("(P.p[{k}].x != 0.0)"),
+                    Ty::Int => format!("i32(P.p[{k}].x)"),
+                    Ty::Real => format!("s_c(P.p[{k}].x)"),
+                    Ty::Complex => format!("c_f(P.p[{k}].x, P.p[{k}].y)"),
+                }
+            }
             Kind::Sys(s) => match s {
                 Sys::Pixel => "pixel".into(),
                 Sys::C => "cval".into(),
@@ -79,6 +89,7 @@ impl Gen<'_> {
                 Sys::IsMand => "ismand".into(),
                 Sys::Center => "center".into(),
                 Sys::Magn => "magn".into(),
+                Sys::Z => "l0".into(),
             },
             Kind::Conv(inner) => self.conv(inner, e.ty),
             Kind::Neg(a) => match e.ty {
@@ -205,10 +216,10 @@ impl Gen<'_> {
         for s in list {
             match s {
                 Stmt::Assign(i, e) => {
-                    let _ = writeln!(out, "{pad}l{i} = {};", self.expr(e));
+                    let _ = writeln!(out, "{pad}{}{i} = {};", self.prefix, self.expr(e));
                 }
                 Stmt::SetPart { local, re, value } => {
-                    let _ = writeln!(out, "{pad}l{local}.{} = {};", if *re { "re" } else { "im" }, self.expr(value));
+                    let _ = writeln!(out, "{pad}{}{local}.{} = {};", self.prefix, if *re { "re" } else { "im" }, self.expr(value));
                 }
                 Stmt::If(arms, els) => {
                     for (k, (c, b)) in arms.iter().enumerate() {
@@ -225,18 +236,24 @@ impl Gen<'_> {
                 Stmt::While(c, body) => {
                     *counter += 1;
                     let n = *counter;
-                    let _ = writeln!(out, "{pad}for (var w{n} = 0u; w{n} < {MAX_INNER_LOOP}u && {}; w{n} = w{n} + 1u) {{", self.expr(c));
+                    let _ = writeln!(
+                        out,
+                        "{pad}for (var w{n}{p} = 0u; w{n}{p} < {MAX_INNER_LOOP}u && {}; w{n}{p} = w{n}{p} + 1u) {{",
+                        self.expr(c),
+                        p = self.prefix
+                    );
                     self.stmts(body, out, depth + 1, counter);
                     let _ = writeln!(out, "{pad}}}");
                 }
                 Stmt::Repeat(body, c) => {
                     *counter += 1;
                     let n = *counter;
-                    let _ = writeln!(out, "{pad}var r{n} = 0u;");
+                    let p = &self.prefix;
+                    let _ = writeln!(out, "{pad}var r{n}{p} = 0u;");
                     let _ = writeln!(out, "{pad}loop {{");
                     self.stmts(body, out, depth + 1, counter);
-                    let _ = writeln!(out, "{pad}    r{n} = r{n} + 1u;");
-                    let _ = writeln!(out, "{pad}    if r{n} >= {MAX_INNER_LOOP}u || {} {{ break; }}", self.expr(c));
+                    let _ = writeln!(out, "{pad}    r{n}{p} = r{n}{p} + 1u;");
+                    let _ = writeln!(out, "{pad}    if r{n}{p} >= {MAX_INNER_LOOP}u || {} {{ break; }}", self.expr(c));
                     let _ = writeln!(out, "{pad}}}");
                 }
             }
@@ -284,53 +301,158 @@ pub fn func_choices(prog: &Program, values: &[ParamValue]) -> Vec<Option<Func>> 
         .collect()
 }
 
-/// The complete kernel shader for `prog`.
-pub fn kernel(prog: &Program, values: &[ParamValue], mode: Mode) -> String {
-    let g = Gen { prog, funcs: func_choices(prog, values) };
-    let mut locals = String::new();
-    for (i, l) in prog.locals.iter().enumerate() {
-        let _ = writeln!(locals, "    var l{i}: {} = {};", wgsl_ty(l.ty), zero(l.ty));
+/// The programs of a layer in the order their parameters fill `P`: fractal, transformations,
+/// outside coloring, inside coloring.
+pub fn param_programs(lp: &LayerPlan) -> Vec<&Prog> {
+    let mut v = vec![&lp.fractal];
+    v.extend(lp.transforms.iter());
+    v.extend(lp.outside.formula());
+    v.extend(lp.inside.formula());
+    v
+}
+
+/// Parameter values of a layer as `P` entries.
+pub fn param_values(lp: &LayerPlan) -> Vec<[f32; 4]> {
+    let mut p = vec![[0.0f32; 4]; MAX_PARAMS];
+    let mut k = 0;
+    for prog in param_programs(lp) {
+        for v in &prog.values {
+            if k < MAX_PARAMS {
+                let c = v.as_complex();
+                p[k] = [c[0] as f32, c[1] as f32, 0.0, 0.0];
+            }
+            k += 1;
+        }
     }
+    p
+}
+
+fn locals(g: &Gen, out: &mut String, pad: &str, first: Option<&str>) {
+    for (i, l) in g.prog.locals.iter().enumerate() {
+        let init = if i == 0
+            && let Some(f) = first
+        {
+            f.to_string()
+        } else {
+            zero(l.ty).to_string()
+        };
+        let _ = writeln!(out, "{pad}var {}{i}: {} = {init};", g.prefix, wgsl_ty(l.ty));
+    }
+}
+
+/// The complete kernel shader of a layer.
+pub fn kernel(lp: &LayerPlan, mode: Mode) -> String {
+    fn gen_for<'a>(prog: &'a Prog, prefix: String, base: &mut usize) -> Gen<'a> {
+        let g = Gen { prog: &prog.program, funcs: func_choices(&prog.program, &prog.values), prefix, base: *base };
+        *base += prog.program.params.len();
+        g
+    }
+    let mut base = 0;
+    let fractal = gen_for(&lp.fractal, "l".into(), &mut base);
+    let transforms: Vec<Gen> = lp.transforms.iter().enumerate().map(|(k, t)| gen_for(t, format!("t{k}_"), &mut base)).collect();
+    let outside = lp.outside.formula().map(|p| gen_for(p, "ko".into(), &mut base));
+    let inside = lp.inside.formula().map(|p| gen_for(p, "ki".into(), &mut base));
     let mut counter = 0;
+
+    // Transformations: each one runs only when the ones before left the point alive.
+    let mut tr = String::new();
+    for (k, g) in transforms.iter().enumerate() {
+        let pad = "    ".repeat(k + 1);
+        if k > 0 {
+            let _ = writeln!(tr, "{}if !tsolid {{", "    ".repeat(k));
+        }
+        locals(g, &mut tr, &pad, Some("pixel"));
+        g.stmts(&g.prog.init, &mut tr, k + 1, &mut counter);
+        g.stmts(&g.prog.body, &mut tr, k + 1, &mut counter);
+        let solid = g.prog.solid_slot.map_or("false".to_string(), |s| format!("{}{s}", g.prefix));
+        let _ = writeln!(tr, "{pad}if {solid} {{ tsolid = true; }} else {{ pixel = {}0; }}", g.prefix);
+    }
+    for k in (1..transforms.len()).rev() {
+        let _ = writeln!(tr, "{}}}", "    ".repeat(k));
+    }
+
+    let mut loc = String::new();
+    locals(&fractal, &mut loc, "        ", None);
+    for g in outside.iter().chain(inside.iter()) {
+        locals(g, &mut loc, "        ", None);
+    }
     let mut init = String::new();
-    g.stmts(&prog.init, &mut init, 1, &mut counter);
+    fractal.stmts(&fractal.prog.init, &mut init, 2, &mut counter);
+    let mut color_init = String::new();
+    let mut color_loop = String::new();
+    for g in outside.iter().chain(inside.iter()) {
+        g.stmts(&g.prog.init, &mut color_init, 2, &mut counter);
+        g.stmts(&g.prog.body, &mut color_loop, 3, &mut counter);
+    }
     let mut body = String::new();
-    g.stmts(&prog.body, &mut body, 2, &mut counter);
+    fractal.stmts(&fractal.prog.body, &mut body, 3, &mut counter);
     let mut fin = String::new();
-    g.stmts(&prog.fin, &mut fin, 1, &mut counter);
+    fractal.stmts(&fractal.prog.fin, &mut fin, 2, &mut counter);
+    let final_of = |g: &Option<Gen>, inside: bool, counter: &mut usize| -> String {
+        let mut out = String::new();
+        match g {
+            Some(g) => {
+                g.stmts(&g.prog.fin, &mut out, 4, counter);
+                let idx = g.prog.index_slot.map_or("0.0".to_string(), |s| format!("s_v({}{s})", g.prefix));
+                let solid = g.prog.solid_slot.map_or("false".to_string(), |s| format!("{}{s}", g.prefix));
+                let _ = writeln!(out, "                col = shade_formula({inside}, {idx}, {solid});");
+            }
+            None => {
+                let _ = writeln!(out, "                col = shade_native({inside}, zv, zpv, zp2v, iter, dzv);");
+            }
+        }
+        out
+    };
+    let out_final = final_of(&outside, false, &mut counter);
+    let in_final = final_of(&inside, true, &mut counter);
     let pixel = match mode {
-        Mode::Plain => "    let pixel = c_f(pr.x, pr.y);".to_string(),
+        Mode::Plain => "    var pixel = c_f(pr.x, pr.y);".to_string(),
         Mode::Dual => {
-            "    let dir = vec2<f32>(cos(turn * TAU), sin(turn * TAU));\n    let pixel = Cx(vec2<f32>(pr.x, dir.x), vec2<f32>(pr.y, dir.y));"
+            "    let dir = vec2<f32>(cos(turn * TAU), sin(turn * TAU));\n    var pixel = Cx(vec2<f32>(pr.x, dir.x), vec2<f32>(pr.y, dir.y));"
                 .to_string()
         }
-        Mode::Df64 => "    let pixel = Cx(dd_add(dd(U.view.x, U.lo.x), dd_f(off.x)), dd_add(dd(U.view.y, U.lo.y), dd_f(off.y)));".to_string(),
+        Mode::Df64 => "    var pixel = Cx(dd_add(dd(U.view.x, U.lo.x), dd_f(off.x)), dd_add(dd(U.view.y, U.lo.y), dd_f(off.y)));".to_string(),
     };
     let mode_init = if mode == Mode::Df64 { "    dd_one = U.rot.w;" } else { "" };
     let kernel = KERNEL
         .replace("//@MODE_INIT", mode_init)
         .replace("//@PIXEL", &pixel)
-        .replace("//@LOCALS", locals.trim_end())
+        .replace("//@TRANSFORMS", tr.trim_end())
+        .replace("//@LOCALS", loc.trim_end())
         .replace("//@INIT", init.trim_end())
+        .replace("//@COLOR_INIT", color_init.trim_end())
         .replace("//@BODY", body.trim_end())
-        .replace("//@BAILOUT", &g.expr(&prog.bailout))
-        .replace("//@FINAL", fin.trim_end());
+        .replace("//@BAILOUT", &fractal.expr(&fractal.prog.bailout))
+        .replace("//@COLOR_LOOP", color_loop.trim_end())
+        .replace("//@FINAL", fin.trim_end())
+        .replace("//@OUT_FINAL", out_final.trim_end())
+        .replace("//@IN_FINAL", in_final.trim_end());
     let scalar = match mode {
         Mode::Plain => SCALAR_F32,
         Mode::Dual => SCALAR_DUAL,
         Mode::Df64 => SCALAR_DF64,
     };
-    format!("{scalar}\n{CSTD}\n{kernel}")
+    format!("{scalar}\n{CSTD}\n{BLEND}\n{kernel}")
 }
 
-/// Shader identity: the program, the chosen functions and the mode. Parameter values are not
-/// part of it (they live in a buffer).
-pub fn signature(formula_id: &str, prog: &Program, values: &[ParamValue], mode: Mode) -> u64 {
+/// The compositing shader (fill, group merge, accumulation).
+pub fn composite_shader() -> String {
+    format!("{BLEND}\n{}", include_str!("wgsl/composite.wgsl"))
+}
+
+/// Shader identity of a layer: its programs, the chosen functions, which regions use
+/// formulas and the mode. Parameter values are not part of it (they live in a buffer).
+pub fn signature(lp: &LayerPlan, mode: Mode) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    formula_id.hash(&mut h);
-    format!("{:?}", prog.body).hash(&mut h);
-    format!("{:?}", prog.init).hash(&mut h);
-    format!("{:?}", func_choices(prog, values)).hash(&mut h);
+    for (k, p) in param_programs(lp).iter().enumerate() {
+        k.hash(&mut h);
+        p.id.hash(&mut h);
+        format!("{:?}", p.program).hash(&mut h);
+        format!("{:?}", func_choices(&p.program, &p.values)).hash(&mut h);
+    }
+    lp.outside.formula().is_some().hash(&mut h);
+    lp.inside.formula().is_some().hash(&mut h);
+    lp.transforms.len().hash(&mut h);
     mode.hash(&mut h);
     h.finish()
 }

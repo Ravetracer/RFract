@@ -6,13 +6,16 @@
 
 use std::collections::HashMap;
 
-use super::ast::{self, BinOp, DeclTy, Dialect, FormulaAst, ParamKind, Target, UnOp};
+use super::ast::{self, BinOp, DeclTy, Dialect, FormulaAst, ParamKind, ProgramKind, Target, UnOp};
 use super::ir::*;
 use super::parse::{Error, err};
 
 struct Ck<'a> {
     ast: &'a FormulaAst,
     dialect: Dialect,
+    kind: ProgramKind,
+    index_slot: Option<usize>,
+    solid_slot: Option<usize>,
     params: Vec<Param>,
     locals: Vec<Local>,
     /// Local slot by (normalized) name.
@@ -157,11 +160,21 @@ impl<'a> Ck<'a> {
         }
         let ufm = self.dialect == Dialect::Ufm;
         let a = self.ast;
-        [&a.global, &a.init, &a.body, &a.fin].iter().any(|b| walk(b, key, ufm))
+        [&a.global, &a.init, &a.body, &a.fin, &a.transform].iter().any(|b| walk(b, key, ufm))
     }
 
     fn ufm_sys(&mut self, name: &str, line: usize) -> Result<Expr, Error> {
-        let s = match name.to_ascii_lowercase().as_str() {
+        let lower = name.to_ascii_lowercase();
+        match (self.kind, lower.as_str()) {
+            (ProgramKind::Transform, "pixel") => return Ok(Expr { ty: Ty::Complex, kind: Kind::Local(Z) }),
+            (ProgramKind::Coloring, "index") => return Ok(Expr { ty: Ty::Real, kind: Kind::Local(self.index_slot.unwrap_or(0)) }),
+            (ProgramKind::Coloring | ProgramKind::Transform, "solid") => {
+                return Ok(Expr { ty: Ty::Bool, kind: Kind::Local(self.solid_slot.unwrap_or(0)) });
+            }
+            (ProgramKind::Coloring | ProgramKind::Transform, "z") => return Ok(self.sys(Sys::Z)),
+            _ => {}
+        }
+        let s = match lower.as_str() {
             "pixel" => Sys::Pixel,
             "z" => return Ok(Expr { ty: Ty::Complex, kind: Kind::Local(Z) }),
             "numiter" => Sys::NumIter,
@@ -430,8 +443,19 @@ impl<'a> Ck<'a> {
                     let v = self.expr(value, *line)?;
                     match target {
                         Target::Var(name) => out.push(self.assign(name, v, *line)?),
-                        Target::Sys(name) if name.eq_ignore_ascii_case("z") => out.push(Stmt::Assign(Z, conv(v, Ty::Complex))),
-                        Target::Sys(name) => return err(*line, format!("'#{name}' cannot be assigned in a formula")),
+                        Target::Sys(name) => {
+                            let lower = name.to_ascii_lowercase();
+                            match (self.kind, lower.as_str()) {
+                                (ProgramKind::Fractal, "z") | (ProgramKind::Transform, "pixel") => out.push(Stmt::Assign(Z, conv(v, Ty::Complex))),
+                                (ProgramKind::Coloring, "index") => {
+                                    out.push(Stmt::Assign(self.index_slot.unwrap_or(0), conv(self.numeric(v), Ty::Real)))
+                                }
+                                (ProgramKind::Coloring | ProgramKind::Transform, "solid") => {
+                                    out.push(Stmt::Assign(self.solid_slot.unwrap_or(0), conv(v, Ty::Bool)))
+                                }
+                                _ => return err(*line, format!("'#{name}' cannot be assigned here")),
+                            }
+                        }
                         Target::Comp { re, var } => {
                             let key = self.norm(var);
                             let i = if key == "z" { Z } else { self.local(var, Ty::Complex) };
@@ -508,13 +532,21 @@ pub fn param_ty(kind: ParamKind) -> Ty {
     }
 }
 
-/// Checks a parsed formula and lowers it to the typed IR.
+/// Checks a parsed fractal formula and lowers it to the typed IR.
 pub fn check(ast: &FormulaAst) -> Result<Program, Error> {
+    check_kind(ast, ProgramKind::Fractal)
+}
+
+/// Checks a parsed formula of the given kind.
+pub fn check_kind(ast: &FormulaAst, kind: ProgramKind) -> Result<Program, Error> {
     let mut preset = HashMap::new();
     for _round in 0..6 {
         let mut ck = Ck {
             ast,
             dialect: ast.dialect,
+            kind,
+            index_slot: None,
+            solid_slot: None,
             params: Vec::new(),
             locals: vec![Local { name: "z".into(), ty: Ty::Complex }],
             slots: HashMap::new(),
@@ -525,6 +557,14 @@ pub fn check(ast: &FormulaAst) -> Result<Program, Error> {
             transcendental: false,
         };
         ck.slots.insert("z".into(), Z);
+        if kind == ProgramKind::Coloring {
+            ck.locals.push(Local { name: "#index".into(), ty: Ty::Real });
+            ck.index_slot = Some(ck.locals.len() - 1);
+        }
+        if kind != ProgramKind::Fractal {
+            ck.locals.push(Local { name: "#solid".into(), ty: Ty::Bool });
+            ck.solid_slot = Some(ck.locals.len() - 1);
+        }
         for p in &ast.params {
             if ck.param_index(&p.name).is_some() {
                 return err(0, format!("parameter '{}' is declared twice", p.name));
@@ -552,13 +592,14 @@ pub fn check(ast: &FormulaAst) -> Result<Program, Error> {
         }
         let mut init = ck.stmts(&ast.global)?;
         init.extend(ck.stmts(&ast.init)?);
-        let body = ck.stmts(&ast.body)?;
-        let bailout = match &ast.bailout {
-            Some(b) => {
+        let body = if kind == ProgramKind::Transform { ck.stmts(&ast.transform)? } else { ck.stmts(&ast.body)? };
+        let bailout = match (&ast.bailout, kind) {
+            (Some(b), ProgramKind::Fractal) => {
                 let e = ck.expr(b, 0)?;
                 ck.cond(e)
             }
-            None => return err(0, "the formula has no bailout condition"),
+            (None, ProgramKind::Fractal) => return err(0, "the formula has no bailout condition"),
+            _ => Expr { ty: Ty::Bool, kind: Kind::Bool(true) },
         };
         let fin = ck.stmts(&ast.fin)?;
         if !ck.widen.is_empty() {
@@ -575,6 +616,9 @@ pub fn check(ast: &FormulaAst) -> Result<Program, Error> {
         }
         return Ok(Program {
             name: ast.name.clone(),
+            kind,
+            index_slot: ck.index_slot,
+            solid_slot: ck.solid_slot,
             params: ck.params,
             locals: ck.locals,
             init,

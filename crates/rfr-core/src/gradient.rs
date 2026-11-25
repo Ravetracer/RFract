@@ -41,11 +41,46 @@ pub enum Blend {
 pub struct Gradient {
     pub stops: Vec<Stop>,
     pub blend: Blend,
+    /// Opacity along the gradient (its own positions, linear blends, cyclic); empty: opaque.
+    pub alpha: Vec<AlphaStop>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AlphaStop {
+    pub pos: f64,
+    pub alpha: f32,
+}
+
+/// Opacity at `t` (wrapped): linear blends between the stops, cyclic like the colors.
+pub fn sample_alpha(stops: &[AlphaStop], t: f64) -> f32 {
+    match stops.len() {
+        0 => return 1.0,
+        1 => return stops[0].alpha,
+        _ => {}
+    }
+    let mut s = stops.to_vec();
+    s.sort_by(|a, b| a.pos.total_cmp(&b.pos));
+    let t = t.rem_euclid(1.0);
+    if let Some(i) = s.windows(2).position(|w| t >= w[0].pos && t <= w[1].pos) {
+        let (a, b) = (&s[i], &s[i + 1]);
+        let span = b.pos - a.pos;
+        let u = if span > 0.0 { ((t - a.pos) / span) as f32 } else { 0.0 };
+        return a.alpha + (b.alpha - a.alpha) * u;
+    }
+    let (last, first) = (&s[s.len() - 1], &s[0]);
+    let span = first.pos + 1.0 - last.pos;
+    let tt = if t < first.pos { t + 1.0 } else { t };
+    let u = if span > 0.0 { ((tt - last.pos) / span) as f32 } else { 0.0 };
+    last.alpha + (first.alpha - last.alpha) * u
 }
 
 impl Default for Gradient {
     fn default() -> Self {
-        preset("Ice and fire").unwrap_or(Gradient { stops: vec![Stop::new(0.0, [0.0; 3]), Stop::new(1.0, [1.0; 3])], blend: Blend::Smooth })
+        preset("Ice and fire").unwrap_or(Gradient {
+            stops: vec![Stop::new(0.0, [0.0; 3]), Stop::new(1.0, [1.0; 3])],
+            blend: Blend::Smooth,
+            alpha: Vec::new(),
+        })
     }
 }
 
@@ -89,10 +124,11 @@ pub fn preset_names() -> impl Iterator<Item = &'static str> {
 }
 
 pub fn preset(name: &str) -> Option<Gradient> {
-    PRESETS
-        .iter()
-        .find(|(n, _)| *n == name)
-        .map(|(_, s)| Gradient { stops: s.iter().map(|&(p, r, g, b)| Stop::srgb(p, r, g, b)).collect(), blend: Blend::Smooth })
+    PRESETS.iter().find(|(n, _)| *n == name).map(|(_, s)| Gradient {
+        stops: s.iter().map(|&(p, r, g, b)| Stop::srgb(p, r, g, b)).collect(),
+        blend: Blend::Smooth,
+        alpha: Vec::new(),
+    })
 }
 
 fn sorted(stops: &[Stop]) -> Vec<Stop> {
@@ -151,8 +187,9 @@ impl Gradient {
     pub fn lut(&self) -> Vec<[f32; 4]> {
         (0..LUT_SIZE)
             .map(|i| {
-                let c = self.sample(i as f64 / LUT_SIZE as f64);
-                [c[0], c[1], c[2], 1.0]
+                let t = i as f64 / LUT_SIZE as f64;
+                let c = self.sample(t);
+                [c[0], c[1], c[2], sample_alpha(&self.alpha, t)]
             })
             .collect()
     }
@@ -176,7 +213,7 @@ mod tests {
 
     #[test]
     fn samples_hit_the_stops_and_wrap() {
-        let g = Gradient { stops: vec![Stop::new(0.25, [1.0, 0.0, 0.0]), Stop::new(0.75, [0.0, 0.0, 1.0])], blend: Blend::Linear };
+        let g = Gradient { stops: vec![Stop::new(0.25, [1.0, 0.0, 0.0]), Stop::new(0.75, [0.0, 0.0, 1.0])], blend: Blend::Linear, alpha: Vec::new() };
         assert_eq!(g.sample(0.25), [1.0, 0.0, 0.0]);
         assert_eq!(g.sample(0.75), [0.0, 0.0, 1.0]);
         // Wrap segment: 0.75 → 1.25 (blue → red); 0.0 is its middle, like 1.0.
@@ -186,6 +223,10 @@ mod tests {
         assert!(a[0] > 0.05 && a[2] > 0.05, "{a:?}");
         assert_eq!(g.lut().len(), LUT_SIZE);
         assert!(preset_names().all(|n| preset(n).is_some()));
+        let a = [AlphaStop { pos: 0.0, alpha: 0.0 }, AlphaStop { pos: 0.5, alpha: 1.0 }];
+        assert_eq!(sample_alpha(&a, 0.25), 0.5);
+        assert_eq!(sample_alpha(&a, 0.75), 0.5);
+        assert_eq!(sample_alpha(&[], 0.3), 1.0);
     }
 
     #[test]

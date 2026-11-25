@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
-//! The document (`.rfr`, JSON): image size, view and the layer stack. Stage 1 renders the
-//! first visible layer; the model is already layer-shaped.
+//! The document (`.rfr`, JSON): image size and background, view and the layer tree (fractal
+//! layers and groups with merge modes, opacity and masks).
 
 use std::collections::BTreeMap;
 
@@ -11,7 +11,8 @@ use crate::formula::ParamValue;
 use crate::gradient::Gradient;
 
 /// File format version; newer files are refused with a message, older ones are upgraded.
-pub const DOC_VERSION: u32 = 1;
+/// 2: layer tree (groups, merge modes, masks), transformations, coloring formulas, background.
+pub const DOC_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -29,6 +30,8 @@ pub struct Image {
     pub height: u32,
     /// Samples per pixel of final renders (export, command line).
     pub samples: u32,
+    /// Below all layers (linear RGB and alpha; alpha 0 exports transparent PNGs).
+    pub background: [f32; 4],
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -72,6 +75,8 @@ pub enum OutsideMethod {
     /// Distance estimate to the set, relative to the pixel size (log scale).
     Distance,
     Solid,
+    /// A coloring formula (`Coloring::formula`).
+    Formula,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -83,6 +88,158 @@ pub enum InsideMethod {
     Magnitude,
     /// Angle of z after the last iteration.
     Angle,
+    /// A coloring formula (`Coloring::formula`).
+    Formula,
+}
+
+/// How a layer combines with what is below it (the separable modes work per channel, Hue to
+/// Luminosity on hue, saturation and luminosity).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum MergeMode {
+    #[default]
+    Normal,
+    Multiply,
+    Screen,
+    Overlay,
+    SoftLight,
+    HardLight,
+    ColorDodge,
+    ColorBurn,
+    Darken,
+    Lighten,
+    Difference,
+    Exclusion,
+    Add,
+    Subtract,
+    Hue,
+    Saturation,
+    Color,
+    Luminosity,
+}
+
+impl MergeMode {
+    pub const ALL: [MergeMode; 18] = [
+        MergeMode::Normal,
+        MergeMode::Multiply,
+        MergeMode::Screen,
+        MergeMode::Overlay,
+        MergeMode::SoftLight,
+        MergeMode::HardLight,
+        MergeMode::ColorDodge,
+        MergeMode::ColorBurn,
+        MergeMode::Darken,
+        MergeMode::Lighten,
+        MergeMode::Difference,
+        MergeMode::Exclusion,
+        MergeMode::Add,
+        MergeMode::Subtract,
+        MergeMode::Hue,
+        MergeMode::Saturation,
+        MergeMode::Color,
+        MergeMode::Luminosity,
+    ];
+    pub fn label(self) -> &'static str {
+        match self {
+            MergeMode::Normal => "Normal",
+            MergeMode::Multiply => "Multiply",
+            MergeMode::Screen => "Screen",
+            MergeMode::Overlay => "Overlay",
+            MergeMode::SoftLight => "Soft light",
+            MergeMode::HardLight => "Hard light",
+            MergeMode::ColorDodge => "Color dodge",
+            MergeMode::ColorBurn => "Color burn",
+            MergeMode::Darken => "Darken",
+            MergeMode::Lighten => "Lighten",
+            MergeMode::Difference => "Difference",
+            MergeMode::Exclusion => "Exclusion",
+            MergeMode::Add => "Add",
+            MergeMode::Subtract => "Subtract",
+            MergeMode::Hue => "Hue",
+            MergeMode::Saturation => "Saturation",
+            MergeMode::Color => "Color",
+            MergeMode::Luminosity => "Luminosity",
+        }
+    }
+    pub fn tip(self) -> &'static str {
+        match self {
+            MergeMode::Normal => "The layer covers what is below (by its alpha and opacity)",
+            MergeMode::Multiply => "Darkens: multiplies the colors (white keeps the color below)",
+            MergeMode::Screen => "Lightens: the inverse of multiplying the inverted colors (black keeps the color below)",
+            MergeMode::Overlay => "Multiply in dark, screen in light parts of the image below: more contrast",
+            MergeMode::SoftLight => "Gentle darkening or lightening by the layer's lightness",
+            MergeMode::HardLight => "Multiply or screen by the layer's lightness: strong contrast",
+            MergeMode::ColorDodge => "Brightens the image below by the layer's color",
+            MergeMode::ColorBurn => "Darkens the image below by the layer's color",
+            MergeMode::Darken => "The darker of both per channel",
+            MergeMode::Lighten => "The lighter of both per channel",
+            MergeMode::Difference => "The absolute difference of both",
+            MergeMode::Exclusion => "Like difference with less contrast",
+            MergeMode::Add => "Adds the colors (clipped)",
+            MergeMode::Subtract => "Subtracts the layer from the image below (clipped)",
+            MergeMode::Hue => "The layer's hue with the saturation and luminosity below",
+            MergeMode::Saturation => "The layer's saturation with the hue and luminosity below",
+            MergeMode::Color => "The layer's hue and saturation with the luminosity below",
+            MergeMode::Luminosity => "The layer's luminosity with the hue and saturation below",
+        }
+    }
+    pub fn index(self) -> u32 {
+        MergeMode::ALL.iter().position(|m| *m == self).unwrap_or(0) as u32
+    }
+}
+
+/// What a layer is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LayerKind {
+    #[default]
+    Fractal,
+    /// Combines its children first, then merges the result like one layer.
+    Group,
+}
+
+/// Where a mask's value comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum MaskSource {
+    /// Luminosity of the mask's color times its alpha.
+    #[default]
+    Luminance,
+    Alpha,
+}
+
+/// A fractal whose brightness (or alpha) limits where its layer shows.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Mask {
+    pub enabled: bool,
+    pub layer: Box<Layer>,
+    pub invert: bool,
+    pub source: MaskSource,
+}
+
+impl Default for Mask {
+    fn default() -> Self {
+        let mut layer = Layer { name: "Mask".into(), ..Layer::default() };
+        layer.outside.gradient = crate::gradient::preset("Grayscale").unwrap_or_default();
+        layer.inside.solid = [1.0, 1.0, 1.0];
+        Mask { enabled: true, layer: Box::new(layer), invert: false, source: MaskSource::Luminance }
+    }
+}
+
+/// A transformation (formula from the library) applied to the points before the fractal.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TransformRef {
+    pub formula: String,
+    pub params: BTreeMap<String, ParamValue>,
+    pub enabled: bool,
+}
+
+impl Default for TransformRef {
+    fn default() -> Self {
+        TransformRef { formula: "rfract-transform:Affine".into(), params: BTreeMap::new(), enabled: true }
+    }
 }
 
 /// Maps the coloring value before density and offset.
@@ -132,13 +289,26 @@ pub struct Coloring {
     pub density: f64,
     /// Shift along the gradient (0..1, one full cycle).
     pub offset: f64,
-    /// Color of the solid method (sRGB, 0..1).
+    /// Color of the solid method (linear RGB) and its alpha (0 leaves the region transparent).
     pub solid: [f32; 3],
+    pub solid_alpha: f32,
+    /// Coloring formula of the Formula method (library id) and its parameters.
+    pub formula: String,
+    pub params: BTreeMap<String, ParamValue>,
 }
 
 impl Default for Coloring {
     fn default() -> Self {
-        Coloring { gradient: Gradient::default(), transfer: Transfer::Sqrt, density: 0.25, offset: 0.0, solid: [0.0, 0.0, 0.0] }
+        Coloring {
+            gradient: Gradient::default(),
+            transfer: Transfer::Sqrt,
+            density: 0.25,
+            offset: 0.0,
+            solid: [0.0, 0.0, 0.0],
+            solid_alpha: 1.0,
+            formula: "rfract-coloring:OrbitTrap".into(),
+            params: BTreeMap::new(),
+        }
     }
 }
 
@@ -147,6 +317,15 @@ impl Default for Coloring {
 pub struct Layer {
     pub name: String,
     pub visible: bool,
+    pub kind: LayerKind,
+    /// Layers of a group, bottom first.
+    pub children: Vec<Layer>,
+    pub merge: MergeMode,
+    /// 0..1
+    pub opacity: f64,
+    pub mask: Option<Mask>,
+    /// Transformations of the points before the fractal, applied in order.
+    pub transforms: Vec<TransformRef>,
     /// Formula id in the library (`rfract:Mandelbrot`, `fractalpark:<id>`).
     pub formula: String,
     /// Parameter values by name; missing ones use the formula's defaults.
@@ -166,6 +345,12 @@ impl Default for Layer {
         Layer {
             name: "Layer 1".into(),
             visible: true,
+            kind: LayerKind::Fractal,
+            children: Vec::new(),
+            merge: MergeMode::Normal,
+            opacity: 1.0,
+            mask: None,
+            transforms: Vec::new(),
             formula: "rfract:Mandelbrot".into(),
             params: BTreeMap::new(),
             max_iter: 500,
@@ -181,7 +366,7 @@ impl Default for Layer {
 
 impl Default for Image {
     fn default() -> Self {
-        Image { width: 1920, height: 1080, samples: 64 }
+        Image { width: 1920, height: 1080, samples: 64, background: [0.0, 0.0, 0.0, 1.0] }
     }
 }
 
@@ -203,16 +388,52 @@ impl Document {
     }
 
     pub fn from_json(s: &str) -> Result<Document, String> {
-        let d: Document = serde_json::from_str(s).map_err(|e| format!("not an RFract document: {e}"))?;
+        let mut d: Document = serde_json::from_str(s).map_err(|e| format!("not an RFract document: {e}"))?;
         if d.version > DOC_VERSION {
             return Err(format!("the document needs a newer RFract (file version {}, this program reads up to {DOC_VERSION})", d.version));
         }
+        // Version 1 had one layer and no new fields: the defaults are the old behavior.
+        d.version = DOC_VERSION;
         Ok(d)
     }
 
-    /// The layer the renderer shows in stage 1: the first visible one.
+    /// The first visible fractal layer (depth first, top of the stack first).
     pub fn active_layer(&self) -> Option<&Layer> {
-        self.layers.iter().find(|l| l.visible)
+        fn find(list: &[Layer]) -> Option<&Layer> {
+            list.iter().rev().filter(|l| l.visible).find_map(|l| match l.kind {
+                LayerKind::Fractal => Some(l),
+                LayerKind::Group => find(&l.children),
+            })
+        }
+        find(&self.layers)
+    }
+
+    /// The layer at `path` (indexes from the top level down through groups).
+    pub fn layer(&self, path: &[usize]) -> Option<&Layer> {
+        let (first, rest) = path.split_first()?;
+        let mut l = self.layers.get(*first)?;
+        for i in rest {
+            l = l.children.get(*i)?;
+        }
+        Some(l)
+    }
+
+    pub fn layer_mut(&mut self, path: &[usize]) -> Option<&mut Layer> {
+        let (first, rest) = path.split_first()?;
+        let mut l = self.layers.get_mut(*first)?;
+        for i in rest {
+            l = l.children.get_mut(*i)?;
+        }
+        Some(l)
+    }
+
+    /// The list that holds the layer at `path` (the top level or a group's children).
+    pub fn siblings_mut(&mut self, path: &[usize]) -> Option<&mut Vec<Layer>> {
+        match path.split_last() {
+            Some((_, [])) => Some(&mut self.layers),
+            Some((_, parent)) => self.layer_mut(parent).map(|l| &mut l.children),
+            None => None,
+        }
     }
 
     /// A document showing library formula `id` at its suggested view.
@@ -245,8 +466,19 @@ mod tests {
         d.layers[0].params.insert("start".into(), ParamValue::Complex([0.1, -0.2]));
         let back = Document::from_json(&d.to_json()).unwrap();
         assert_eq!(back, d);
-        let newer = d.to_json().replace("\"version\": 1", "\"version\": 99");
+        let newer = d.to_json().replace("\"version\": 2", "\"version\": 99");
         assert!(Document::from_json(&newer).is_err());
+    }
+
+    #[test]
+    fn version_1_documents_upgrade() {
+        let v1 = r#"{"version":1,"image":{"width":640,"height":360,"samples":16},"view":{"center":["-0.5","0"],"radius":1.4,"rotation":0},"layers":[{"formula":"rfract:Mandelbrot","max_iter":300}]}"#;
+        let d = Document::from_json(v1).unwrap();
+        assert_eq!(d.version, DOC_VERSION);
+        assert_eq!(d.layers[0].merge, MergeMode::Normal);
+        assert_eq!(d.layers[0].opacity, 1.0);
+        assert_eq!(d.image.background, [0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(d.active_layer().unwrap().max_iter, 300);
     }
 
     #[test]

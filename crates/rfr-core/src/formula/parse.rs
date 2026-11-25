@@ -833,6 +833,7 @@ impl Parser {
             magn: None,
             maxiter: None,
             skipped_sections: Vec::new(),
+            transform: Vec::new(),
         };
         let mut seen_section = false;
         loop {
@@ -857,6 +858,7 @@ impl Parser {
                 "init" => f.init = self.block(&[])?,
                 "loop" => f.body = self.block(&[])?,
                 "final" => f.fin = self.block(&[])?,
+                "transform" => f.transform = self.block(&[])?,
                 "bailout" => {
                     self.skip_newlines();
                     if self.at_section().is_none() && !self.is_op("}") {

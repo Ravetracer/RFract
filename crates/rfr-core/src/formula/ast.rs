@@ -15,6 +15,19 @@ pub enum Dialect {
     Ufm,
 }
 
+/// What a program computes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum ProgramKind {
+    /// Fractal formula: `init`, `loop`, `bailout`, `final` on `z`.
+    Fractal,
+    /// Coloring algorithm: `init`, `loop` (after every iteration that continues), `final`; reads
+    /// `#z`, writes `#index` (gradient position) and `#solid`.
+    Coloring,
+    /// Transformation: `transform` changes `#pixel` before the fractal runs; `#solid = true`
+    /// leaves the point transparent.
+    Transform,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnOp {
     Neg,
@@ -161,6 +174,8 @@ pub struct FormulaAst {
     pub body: Vec<Stmt>,
     pub bailout: Option<Expr>,
     pub fin: Vec<Stmt>,
+    /// `transform:` (transformations).
+    pub transform: Vec<Stmt>,
     /// From the `default:` section.
     pub title: Option<String>,
     pub center: Option<[f64; 2]>,

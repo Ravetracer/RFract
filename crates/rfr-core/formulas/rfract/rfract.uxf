@@ -1,0 +1,391 @@
+comment {
+  RFract built-in transformations (UFM syntax).
+
+  A transformation changes #pixel before the fractal formula runs (global runs first). Setting
+  #solid = true leaves the point transparent. Several transformations apply in order.
+}
+
+Affine {
+; Scale, rotate, shear and move.
+global:
+  complex rot = (cos(@angle * #pi / 180), sin(@angle * #pi / 180))
+transform:
+  complex p = #pixel - @center
+  p = (real(p) + @shear * imag(p), imag(p))
+  #pixel = @center + p * rot / @scale + @offset
+default:
+  title = "Affine"
+  complex param center
+    caption = "Center"
+    default = (0, 0)
+    hint = "Fixed point of the rotation and scaling."
+  endparam
+  float param scale
+    caption = "Scale"
+    default = 1
+    hint = "Values above 1 magnify the fractal, below 1 shrink it."
+  endparam
+  float param angle
+    caption = "Angle"
+    default = 0
+    min = -180
+    max = 180
+    hint = "Rotation in degrees."
+  endparam
+  float param shear
+    caption = "Shear"
+    default = 0
+    min = -2
+    max = 2
+    hint = "Horizontal shear."
+  endparam
+  complex param offset
+    caption = "Offset"
+    default = (0, 0)
+    hint = "Shift of the fractal."
+  endparam
+}
+
+Mirror {
+; Mirrors one side of a line onto the other.
+global:
+  complex d = (cos(@angle * #pi / 180), sin(@angle * #pi / 180))
+transform:
+  complex p = (#pixel - @center) * conj(d)
+  if (imag(p) < 0) != @flip
+    p = conj(p)
+  endif
+  #pixel = @center + p * d
+default:
+  title = "Mirror"
+  complex param center
+    caption = "Point on the line"
+    default = (0, 0)
+    hint = "The mirror line passes through this point."
+  endparam
+  float param angle
+    caption = "Angle"
+    default = 0
+    min = -180
+    max = 180
+    hint = "Direction of the mirror line in degrees."
+  endparam
+  bool param flip
+    caption = "Other side"
+    default = false
+    hint = "Keep the other side of the line."
+  endparam
+}
+
+Kaleidoscope {
+; Repeats one wedge around a center, optionally mirrored.
+global:
+  float seg = 2 * #pi / @n
+  float rot = @angle * #pi / 180
+transform:
+  complex p = #pixel - @center
+  float r = cabs(p)
+  float a = atan2(p) - rot
+  a = a - seg * floor(a / seg)
+  if @mirror && a > seg / 2
+    a = seg - a
+  endif
+  #pixel = @center + r * (cos(a + rot), sin(a + rot))
+default:
+  title = "Kaleidoscope"
+  int param n
+    caption = "Segments"
+    default = 6
+    min = 1
+    max = 64
+    hint = "Number of wedges around the center."
+  endparam
+  bool param mirror
+    caption = "Mirror"
+    default = true
+    hint = "Mirror every other wedge (seamless edges)."
+  endparam
+  complex param center
+    caption = "Center"
+    default = (0, 0)
+    hint = "Center of the kaleidoscope."
+  endparam
+  float param angle
+    caption = "Angle"
+    default = 0
+    min = -180
+    max = 180
+    hint = "Rotation of the wedges in degrees."
+  endparam
+}
+
+Polar {
+; Polar coordinates: angle and logarithmic radius become x and y (or back).
+transform:
+  complex p = #pixel - @center
+  if @mode == 0
+    #pixel = (atan2(p), log(max(cabs(p), 1e-30))) * @scale + @offset
+  else
+    complex q = p / @scale
+    #pixel = exp(imag(q)) * (cos(real(q)), sin(real(q))) + @offset
+  endif
+default:
+  title = "Polar coordinates"
+  int param mode
+    caption = "Direction"
+    enum = "Cartesian to polar" "Polar to cartesian"
+    default = 0
+    hint = "Cartesian to polar unrolls circles into lines; the other direction rolls lines into circles."
+  endparam
+  complex param center
+    caption = "Center"
+    default = (0, 0)
+    hint = "Origin of the polar coordinates."
+  endparam
+  float param scale
+    caption = "Scale"
+    default = 1
+    hint = "Size of the result."
+  endparam
+  complex param offset
+    caption = "Offset"
+    default = (0, 0)
+    hint = "Shift of the result."
+  endparam
+}
+
+Inversion {
+; Circle inversion: inside and outside of a circle swap.
+transform:
+  complex p = #pixel - @center
+  if |p| < 1e-30
+    #solid = true
+  else
+    #pixel = @center + @radius * @radius / conj(p)
+  endif
+default:
+  title = "Circle inversion"
+  complex param center
+    caption = "Center"
+    default = (0, 0)
+    hint = "Center of the inversion circle."
+  endparam
+  float param radius
+    caption = "Radius"
+    default = 1
+    min = 0
+    hint = "Points on this circle stay where they are."
+  endparam
+}
+
+Moebius {
+; Möbius transformation (a·z + b) / (c·z + d).
+transform:
+  complex den = @c * #pixel + @d
+  if |den| < 1e-30
+    #solid = true
+  else
+    #pixel = (@a * #pixel + @b) / den
+  endif
+default:
+  title = "Möbius"
+  complex param a
+    caption = "a"
+    default = (1, 0)
+    hint = "(a·z + b) / (c·z + d)"
+  endparam
+  complex param b
+    caption = "b"
+    default = (0, 0)
+    hint = "(a·z + b) / (c·z + d)"
+  endparam
+  complex param c
+    caption = "c"
+    default = (0, 0)
+    hint = "(a·z + b) / (c·z + d)"
+  endparam
+  complex param d
+    caption = "d"
+    default = (1, 0)
+    hint = "(a·z + b) / (c·z + d)"
+  endparam
+}
+
+RiemannSphere {
+; Rolls the plane over the Riemann sphere: infinity can come into view.
+global:
+  float h = @tilt * #pi / 360
+  complex spin = (cos(@spin * #pi / 180), sin(@spin * #pi / 180))
+transform:
+  complex p = (#pixel - @center) / @radius * spin
+  complex den = (0, 1) * sin(h) * p + cos(h)
+  if |den| < 1e-30
+    #solid = true
+  else
+    #pixel = @center + (p * cos(h) + (0, 1) * sin(h)) / den * @radius
+  endif
+default:
+  title = "Riemann sphere"
+  float param tilt
+    caption = "Tilt"
+    default = 90
+    min = -180
+    max = 180
+    hint = "Rotation of the sphere around the horizontal axis in degrees (180 swaps zero and infinity)."
+  endparam
+  float param spin
+    caption = "Spin"
+    default = 0
+    min = -180
+    max = 180
+    hint = "Rotation around the poles in degrees."
+  endparam
+  complex param center
+    caption = "Center"
+    default = (0, 0)
+    hint = "Point the sphere touches the plane at."
+  endparam
+  float param radius
+    caption = "Radius"
+    default = 1
+    min = 0
+    hint = "Size of the sphere."
+  endparam
+}
+
+Tiling {
+; Repeats a rectangle of the plane.
+transform:
+  complex p = #pixel - @center
+  complex q = (real(p) / real(@size), imag(p) / imag(@size))
+  complex k = round(q)
+  q = q - k
+  if @mirror
+    if abs(real(k) - 2 * round(real(k) / 2)) > 0.5
+      q = (-real(q), imag(q))
+    endif
+    if abs(imag(k) - 2 * round(imag(k) / 2)) > 0.5
+      q = (real(q), -imag(q))
+    endif
+  endif
+  #pixel = @center + (real(q) * real(@size), imag(q) * imag(@size))
+default:
+  title = "Tiling"
+  complex param center
+    caption = "Center"
+    default = (0, 0)
+    hint = "Center of the tile that stays."
+  endparam
+  complex param size
+    caption = "Tile size"
+    default = (1, 1)
+    hint = "Width (real part) and height (imaginary part) of a tile."
+  endparam
+  bool param mirror
+    caption = "Mirror"
+    default = false
+    hint = "Mirror every other tile, so the edges match."
+  endparam
+}
+
+Twirl {
+; Turns the plane around a center, most at the center.
+transform:
+  complex p = #pixel - @center
+  float a = @amount * #pi / 180 * exp(-cabs(p) / @radius)
+  #pixel = @center + p * (cos(a), sin(a))
+default:
+  title = "Twirl"
+  complex param center
+    caption = "Center"
+    default = (0, 0)
+    hint = "Center of the twirl."
+  endparam
+  float param amount
+    caption = "Amount"
+    default = 180
+    min = -720
+    max = 720
+    hint = "Rotation at the center in degrees."
+  endparam
+  float param radius
+    caption = "Radius"
+    default = 1
+    min = 0
+    hint = "Distance at which the rotation falls to about a third."
+  endparam
+}
+
+Ripple {
+; Concentric waves.
+transform:
+  complex p = #pixel - @center
+  float r = cabs(p)
+  if r > 1e-30
+    #pixel = #pixel + @amplitude * sin(2 * #pi * r / @wavelength + @phase * #pi / 180) * p / r
+  endif
+default:
+  title = "Ripple"
+  complex param center
+    caption = "Center"
+    default = (0, 0)
+    hint = "Center of the waves."
+  endparam
+  float param amplitude
+    caption = "Amplitude"
+    default = 0.05
+    hint = "Height of the waves."
+  endparam
+  float param wavelength
+    caption = "Wavelength"
+    default = 0.3
+    min = 0
+    hint = "Distance between two waves."
+  endparam
+  float param phase
+    caption = "Phase"
+    default = 0
+    min = -180
+    max = 180
+    hint = "Shift of the waves in degrees."
+  endparam
+}
+
+Droste {
+; Logarithmic spiral: zoom steps wind into a spiral (Escher's Droste effect).
+global:
+  float lr = log(@ratio)
+  complex f = (1, lr / (2 * #pi) * @strands)
+transform:
+  complex p = #pixel - @center
+  if |p| < 1e-60
+    #solid = true
+  else
+    complex w = log(p) / f
+    w = (real(w) - lr * floor(real(w) / lr), imag(w))
+    #pixel = @center + exp(w) * @scale
+  endif
+default:
+  title = "Droste spiral"
+  complex param center
+    caption = "Center"
+    default = (0, 0)
+    hint = "Center of the spiral."
+  endparam
+  float param ratio
+    caption = "Zoom per turn"
+    default = 4
+    min = 1.01
+    hint = "Magnification from one turn of the spiral to the next."
+  endparam
+  float param strands
+    caption = "Strands"
+    default = 1
+    hint = "Number of spiral arms."
+  endparam
+  float param scale
+    caption = "Scale"
+    default = 1
+    hint = "Size of the repeated region."
+  endparam
+}

@@ -26,6 +26,8 @@ pub struct Frame<S> {
     pub ismand: bool,
     pub center: Cx<S>,
     pub magn: S,
+    /// The fractal's current `z` (read by colorings as `#z`).
+    pub zcur: Cx<S>,
 }
 
 type BFn<S> = Box<dyn Fn(&Frame<S>) -> bool + Send + Sync>;
@@ -61,6 +63,14 @@ pub struct Orbit<S> {
     pub escaped: bool,
 }
 
+/// Events of [`Compiled::run_with`].
+pub enum Hook<S> {
+    /// After the fractal's `init`, with `z`.
+    Init(Cx<S>),
+    /// After an iteration that continues: iteration count, `z`, `z` before the iteration.
+    Iter(u32, Cx<S>, Cx<S>),
+}
+
 /// A program with its parameter values and function choices baked in.
 pub struct Compiled<S> {
     layout: Layout,
@@ -68,6 +78,8 @@ pub struct Compiled<S> {
     body: Vec<SFn<S>>,
     bailout: BFn<S>,
     fin: Vec<SFn<S>>,
+    index_slot: Option<usize>,
+    solid_slot: Option<usize>,
 }
 
 /// Real `x^y`: positive bases through exp/log, zero gives zero, negative bases use the real
@@ -278,6 +290,7 @@ impl<'a, S: Scalar + Send + Sync + 'static> Cc<'a, S> {
                 Sys::Center => E::C(Box::new(|f| f.center)),
                 Sys::LastSqr => E::R(Box::new(|f| f.lastsqr)),
                 Sys::Magn => E::R(Box::new(|f| f.magn)),
+                Sys::Z => E::C(Box::new(|f| f.zcur)),
                 Sys::MaxIt => E::I(Box::new(|f| f.maxit)),
                 Sys::NumIter => E::I(Box::new(|f| f.numiter)),
                 Sys::IsMand => E::B(Box::new(|f| f.ismand)),
@@ -575,7 +588,7 @@ impl<S: Scalar + Send + Sync + 'static> Compiled<S> {
         let body = cc.stmts(&prog.body);
         let bailout = cc.b(&prog.bailout);
         let fin = cc.stmts(&prog.fin);
-        Compiled { layout, init, body, bailout, fin }
+        Compiled { layout, init, body, bailout, fin, index_slot: prog.index_slot, solid_slot: prog.solid_slot }
     }
 
     /// A frame for this program (reuse it for many samples; [`Compiled::run`] resets it).
@@ -595,11 +608,11 @@ impl<S: Scalar + Send + Sync + 'static> Compiled<S> {
             ismand: true,
             center: Cx::zero(),
             magn: S::one(),
+            zcur: Cx::zero(),
         }
     }
 
-    /// Iterates one sample. The caller sets `pixel`, `c`, `ismand`, `center` and `magn`.
-    pub fn run(&self, f: &mut Frame<S>, maxit: u32) -> Orbit<S> {
+    fn reset(&self, f: &mut Frame<S>, maxit: u32) {
         f.bools.iter_mut().for_each(|v| *v = false);
         f.ints.iter_mut().for_each(|v| *v = 0);
         f.reals.iter_mut().for_each(|v| *v = S::zero());
@@ -608,8 +621,59 @@ impl<S: Scalar + Send + Sync + 'static> Compiled<S> {
         f.lastsqr = S::zero();
         f.numiter = 0;
         f.maxit = maxit as i64;
+    }
+
+    /// Transformation: runs `global` and `transform` on `pixel`; returns the new pixel and
+    /// whether the point is solid (left transparent).
+    pub fn transform(&self, f: &mut Frame<S>, pixel: Cx<S>) -> (Cx<S>, bool) {
+        self.reset(f, 0);
+        let z = self.layout.slot[Z].1;
+        f.cx[z] = pixel;
+        f.pixel = pixel;
+        self.init.iter().for_each(|s| s(f));
+        self.body.iter().for_each(|s| s(f));
+        (f.cx[z], self.solid(f))
+    }
+
+    fn solid(&self, f: &Frame<S>) -> bool {
+        self.solid_slot.is_some_and(|s| f.bools[self.layout.slot[s].1])
+    }
+
+    /// Coloring: starts a sample (the caller sets `pixel`, `c`, `ismand`, `center`, `magn` and
+    /// `zcur` to the fractal's `z` after its `init`).
+    pub fn color_init(&self, f: &mut Frame<S>, maxit: u32) {
+        self.reset(f, maxit);
+        self.init.iter().for_each(|s| s(f));
+    }
+
+    /// Coloring: one iteration (after every fractal iteration that continues).
+    pub fn color_loop(&self, f: &mut Frame<S>, numiter: u32, zprev: Cx<S>) {
+        f.numiter = numiter as i64;
+        f.zprev = zprev;
+        self.body.iter().for_each(|s| s(f));
+    }
+
+    /// Coloring: the end of the orbit; returns `#index` and `#solid`.
+    pub fn color_final(&self, f: &mut Frame<S>, numiter: u32, zprev: Cx<S>) -> (S, bool) {
+        f.numiter = numiter as i64;
+        f.zprev = zprev;
+        self.fin.iter().for_each(|s| s(f));
+        let index = self.index_slot.map_or(S::zero(), |s| f.reals[self.layout.slot[s].1]);
+        (index, self.solid(f))
+    }
+
+    /// Iterates one sample. The caller sets `pixel`, `c`, `ismand`, `center` and `magn`.
+    pub fn run(&self, f: &mut Frame<S>, maxit: u32) -> Orbit<S> {
+        self.run_with(f, maxit, |_| {})
+    }
+
+    /// [`Compiled::run`] with a hook called after `init` and after every iteration that
+    /// continues (coloring formulas run there).
+    pub fn run_with(&self, f: &mut Frame<S>, maxit: u32, mut hook: impl FnMut(Hook<S>)) -> Orbit<S> {
+        self.reset(f, maxit);
         let z = self.layout.slot[Z].1;
         self.init.iter().for_each(|s| s(f));
+        hook(Hook::Init(f.cx[z]));
         let mut escaped = false;
         let mut iter = 0;
         let mut zprev2 = Cx::zero();
@@ -624,6 +688,7 @@ impl<S: Scalar + Send + Sync + 'static> Compiled<S> {
                 escaped = true;
                 break;
             }
+            hook(Hook::Iter(iter, f.cx[z], f.zprev));
         }
         self.fin.iter().for_each(|s| s(f));
         Orbit { z: f.cx[z], zprev: f.zprev, zprev2, iter, escaped }

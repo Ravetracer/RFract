@@ -108,7 +108,7 @@ fn render(args: &[String]) -> Result<(), String> {
                 let mode = rfr_gpu::renderer::renderer_mode(&plan);
                 match rfr_gpu::render_blocking(ctx, &plan, s, |_| true) {
                     Ok(lin) => {
-                        rgba = Some(lin.iter().flat_map(|c| [srgb(c[0]), srgb(c[1]), srgb(c[2]), 255]).collect::<Vec<u8>>());
+                        rgba = Some(rfr_core::render::cpu::rgba8(&lin));
                         how = format!("on {name} ({mode:?})");
                     }
                     Err(e) => eprintln!("GPU render failed ({e}); rendering on the CPU"),
@@ -128,10 +128,6 @@ fn render(args: &[String]) -> Result<(), String> {
     rfr_core::io::png::write_rgba8(&output, w, h, &rgba, Some(&saved))?;
     println!("rendered {w} × {h}, {s} samples per pixel {how} in {:.2} s → {}", t.elapsed().as_secs_f64(), output.display());
     Ok(())
-}
-
-fn srgb(v: f32) -> u8 {
-    rfr_core::gradient::linear_to_srgb(v)
 }
 
 fn list_formulas() {

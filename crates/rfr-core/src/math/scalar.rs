@@ -13,6 +13,10 @@ pub trait Scalar:
     fn from_f64(v: f64) -> Self;
     /// The value without derivative information (comparisons, branches, finiteness).
     fn v(self) -> f64;
+    /// The derivative (0 for plain numbers).
+    fn d(self) -> f64 {
+        0.0
+    }
     fn zero() -> Self {
         Self::from_f64(0.0)
     }
@@ -143,6 +147,9 @@ impl Scalar for Dual {
     }
     fn v(self) -> f64 {
         self.v
+    }
+    fn d(self) -> f64 {
+        self.d
     }
     fn abs(self) -> Self {
         if self.v < 0.0 { -self } else { self }

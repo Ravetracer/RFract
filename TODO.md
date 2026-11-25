@@ -22,6 +22,13 @@ that come up along the way.
 
 ## Ideas
 
+- **Fly mode** (owner's wish, do whenever it fits): holding the left mouse button flies into
+  the fractal toward the cursor continuously, the right button flies out, the mouse wheel sets
+  the speed. The speed ramps up and down smoothly like a real drive (gentle acceleration
+  when a button is pressed, gentle braking when it is released; XaoS does this nicely). Fast
+  preview while flying, full quality once the flight stops; the cameraman/recording of
+  stage 8 can reuse the flight path.
+
 - Check Gnofract 4D's `formulas/` (BSD since 2.0) file by file and bundle what is clean.
 
 - Shared crate with RWildFire / RMandelbulb3D after stage 2 (theme, OIDN, post, gradients).

@@ -7,13 +7,15 @@ use std::sync::{Arc, OnceLock};
 
 use serde::Deserialize;
 
-use super::ast::Dialect;
+use super::ast::{Dialect, ProgramKind};
 use super::ir::Program;
 use super::parse::Error;
 
 include!(concat!(env!("OUT_DIR"), "/bundled_formulas.rs"));
 
 const RFRACT_UFM: &str = include_str!("../../formulas/rfract/rfract.ufm");
+const RFRACT_UCL: &str = include_str!("../../formulas/rfract/rfract.ucl");
+const RFRACT_UXF: &str = include_str!("../../formulas/rfract/rfract.uxf");
 const FRACTALPARK_INDEX: &str = include_str!("../../formulas/fractalpark/index.json");
 
 /// Where a formula comes from.
@@ -49,6 +51,7 @@ pub struct Entry {
     pub title: String,
     pub family: String,
     pub set: Set,
+    pub kind: ProgramKind,
     pub dialect: Dialect,
     pub source: &'static str,
     /// Name of the entry inside a multi-entry UFM file.
@@ -65,9 +68,17 @@ impl Library {
     pub fn get(&self, id: &str) -> Option<&Entry> {
         self.entries.iter().find(|e| e.id == id)
     }
-    /// Entries that compiled.
+    /// Fractal formulas that compiled.
     pub fn usable(&self) -> impl Iterator<Item = &Entry> {
-        self.entries.iter().filter(|e| e.program.is_ok())
+        self.entries.iter().filter(|e| e.program.is_ok() && e.kind == ProgramKind::Fractal)
+    }
+    /// Coloring algorithms that compiled.
+    pub fn colorings(&self) -> impl Iterator<Item = &Entry> {
+        self.entries.iter().filter(|e| e.program.is_ok() && e.kind == ProgramKind::Coloring)
+    }
+    /// Transformations that compiled.
+    pub fn transforms(&self) -> impl Iterator<Item = &Entry> {
+        self.entries.iter().filter(|e| e.program.is_ok() && e.kind == ProgramKind::Transform)
     }
 }
 
@@ -103,8 +114,31 @@ pub fn library() -> &'static Library {
     LIB.get_or_init(build)
 }
 
+/// Entries of a built-in UFM syntax file of the given kind (ids `<prefix>:<entry name>`).
+fn ufm_entries(src: &'static str, kind: ProgramKind, prefix: &str, family: &str, out: &mut Vec<Entry>) {
+    for e in super::parse::split_entries(src) {
+        let ast = super::parse::parse_ufm_entry(&e);
+        let title = ast.as_ref().ok().and_then(|a| a.title.clone()).unwrap_or_else(|| e.name.clone());
+        let program = ast.and_then(|a| super::check::check_kind(&a, kind)).map(Arc::new);
+        out.push(Entry {
+            id: format!("{prefix}:{}", e.name),
+            title,
+            family: family.into(),
+            set: Set::RFract,
+            kind,
+            dialect: Dialect::Ufm,
+            source: src,
+            entry: e.name.clone(),
+            program,
+            view: DefaultView { center: [0.0, 0.0], radius: 1.5, max_iter: 250, julia: None },
+        });
+    }
+}
+
 fn build() -> Library {
     let mut entries = Vec::new();
+    ufm_entries(RFRACT_UCL, ProgramKind::Coloring, "rfract-coloring", "Coloring", &mut entries);
+    ufm_entries(RFRACT_UXF, ProgramKind::Transform, "rfract-transform", "Transformation", &mut entries);
     for e in super::parse::split_entries(RFRACT_UFM) {
         let ast = super::parse::parse_ufm_entry(&e);
         let (title, center, magn, maxiter) = match &ast {
@@ -119,6 +153,7 @@ fn build() -> Library {
             title,
             family: "RFract".into(),
             set: Set::RFract,
+            kind: ProgramKind::Fractal,
             dialect: Dialect::Ufm,
             source: RFRACT_UFM,
             entry: e.name.clone(),
@@ -142,6 +177,7 @@ fn build() -> Library {
             title,
             family: row.family,
             set: Set::FractalPark,
+            kind: ProgramKind::Fractal,
             dialect: Dialect::Frm,
             source: src,
             entry: String::new(),
@@ -168,13 +204,56 @@ mod tests {
     fn every_bundled_formula_compiles_and_runs() {
         let lib = library();
         let fp = lib.entries.iter().filter(|e| e.set == Set::FractalPark).count();
-        let rf = lib.entries.iter().filter(|e| e.set == Set::RFract).count();
+        let rf = lib.entries.iter().filter(|e| e.set == Set::RFract && e.kind == ProgramKind::Fractal).count();
+        assert!(lib.colorings().count() >= 13, "colorings: {}", lib.colorings().count());
+        let broken: Vec<String> = lib
+            .entries
+            .iter()
+            .filter(|e| e.kind != ProgramKind::Fractal)
+            .filter_map(|e| e.program.as_ref().err().map(|err| format!("{}: {err}", e.id)))
+            .collect();
+        assert!(broken.is_empty(), "{}", broken.join("\n"));
+        assert!(lib.transforms().count() >= 11, "transforms: {}", lib.transforms().count());
         assert_eq!(fp, 534, "FractalPark entries");
         assert!(rf >= 17, "RFract entries: {rf}");
         let failed: Vec<String> =
             lib.entries.iter().filter_map(|e| e.program.as_ref().err().map(|err| format!("{} ({}): {err}", e.title, e.id))).collect();
         assert!(failed.is_empty(), "{} formulas fail:\n{}", failed.len(), failed.join("\n"));
         // Every formula runs on the CPU, plain and with derivatives, at a few points.
+        // Colorings and transformations run on a Mandelbrot orbit.
+        let m = lib.get("rfract:Mandelbrot").unwrap().program.as_ref().unwrap();
+        let fractal = Compiled::<f64>::new(m, &[]);
+        for e in lib.colorings().chain(lib.transforms()) {
+            let p = e.program.as_ref().unwrap();
+            let k = Compiled::<f64>::new(p, &[]);
+            let (mut ff, mut kf) = (fractal.frame(), k.frame());
+            for c in [C64::new(0.3, 0.6), C64::new(-0.1, 0.2)] {
+                if e.kind == ProgramKind::Transform {
+                    let (q, _) = k.transform(&mut kf, c);
+                    assert!(q.is_finite() || q.re.is_nan(), "{}: {q:?}", e.title);
+                    continue;
+                }
+                ff.pixel = c;
+                ff.c = c;
+                kf.pixel = c;
+                kf.c = c;
+                let o = fractal.run(&mut ff, 200);
+                let o2 = fractal.run_with(&mut ff, 200, |h| match h {
+                    super::super::cpu::Hook::Init(z) => {
+                        kf.zcur = z;
+                        k.color_init(&mut kf, 200);
+                    }
+                    super::super::cpu::Hook::Iter(it, z, zp) => {
+                        kf.zcur = z;
+                        k.color_loop(&mut kf, it, zp);
+                    }
+                });
+                assert_eq!(o.iter, o2.iter);
+                kf.zcur = o2.z;
+                let (index, _) = k.color_final(&mut kf, o2.iter, o2.zprev);
+                assert!(index.is_finite(), "{}: index {index}", e.title);
+            }
+        }
         for e in lib.usable() {
             let p = e.program.as_ref().unwrap();
             let plain = Compiled::<f64>::new(p, &[]);

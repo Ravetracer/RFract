@@ -1,70 +1,203 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
-//! CPU reference renderer: one sample per pixel per pass, accumulated in linear RGB. The GPU
-//! renderer follows it step by step (same sample positions, same coloring); its output is the
-//! reference for the parity tests and the fallback where the GPU lacks precision.
+//! CPU reference renderer: one sample per pixel per pass. Every layer runs its transformations,
+//! the fractal with its coloring formulas and the shading; the layer tree is composited over the
+//! background; the result is accumulated as premultiplied linear RGBA. The GPU renderer follows
+//! it step by step (same sample positions, same colorings, same compositing).
 
 use rayon::prelude::*;
 
-use super::{OrbitResult, Plan, sample_offset, shade};
-use crate::formula::cpu::{Compiled, Frame};
+use super::composite::{composite, mask_value};
+use super::{ColorMethod, LayerPlan, Node, OrbitResult, Plan, sample_offset, shade_formula, shade_native};
+use crate::formula::cpu::{Compiled, Frame, Hook};
 use crate::gradient::linear_to_srgb;
 use crate::math::complex::{C64, Cx};
 use crate::math::scalar::{Dual, Scalar};
 
+/// The compiled programs of one layer.
+struct LayerK<S> {
+    fractal: Compiled<S>,
+    transforms: Vec<Compiled<S>>,
+    outside: Option<Compiled<S>>,
+    inside: Option<Compiled<S>>,
+}
+
+/// Per-thread frames of one layer.
+#[derive(Clone)]
+struct LayerF<S> {
+    fractal: Frame<S>,
+    transforms: Vec<Frame<S>>,
+    outside: Option<Frame<S>>,
+    inside: Option<Frame<S>>,
+}
+
+impl<S: Scalar + Send + Sync + 'static> LayerK<S> {
+    fn new(lp: &LayerPlan) -> LayerK<S> {
+        let coloring = |c: &super::ColorPlan| c.formula().map(|p| Compiled::new(&p.program, &p.values));
+        LayerK {
+            fractal: Compiled::new(&lp.fractal.program, &lp.fractal.values),
+            transforms: lp.transforms.iter().map(|t| Compiled::new(&t.program, &t.values)).collect(),
+            outside: coloring(&lp.outside),
+            inside: coloring(&lp.inside),
+        }
+    }
+
+    fn frames(&self) -> LayerF<S> {
+        LayerF {
+            fractal: self.fractal.frame(),
+            transforms: self.transforms.iter().map(|t| t.frame()).collect(),
+            outside: self.outside.as_ref().map(|c| c.frame()),
+            inside: self.inside.as_ref().map(|c| c.frame()),
+        }
+    }
+
+    /// Color (linear RGB, straight alpha) of the layer at plane point `p`.
+    fn eval(&self, f: &mut LayerF<S>, lp: &LayerPlan, plan: &Plan, mut p: Cx<S>) -> [f32; 4] {
+        for (t, tf) in self.transforms.iter().zip(f.transforms.iter_mut()) {
+            let (q, solid) = t.transform(tf, p);
+            if solid {
+                return [0.0; 4];
+            }
+            p = q;
+        }
+        let c = if lp.julia { Cx::from_f64(lp.seed[0], lp.seed[1]) } else { p };
+        let center = Cx::from_f64(plan.frame.center[0], plan.frame.center[1]);
+        let magn = S::from_f64(plan.magn());
+        let setup = |fr: &mut Frame<S>| {
+            fr.pixel = p;
+            fr.c = c;
+            fr.ismand = !lp.julia;
+            fr.center = center;
+            fr.magn = magn;
+        };
+        setup(&mut f.fractal);
+        let maxit = lp.max_iter;
+        let o = {
+            let pairs = [(self.outside.as_ref(), f.outside.as_mut()), (self.inside.as_ref(), f.inside.as_mut())];
+            let mut colorings: Vec<(&Compiled<S>, &mut Frame<S>)> = pairs.into_iter().filter_map(|(k, fr)| Some((k?, fr?))).collect();
+            for (_, fr) in colorings.iter_mut() {
+                setup(fr);
+            }
+            self.fractal.run_with(&mut f.fractal, maxit, |h| match h {
+                Hook::Init(z) => {
+                    for (k, fr) in colorings.iter_mut() {
+                        fr.zcur = z;
+                        k.color_init(fr, maxit);
+                    }
+                }
+                Hook::Iter(it, z, zp) => {
+                    for (k, fr) in colorings.iter_mut() {
+                        fr.zcur = z;
+                        k.color_loop(fr, it, zp);
+                    }
+                }
+            })
+        };
+        let region = if o.escaped { &lp.outside } else { &lp.inside };
+        if let ColorMethod::Formula(_) = region.method {
+            let (k, fr) = if o.escaped { (self.outside.as_ref(), f.outside.as_mut()) } else { (self.inside.as_ref(), f.inside.as_mut()) };
+            if let (Some(k), Some(fr)) = (k, fr) {
+                fr.zcur = o.z;
+                let (index, solid) = k.color_final(fr, o.iter, o.zprev);
+                return shade_formula(region, index.v(), solid);
+            }
+            return region.solid;
+        }
+        let dz = (o.z.re.d() * o.z.re.d() + o.z.im.d() * o.z.im.d()).sqrt();
+        let r = OrbitResult { z: o.z.v(), zprev: o.zprev.v(), zprev2: o.zprev2.v(), iter: o.iter, escaped: o.escaped, dz };
+        shade_native(region, &r, plan.frame.pixel_size())
+    }
+}
+
+/// A layer compiled plain or with derivatives (distance estimation).
 enum Kernel {
-    Plain(Compiled<f64>),
-    Dual(Compiled<Dual>),
+    Plain(LayerK<f64>),
+    Dual(LayerK<Dual>),
+}
+
+#[derive(Clone)]
+enum KernelF {
+    Plain(Box<LayerF<f64>>),
+    Dual(Box<LayerF<Dual>>),
+}
+
+impl Kernel {
+    fn new(lp: &LayerPlan) -> Kernel {
+        if lp.needs_derivative() { Kernel::Dual(LayerK::new(lp)) } else { Kernel::Plain(LayerK::new(lp)) }
+    }
+    fn frames(&self) -> KernelF {
+        match self {
+            Kernel::Plain(k) => KernelF::Plain(Box::new(k.frames())),
+            Kernel::Dual(k) => KernelF::Dual(Box::new(k.frames())),
+        }
+    }
+    /// The layer's color at plane point `p`; `turn` is the derivative's direction (a turn).
+    fn eval(&self, f: &mut KernelF, lp: &LayerPlan, plan: &Plan, p: C64, turn: f64) -> [f32; 4] {
+        match (self, f) {
+            (Kernel::Plain(k), KernelF::Plain(f)) => k.eval(f, lp, plan, p),
+            (Kernel::Dual(k), KernelF::Dual(f)) => {
+                // Derivative along a direction that turns from sample to sample (non-analytic
+                // formulas average over directions); |dz| is per plane unit.
+                let (s, c) = (turn * std::f64::consts::TAU).sin_cos();
+                k.eval(f, lp, plan, Cx::new(Dual::new(p.re, c), Dual::new(p.im, s)))
+            }
+            _ => unreachable!("kernel and frames differ"),
+        }
+    }
 }
 
 pub struct CpuRenderer {
     plan: Plan,
-    kernel: Kernel,
-    /// Linear RGB sums per pixel, row-major.
-    accum: Vec<[f32; 3]>,
+    /// One kernel per layer of `plan.layers()` (same order).
+    kernels: Vec<Kernel>,
+    /// Premultiplied linear RGBA sums per pixel, row-major.
+    accum: Vec<[f32; 4]>,
     samples: u32,
 }
 
-/// Sets up a frame for one sample and runs the orbit.
-fn run_sample<S: Scalar + Send + Sync + 'static>(k: &Compiled<S>, f: &mut Frame<S>, plan: &Plan, pixel: Cx<S>) -> crate::formula::cpu::Orbit<S> {
-    f.pixel = pixel;
-    f.ismand = !plan.julia;
-    f.c = if plan.julia { Cx::from_f64(plan.seed[0], plan.seed[1]) } else { pixel };
-    f.center = Cx::from_f64(plan.frame.center[0], plan.frame.center[1]);
-    f.magn = S::from_f64(plan.magn());
-    k.run(f, plan.max_iter)
+/// One sample's evaluation state: the layers are evaluated in `plan.layers()` order.
+struct Ctx<'a> {
+    kernels: &'a [Kernel],
+    frames: &'a mut [KernelF],
+    next: usize,
+    plan: &'a Plan,
+    p: C64,
+    turn: f64,
 }
 
-/// Linear RGB of the sample at image position (px, py) with derivative direction `turn`.
-fn sample(kernel: &Kernel, frames: &mut (Frame<f64>, Frame<Dual>), plan: &Plan, px: f64, py: f64, turn: f64) -> [f32; 3] {
-    let p = plan.frame.plane(px, py);
-    let o = match kernel {
-        Kernel::Plain(k) => {
-            let o = run_sample(k, &mut frames.0, plan, p);
-            OrbitResult { z: o.z, zprev: o.zprev, zprev2: o.zprev2, iter: o.iter, escaped: o.escaped, dz: 0.0 }
-        }
-        Kernel::Dual(k) => {
-            // Derivative along a direction that turns from sample to sample (non-analytic
-            // formulas average over directions); |dz| is per plane unit.
-            let (s, c) = (turn * std::f64::consts::TAU).sin_cos();
-            let pixel = Cx::new(Dual::new(p.re, c), Dual::new(p.im, s));
-            let o = run_sample(k, &mut frames.1, plan, pixel);
-            let dz = (o.z.re.d * o.z.re.d + o.z.im.d * o.z.im.d).sqrt();
-            OrbitResult { z: o.z.v(), zprev: o.zprev.v(), zprev2: o.zprev2.v(), iter: o.iter, escaped: o.escaped, dz }
-        }
-    };
-    shade(plan, &o)
+impl Ctx<'_> {
+    fn layer(&mut self, lp: &LayerPlan) -> [f32; 4] {
+        let i = self.next;
+        self.next += 1;
+        self.kernels[i].eval(&mut self.frames[i], lp, self.plan, self.p, self.turn)
+    }
+}
+
+/// Composites the node list over `below`.
+fn composite_nodes(nodes: &[Node], below: [f32; 4], ctx: &mut Ctx) -> [f32; 4] {
+    let mut acc = below;
+    for n in nodes {
+        let (mask, blend) = match n {
+            Node::Layer { mask, blend, .. } | Node::Group { mask, blend, .. } => (mask, blend),
+        };
+        let m = mask.as_ref().map(|m| {
+            let c = ctx.layer(&m.layer);
+            mask_value(c, m.source, m.invert)
+        });
+        let top = match n {
+            Node::Layer { layer, .. } => ctx.layer(layer),
+            Node::Group { children, .. } => composite_nodes(children, [0.0; 4], ctx),
+        };
+        acc = composite(acc, top, blend.mode, blend.opacity * m.unwrap_or(1.0));
+    }
+    acc
 }
 
 impl CpuRenderer {
     pub fn new(plan: Plan) -> CpuRenderer {
-        let kernel = if plan.needs_derivative() {
-            Kernel::Dual(Compiled::new(&plan.program, &plan.values))
-        } else {
-            Kernel::Plain(Compiled::new(&plan.program, &plan.values))
-        };
+        let kernels = plan.layers().iter().map(|l| Kernel::new(l)).collect();
         let n = (plan.frame.width * plan.frame.height) as usize;
-        CpuRenderer { plan, kernel, accum: vec![[0.0; 3]; n], samples: 0 }
+        CpuRenderer { plan, kernels, accum: vec![[0.0; 4]; n], samples: 0 }
     }
 
     pub fn plan(&self) -> &Plan {
@@ -75,71 +208,71 @@ impl CpuRenderer {
         self.samples
     }
 
-    fn frames(&self) -> (Frame<f64>, Frame<Dual>) {
-        let empty = || Compiled::<f64>::new(&self.plan.program, &self.plan.values).frame();
-        match &self.kernel {
-            Kernel::Plain(k) => (k.frame(), Compiled::<Dual>::new(&self.plan.program, &self.plan.values).frame()),
-            Kernel::Dual(k) => (empty(), k.frame()),
-        }
+    /// Color (linear RGB, straight alpha) of one sample at image position (x, y).
+    fn sample(&self, frames: &mut [KernelF], x: f64, y: f64, turn: f64) -> [f32; 4] {
+        let mut ctx = Ctx { kernels: &self.kernels, frames, next: 0, plan: &self.plan, p: self.plan.frame.plane(x, y), turn };
+        composite_nodes(&self.plan.nodes, self.plan.background, &mut ctx)
     }
 
     /// Adds one sample to every pixel.
     pub fn pass(&mut self) {
         let w = self.plan.frame.width as usize;
         let s = self.samples;
-        let plan = &self.plan;
-        let kernel = &self.kernel;
-        let proto = self.frames();
-        self.accum.par_chunks_mut(w).enumerate().for_each_init(
+        let proto: Vec<KernelF> = self.kernels.iter().map(|k| k.frames()).collect();
+        let mut accum = std::mem::take(&mut self.accum);
+        let this = &*self;
+        accum.par_chunks_mut(w).enumerate().for_each_init(
             || proto.clone(),
             |frames, (y, row)| {
                 for (x, acc) in row.iter_mut().enumerate() {
                     let (u, v, turn) = sample_offset(x as u32, y as u32, s);
-                    let c = sample(kernel, frames, plan, x as f64 + u, y as f64 + v, turn);
-                    acc[0] += c[0];
-                    acc[1] += c[1];
-                    acc[2] += c[2];
+                    let c = this.sample(frames, x as f64 + u, y as f64 + v, turn);
+                    acc[0] += c[0] * c[3];
+                    acc[1] += c[1] * c[3];
+                    acc[2] += c[2] * c[3];
+                    acc[3] += c[3];
                 }
             },
         );
+        self.accum = accum;
         self.samples += 1;
     }
 
-    /// Averaged linear RGB per pixel.
-    pub fn linear(&self) -> Vec<[f32; 3]> {
+    /// Averaged linear RGB with straight alpha per pixel.
+    pub fn linear(&self) -> Vec<[f32; 4]> {
         let k = 1.0 / self.samples.max(1) as f32;
-        self.accum.iter().map(|a| [a[0] * k, a[1] * k, a[2] * k]).collect()
+        self.accum.iter().map(|a| unpremultiply(*a, k)).collect()
     }
 
-    /// The image as 8-bit sRGB RGBA.
+    /// The image as 8-bit sRGB RGBA (straight alpha).
     pub fn rgba8(&self) -> Vec<u8> {
-        self.linear().iter().flat_map(|c| [linear_to_srgb(c[0]), linear_to_srgb(c[1]), linear_to_srgb(c[2]), 255]).collect()
+        rgba8(&self.linear())
     }
 
-    /// Orbit of a single plane point (for the orbit display and tests).
-    pub fn orbit_at(&self, p: C64) -> OrbitResult {
-        let mut frames = self.frames();
-        match &self.kernel {
-            Kernel::Plain(k) => {
-                let o = run_sample(k, &mut frames.0, &self.plan, p);
-                OrbitResult { z: o.z, zprev: o.zprev, zprev2: o.zprev2, iter: o.iter, escaped: o.escaped, dz: 0.0 }
-            }
-            Kernel::Dual(k) => {
-                let o = run_sample(k, &mut frames.1, &self.plan, Cx::new(Dual::new(p.re, 1.0), Dual::new(p.im, 0.0)));
-                OrbitResult {
-                    z: o.z.v(),
-                    zprev: o.zprev.v(),
-                    zprev2: o.zprev2.v(),
-                    iter: o.iter,
-                    escaped: o.escaped,
-                    dz: (o.z.re.d.powi(2) + o.z.im.d.powi(2)).sqrt(),
-                }
-            }
-        }
+    /// Color of the bottom layer at plane point `p` without compositing (tests, probes).
+    pub fn layer_color_at(&self, p: C64) -> Option<[f32; 4]> {
+        let layers = self.plan.layers();
+        let lp = layers.first()?;
+        let mut f = self.kernels.first()?.frames();
+        Some(self.kernels[0].eval(&mut f, lp, &self.plan, p, 0.0))
     }
 }
 
-/// Renders `samples` passes of the document's active layer at `width` × `height`.
+/// Premultiplied sums (scaled by `k` = 1 / samples) → straight alpha.
+pub fn unpremultiply(a: [f32; 4], k: f32) -> [f32; 4] {
+    let alpha = a[3] * k;
+    if alpha <= 1e-6 {
+        return [0.0; 4];
+    }
+    [a[0] * k / alpha, a[1] * k / alpha, a[2] * k / alpha, alpha.min(1.0)]
+}
+
+/// Linear RGB, straight alpha → 8-bit sRGB RGBA.
+pub fn rgba8(lin: &[[f32; 4]]) -> Vec<u8> {
+    lin.iter().flat_map(|c| [linear_to_srgb(c[0]), linear_to_srgb(c[1]), linear_to_srgb(c[2]), (c[3].clamp(0.0, 1.0) * 255.0 + 0.5) as u8]).collect()
+}
+
+/// Renders `samples` passes of the document at `width` × `height`.
 pub fn render(doc: &crate::doc::Document, width: u32, height: u32, samples: u32) -> Result<CpuRenderer, String> {
     let mut r = CpuRenderer::new(Plan::sized(doc, width, height)?);
     for _ in 0..samples.max(1) {
@@ -151,7 +284,7 @@ pub fn render(doc: &crate::doc::Document, width: u32, height: u32, samples: u32)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::doc::{Document, OutsideMethod};
+    use crate::doc::{Document, InsideMethod, Layer, LayerKind, Mask, MergeMode, OutsideMethod, TransformRef};
 
     #[test]
     fn renders_the_mandelbrot_set() {
@@ -161,8 +294,7 @@ mod tests {
         assert_eq!(img.len(), 64 * 36 * 4);
         // The center of the default view (-0.5, 0) is inside: solid black.
         let i = (18 * 64 + 32) * 4;
-        assert_eq!(&img[i..i + 3], &[0, 0, 0]);
-        // The corners are outside: colored.
+        assert_eq!(&img[i..i + 4], &[0, 0, 0, 255]);
         assert!(img[0..3].iter().any(|&v| v > 0));
     }
 
@@ -171,7 +303,31 @@ mod tests {
         let mut doc = Document::default();
         doc.layers[0].outside_method = OutsideMethod::Distance;
         let r = render(&doc, 48, 27, 1).unwrap();
-        let o = r.orbit_at(C64::new(0.5, 0.5));
-        assert!(o.escaped && o.dz > 0.0, "{o:?}");
+        assert!(matches!(r.kernels[0], Kernel::Dual(_)));
+    }
+
+    #[test]
+    fn layers_groups_masks_transforms_and_colorings() {
+        let mut doc = Document::default();
+        doc.image.background = [0.0; 4];
+        // Bottom: Mandelbrot with coloring formulas inside and out.
+        doc.layers[0].outside_method = OutsideMethod::Formula;
+        doc.layers[0].inside_method = InsideMethod::Formula;
+        doc.layers[0].inside.formula = "rfract-coloring:Bof60".into();
+        // A group with a kaleidoscope Julia layer at half opacity, masked by a Newton fractal.
+        let mut julia = Layer { name: "Julia".into(), julia: true, merge: MergeMode::Screen, ..Layer::default() };
+        julia.transforms.push(TransformRef { formula: "rfract-transform:Kaleidoscope".into(), ..TransformRef::default() });
+        let mut group = Layer { name: "Group".into(), kind: LayerKind::Group, opacity: 0.5, children: vec![julia], ..Layer::default() };
+        let mut mask = Mask::default();
+        mask.layer.formula = "rfract:Newton".into();
+        group.mask = Some(mask);
+        doc.layers.push(group);
+        let plan = Plan::sized(&doc, 32, 18).unwrap();
+        assert_eq!(plan.layers().len(), 3, "base, mask, julia");
+        let img = render(&doc, 32, 18, 2).unwrap().rgba8();
+        assert!(img.chunks(4).all(|p| p[3] > 0), "the base layer covers every pixel");
+        let mut alone = doc.clone();
+        alone.layers.truncate(1);
+        assert_ne!(render(&alone, 32, 18, 2).unwrap().rgba8(), img, "the group changes the image");
     }
 }

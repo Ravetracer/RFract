@@ -1,0 +1,433 @@
+comment {
+  RFract built-in coloring algorithms (UFM syntax).
+
+  A coloring runs alongside the fractal: init once after the fractal's init, loop after every
+  iteration that continues, final at the end of the orbit. It reads #z (and the RFract
+  extensions #zprev, the z before the current iteration, and #c, the formula's constant) and
+  writes #index (the gradient position; the layer's transfer, density and offset apply on top)
+  or #solid (the region's solid color).
+
+  Note: in UFM syntax 2/3 is an integer division (0); write 2.0/3.0.
+}
+
+OrbitTrap {
+; The closest approach of the orbit to a shape.
+init:
+  float dmin = 1e30
+  int imin = 0
+  complex zmin = (0, 0)
+  complex rot = (cos(-@angle * #pi / 180), sin(-@angle * #pi / 180))
+loop:
+  complex w = (#z - @center) * rot
+  float d = 0
+  if @shape == 0
+    d = cabs(w)
+  elseif @shape == 1
+    d = abs(imag(w))
+  elseif @shape == 2
+    d = abs(cabs(w) - @radius)
+  elseif @shape == 3
+    d = min(abs(real(w)), abs(imag(w)))
+  elseif @shape == 4
+    d = abs(max(abs(real(w)), abs(imag(w))) - @radius)
+  elseif @shape == 5
+    float t = cabs(w) / @radius - (atan2(w) / (2 * #pi) + 0.5)
+    d = abs(t - round(t)) * @radius
+  elseif @shape == 6
+    d = abs(abs(real(w))^(2.0 / 3.0) + abs(imag(w))^(2.0 / 3.0) - @radius^(2.0 / 3.0))
+  else
+    d = abs(cabs(w) - @radius * (1 - sin(atan2(w))))
+  endif
+  if d < dmin
+    dmin = d
+    imin = #numiter
+    zmin = w
+  endif
+final:
+  if @solidout && dmin > @width
+    #solid = true
+  elseif @mode == 0
+    #index = dmin / @width
+  elseif @mode == 1
+    #index = imin * 0.05
+  elseif @mode == 2
+    #index = atan2(zmin) / (2 * #pi) + 0.5
+  else
+    #index = cabs(zmin)
+  endif
+default:
+  title = "Orbit trap"
+  int param shape
+    caption = "Shape"
+    enum = "Point" "Line" "Circle" "Cross" "Square" "Spiral" "Astroid" "Heart"
+    default = 0
+    hint = "The shape the orbit is measured against."
+  endparam
+  int param mode
+    caption = "Color by"
+    enum = "Distance" "Iteration" "Angle" "Magnitude"
+    default = 0
+    hint = "Distance of the closest approach, the iteration it happened at, or the angle or size of z there."
+  endparam
+  complex param center
+    caption = "Center"
+    default = (0, 0)
+    hint = "Position of the shape."
+  endparam
+  float param radius
+    caption = "Size"
+    default = 0.5
+    min = 0
+    hint = "Radius of the circle, square, astroid and heart; turn spacing of the spiral."
+  endparam
+  float param angle
+    caption = "Angle"
+    default = 0
+    min = -180
+    max = 180
+    hint = "Rotation of the shape in degrees."
+  endparam
+  float param width
+    caption = "Width"
+    default = 0.5
+    min = 0
+    hint = "Distance that maps to one gradient length (and the trap width for Solid outside)."
+  endparam
+  bool param solidout
+    caption = "Solid outside the trap"
+    default = false
+    hint = "Points whose orbit never comes closer than the width get the solid color (or stay transparent with a transparent color)."
+  endparam
+}
+
+TriangleInequality {
+; Triangle inequality average (TIA): how |z²| + |c| compares with |z² + c| along the orbit,
+; averaged and smoothed between the last two iterations.
+init:
+  float sum = 0
+  float sum2 = 0
+  int n = 0
+  float ac = cabs(#c)
+loop:
+  if #numiter > @skip
+    float az = cabs(#zprev)
+    az = az * az
+    float lo = abs(az - ac)
+    float hi = az + ac
+    sum2 = sum
+    if hi - lo > 1e-20
+      sum = sum + (cabs(#z) - lo) / (hi - lo)
+    endif
+    n = n + 1
+  endif
+final:
+  if n > 1
+    float f = 1 + log(log(@radius) / log(max(cabs(#z), 1.0001))) / log(2)
+    f = min(max(f, 0), 1)
+    #index = (sum / n) * f + (sum2 / (n - 1)) * (1 - f)
+  else
+    #index = 0
+  endif
+default:
+  title = "Triangle inequality average"
+  float param radius
+    caption = "Bailout radius"
+    default = 1e4
+    min = 2
+    hint = "Escape radius |z| of the formula (the built-in formulas use 1e4), for the smooth blend between iterations."
+  endparam
+  int param skip
+    caption = "Skip iterations"
+    default = 1
+    min = 0
+    hint = "First iterations left out of the average."
+  endparam
+}
+
+CurvatureAverage {
+; Average turning angle of the orbit.
+init:
+  float sum = 0
+  float sum2 = 0
+  int n = 0
+  complex zpp = (0, 0)
+loop:
+  if #numiter > 2
+    complex b = #zprev - zpp
+    if |b| > 1e-30
+      sum2 = sum
+      sum = sum + abs(atan2((#z - #zprev) / b)) / #pi
+      n = n + 1
+    endif
+  endif
+  zpp = #zprev
+final:
+  if n > 1
+    float f = 1 + log(log(@radius) / log(max(cabs(#z), 1.0001))) / log(2)
+    f = min(max(f, 0), 1)
+    #index = (sum / n) * f + (sum2 / (n - 1)) * (1 - f)
+  else
+    #index = 0
+  endif
+default:
+  title = "Curvature average"
+  float param radius
+    caption = "Bailout radius"
+    default = 1e4
+    min = 2
+    hint = "Escape radius |z| of the formula, for the smooth blend between iterations."
+  endparam
+}
+
+StripeAverage {
+; Average of sin(density · angle of z): stripes that follow the orbit.
+init:
+  float sum = 0
+  float sum2 = 0
+  int n = 0
+loop:
+  if #numiter > @skip
+    sum2 = sum
+    sum = sum + 0.5 * sin(@stripes * atan2(#z)) + 0.5
+    n = n + 1
+  endif
+final:
+  if n > 1
+    float f = 1 + log(log(@radius) / log(max(cabs(#z), 1.0001))) / log(2)
+    f = min(max(f, 0), 1)
+    #index = (sum / n) * f + (sum2 / (n - 1)) * (1 - f)
+  else
+    #index = 0
+  endif
+default:
+  title = "Stripe average"
+  float param stripes
+    caption = "Stripes"
+    default = 5
+    hint = "Stripes per turn of the angle."
+  endparam
+  float param radius
+    caption = "Bailout radius"
+    default = 1e4
+    min = 2
+    hint = "Escape radius |z| of the formula, for the smooth blend between iterations."
+  endparam
+  int param skip
+    caption = "Skip iterations"
+    default = 1
+    min = 0
+    hint = "First iterations left out of the average."
+  endparam
+}
+
+ExponentialSmoothing {
+; Sum of exp(-|z|) (escaping orbits) or exp(-1/|Δz|) (converging orbits).
+init:
+  float sd = 0
+  float sc = 0
+loop:
+  sd = sd + exp(-cabs(#z))
+  float d = cabs(#z - #zprev)
+  if d > 1e-30
+    sc = sc + exp(-1 / d)
+  endif
+final:
+  if @mode == 1 || (@mode == 0 && cabs(#z) > 2)
+    #index = sd * @scale
+  else
+    #index = sc * @scale
+  endif
+default:
+  title = "Exponential smoothing"
+  int param mode
+    caption = "Orbits"
+    enum = "Automatic" "Escaping" "Converging"
+    default = 0
+    hint = "Which sum to use; Automatic picks by the size of the last z."
+  endparam
+  float param scale
+    caption = "Scale"
+    default = 0.1
+    hint = "Factor of the sum."
+  endparam
+}
+
+BinaryDecomposition {
+; The sign of Im(z) at escape: alternating halves of every band.
+final:
+  float b = 0
+  if imag(#z) < 0
+    b = 0.5
+  endif
+  #index = b + #numiter * @bands
+default:
+  title = "Binary decomposition"
+  float param bands
+    caption = "Iteration bands"
+    default = 0
+    hint = "Adds the iteration count times this value (0: only the two halves)."
+  endparam
+}
+
+FieldLines {
+; Field lines: the angle of z at escape, repeated.
+final:
+  float a = atan2(#z) / (2 * #pi) + 0.5
+  #index = abs(a * @lines - round(a * @lines)) * 2
+default:
+  title = "Field lines"
+  float param lines
+    caption = "Lines"
+    default = 4
+    min = 1
+    hint = "Lines per turn."
+  endparam
+}
+
+Decomposition {
+; The angle of z at the end of the orbit.
+final:
+  #index = atan2(#z) / (2 * #pi) + 0.5
+default:
+  title = "Decomposition (angle)"
+}
+
+GaussianInteger {
+; Distance of the orbit to the nearest Gaussian integer (lattice point).
+init:
+  float dmin = 1e30
+  int imin = 0
+  float dsum = 0
+loop:
+  float d = cabs(#z * @scale - round(#z * @scale))
+  dsum = dsum + d
+  if d < dmin
+    dmin = d
+    imin = #numiter
+  endif
+final:
+  if @mode == 0
+    #index = dmin * 1.4142
+  elseif @mode == 1
+    #index = imin * 0.05
+  else
+    #index = dsum / max(#numiter, 1)
+  endif
+default:
+  title = "Gaussian integer"
+  int param mode
+    caption = "Color by"
+    enum = "Closest distance" "Iteration of closest" "Average distance"
+    default = 0
+    hint = "What of the distances colors the point."
+  endparam
+  float param scale
+    caption = "Lattice scale"
+    default = 1
+    hint = "The lattice spacing is 1 / scale."
+  endparam
+}
+
+PickoverStalks {
+; Distance of the orbit to the axes: thin stalks.
+init:
+  float dmin = 1e30
+  int imin = 0
+loop:
+  float d = min(abs(real(#z - @center)), abs(imag(#z - @center)))
+  if d < dmin
+    dmin = d
+    imin = #numiter
+  endif
+final:
+  if dmin > @width && @solidout
+    #solid = true
+  elseif @mode == 0
+    #index = dmin / @width
+  else
+    #index = imin * 0.05
+  endif
+default:
+  title = "Pickover stalks"
+  int param mode
+    caption = "Color by"
+    enum = "Distance" "Iteration"
+    default = 0
+    hint = "Distance of the closest approach or its iteration."
+  endparam
+  complex param center
+    caption = "Axes center"
+    default = (0, 0)
+    hint = "Where the two axes cross."
+  endparam
+  float param width
+    caption = "Width"
+    default = 0.05
+    min = 0
+    hint = "Stalk width: the distance that maps to one gradient length."
+  endparam
+  bool param solidout
+    caption = "Solid outside the stalks"
+    default = true
+    hint = "Points farther than the width from the axes get the solid color."
+  endparam
+}
+
+EpsilonCross {
+; The first iteration whose z comes close to an axis.
+init:
+  bool hit = false
+  int ihit = 0
+loop:
+  if !hit && (abs(real(#z)) < @epsilon || abs(imag(#z)) < @epsilon)
+    hit = true
+    ihit = #numiter
+  endif
+final:
+  if hit
+    #index = ihit * 0.05
+  else
+    #solid = true
+  endif
+default:
+  title = "Epsilon cross"
+  float param epsilon
+    caption = "Epsilon"
+    default = 0.01
+    min = 0
+    hint = "How close to an axis counts as a hit; points without a hit get the solid color."
+  endparam
+}
+
+Bof60 {
+; The smallest |z| of the orbit.
+init:
+  float rmin = 1e30
+loop:
+  rmin = min(rmin, cabs(#z))
+final:
+  #index = rmin * @scale
+default:
+  title = "Closest approach (bof60)"
+  float param scale
+    caption = "Scale"
+    default = 1
+    hint = "Factor of the smallest |z|."
+  endparam
+}
+
+Bof61 {
+; The iteration of the smallest |z| of the orbit.
+init:
+  float rmin = 1e30
+  int imin = 0
+loop:
+  if cabs(#z) < rmin
+    rmin = cabs(#z)
+    imin = #numiter
+  endif
+final:
+  #index = imin * 0.05
+default:
+  title = "Iteration of closest approach (bof61)"
+}

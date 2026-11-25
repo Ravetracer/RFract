@@ -1,39 +1,134 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
-//! What a render needs, independent of CPU or GPU: the [`Plan`] (formula, parameter values,
-//! view, colorings), the sample positions and the coloring math. The GPU shader (rfr-gpu)
-//! implements the same functions; keep both in step.
+//! What a render needs, independent of CPU or GPU: the [`Plan`] (a tree of layers and groups
+//! with their formulas, transformations, colorings, merge modes and masks), the sample
+//! positions, the coloring math and the compositing. The GPU renderer (rfr-gpu) implements the
+//! same functions; keep both in step.
 
+pub mod composite;
 pub mod cpu;
 pub mod oidn;
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use crate::doc::{Coloring, Document, InsideMethod, OutsideMethod, Transfer};
+use crate::doc::{Coloring, Document, InsideMethod, Layer, LayerKind, MaskSource, MergeMode, OutsideMethod, Transfer};
+use crate::formula::ast::ProgramKind;
 use crate::formula::ir::Program;
 use crate::formula::library::library;
 use crate::formula::{ParamKind, ParamValue};
 use crate::math::complex::C64;
 
+/// A library program with its parameter values in the program's order.
+#[derive(Clone, Debug)]
+pub struct Prog {
+    pub id: String,
+    pub program: Arc<Program>,
+    pub values: Vec<ParamValue>,
+}
+
+impl Prog {
+    /// Resolves library entry `id` of `kind` with the stored parameter values.
+    pub fn resolve(id: &str, params: &BTreeMap<String, ParamValue>, kind: ProgramKind) -> Result<Prog, String> {
+        let entry = library().get(id).ok_or_else(|| format!("unknown formula '{id}'"))?;
+        if entry.kind != kind {
+            return Err(format!("'{}' is not a {}", entry.title, kind_name(kind)));
+        }
+        let program = entry.program.clone().map_err(|e| format!("'{}' does not compile: {e}", entry.title))?;
+        let values = program.params.iter().map(|p| resolve_value(p.kind, &p.default, params.get(&p.name))).collect();
+        Ok(Prog { id: id.to_string(), program, values })
+    }
+}
+
+fn kind_name(k: ProgramKind) -> &'static str {
+    match k {
+        ProgramKind::Fractal => "fractal formula",
+        ProgramKind::Coloring => "coloring formula",
+        ProgramKind::Transform => "transformation",
+    }
+}
+
+/// How a region gets its gradient position.
+#[derive(Clone, Debug)]
+pub enum ColorMethod {
+    Smooth,
+    Iterations,
+    Distance,
+    Solid,
+    Magnitude,
+    Angle,
+    /// A coloring formula: its `#index` and `#solid`.
+    Formula(Prog),
+}
+
 /// Coloring of one region, resolved for rendering.
 #[derive(Clone, Debug)]
-pub struct ColorParams {
+pub struct ColorPlan {
+    pub method: ColorMethod,
     pub lut: Vec<[f32; 4]>,
     pub transfer: Transfer,
     pub density: f64,
     pub offset: f64,
-    /// Linear RGB.
-    pub solid: [f32; 3],
+    /// Linear RGB and alpha.
+    pub solid: [f32; 4],
 }
 
-impl ColorParams {
-    fn new(c: &Coloring) -> ColorParams {
-        ColorParams { lut: c.gradient.lut(), transfer: c.transfer, density: c.density, offset: c.offset, solid: c.solid }
+impl ColorPlan {
+    fn new(method: ColorMethod, c: &Coloring) -> ColorPlan {
+        ColorPlan {
+            method,
+            lut: c.gradient.lut(),
+            transfer: c.transfer,
+            density: c.density,
+            offset: c.offset,
+            solid: [c.solid[0], c.solid[1], c.solid[2], c.solid_alpha.clamp(0.0, 1.0)],
+        }
     }
-    /// Gradient color for a coloring value.
-    pub fn color(&self, v: f64) -> [f32; 3] {
-        let c = crate::gradient::lut_sample(&self.lut, self.transfer.apply(v) * self.density + self.offset);
-        [c[0], c[1], c[2]]
+
+    fn outside(m: OutsideMethod, c: &Coloring) -> Result<ColorPlan, String> {
+        let method = match m {
+            OutsideMethod::Smooth => ColorMethod::Smooth,
+            OutsideMethod::Iterations => ColorMethod::Iterations,
+            OutsideMethod::Distance => ColorMethod::Distance,
+            OutsideMethod::Solid => ColorMethod::Solid,
+            OutsideMethod::Formula => ColorMethod::Formula(Prog::resolve(&c.formula, &c.params, ProgramKind::Coloring)?),
+        };
+        Ok(ColorPlan::new(method, c))
+    }
+
+    fn inside(m: InsideMethod, c: &Coloring) -> Result<ColorPlan, String> {
+        let method = match m {
+            InsideMethod::Solid => ColorMethod::Solid,
+            InsideMethod::Magnitude => ColorMethod::Magnitude,
+            InsideMethod::Angle => ColorMethod::Angle,
+            InsideMethod::Formula => ColorMethod::Formula(Prog::resolve(&c.formula, &c.params, ProgramKind::Coloring)?),
+        };
+        Ok(ColorPlan::new(method, c))
+    }
+
+    /// Gradient color (linear RGB, alpha) for a coloring value.
+    pub fn color(&self, v: f64) -> [f32; 4] {
+        crate::gradient::lut_sample(&self.lut, self.transfer.apply(v) * self.density + self.offset)
+    }
+
+    pub fn formula(&self) -> Option<&Prog> {
+        match &self.method {
+            ColorMethod::Formula(p) => Some(p),
+            _ => None,
+        }
+    }
+
+    /// Index of the method in the shader's `switch` (formula methods share one value).
+    pub fn method_index(&self) -> u32 {
+        match self.method {
+            ColorMethod::Iterations => 0,
+            ColorMethod::Smooth => 1,
+            ColorMethod::Distance => 2,
+            ColorMethod::Solid => 3,
+            ColorMethod::Magnitude => 4,
+            ColorMethod::Angle => 5,
+            ColorMethod::Formula(_) => 6,
+        }
     }
 }
 
@@ -62,44 +157,109 @@ impl ViewFrame {
     }
 }
 
+/// One fractal layer (or mask) resolved for rendering.
 #[derive(Clone, Debug)]
-pub struct Plan {
-    pub formula_id: String,
-    pub program: Arc<Program>,
-    /// Values in the program's parameter order.
-    pub values: Vec<ParamValue>,
+pub struct LayerPlan {
+    pub fractal: Prog,
     pub max_iter: u32,
     pub julia: bool,
     pub seed: [f64; 2],
-    pub outside_method: OutsideMethod,
-    pub inside_method: InsideMethod,
-    pub outside: ColorParams,
-    pub inside: ColorParams,
+    pub transforms: Vec<Prog>,
+    pub outside: ColorPlan,
+    pub inside: ColorPlan,
+}
+
+impl LayerPlan {
+    pub fn new(l: &Layer) -> Result<LayerPlan, String> {
+        let fractal = Prog::resolve(&l.formula, &l.params, ProgramKind::Fractal).map_err(|e| format!("{}: {e}", l.name))?;
+        let transforms = l
+            .transforms
+            .iter()
+            .filter(|t| t.enabled)
+            .map(|t| Prog::resolve(&t.formula, &t.params, ProgramKind::Transform))
+            .collect::<Result<_, _>>()
+            .map_err(|e| format!("{}: {e}", l.name))?;
+        Ok(LayerPlan {
+            max_iter: l.max_iter.max(1),
+            julia: l.julia && fractal.program.has_julia,
+            seed: l.seed,
+            transforms,
+            outside: ColorPlan::outside(l.outside_method, &l.outside).map_err(|e| format!("{}: {e}", l.name))?,
+            inside: ColorPlan::inside(l.inside_method, &l.inside).map_err(|e| format!("{}: {e}", l.name))?,
+            fractal,
+        })
+    }
+
+    /// The outside coloring needs the orbit's derivative (distance estimation).
+    pub fn needs_derivative(&self) -> bool {
+        matches!(self.outside.method, ColorMethod::Distance)
+    }
+}
+
+/// Merge mode and opacity of a layer or group.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Blend {
+    pub mode: MergeMode,
+    pub opacity: f32,
+}
+
+#[derive(Clone, Debug)]
+pub struct MaskPlan {
+    pub layer: LayerPlan,
+    pub invert: bool,
+    pub source: MaskSource,
+}
+
+#[derive(Clone, Debug)]
+pub enum Node {
+    Layer { layer: Box<LayerPlan>, blend: Blend, mask: Option<MaskPlan> },
+    Group { children: Vec<Node>, blend: Blend, mask: Option<MaskPlan> },
+}
+
+#[derive(Clone, Debug)]
+pub struct Plan {
     pub frame: ViewFrame,
+    /// Linear RGB and alpha below all layers.
+    pub background: [f32; 4],
+    /// Bottom first.
+    pub nodes: Vec<Node>,
+}
+
+fn mask_plan(l: &Layer) -> Result<Option<MaskPlan>, String> {
+    match &l.mask {
+        Some(m) if m.enabled => {
+            Ok(Some(MaskPlan { layer: LayerPlan::new(&m.layer).map_err(|e| format!("mask of {e}"))?, invert: m.invert, source: m.source }))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn nodes(list: &[Layer]) -> Result<Vec<Node>, String> {
+    let mut out = Vec::new();
+    for l in list.iter().filter(|l| l.visible && l.opacity > 0.0) {
+        let blend = Blend { mode: l.merge, opacity: l.opacity.clamp(0.0, 1.0) as f32 };
+        match l.kind {
+            LayerKind::Fractal => out.push(Node::Layer { layer: Box::new(LayerPlan::new(l)?), blend, mask: mask_plan(l)? }),
+            LayerKind::Group => {
+                let children = nodes(&l.children)?;
+                if !children.is_empty() {
+                    out.push(Node::Group { children, blend, mask: mask_plan(l)? });
+                }
+            }
+        }
+    }
+    Ok(out)
 }
 
 impl Plan {
-    /// The render plan of the document's active layer at the document's image size.
+    /// The render plan of the document at its image size.
     pub fn new(doc: &Document) -> Result<Plan, String> {
         Plan::sized(doc, doc.image.width, doc.image.height)
     }
 
     pub fn sized(doc: &Document, width: u32, height: u32) -> Result<Plan, String> {
-        let layer = doc.active_layer().ok_or("the document has no visible layer")?;
-        let entry = library().get(&layer.formula).ok_or_else(|| format!("unknown formula '{}'", layer.formula))?;
-        let program = entry.program.clone().map_err(|e| format!("formula '{}' does not compile: {e}", entry.title))?;
-        let values = program.params.iter().map(|p| resolve_value(p.kind, &p.default, layer.params.get(&p.name))).collect();
         let rot = doc.view.rotation.to_radians();
         Ok(Plan {
-            formula_id: layer.formula.clone(),
-            values,
-            max_iter: layer.max_iter.max(1),
-            julia: layer.julia && program.has_julia,
-            seed: layer.seed,
-            outside_method: layer.outside_method,
-            inside_method: layer.inside_method,
-            outside: ColorParams::new(&layer.outside),
-            inside: ColorParams::new(&layer.inside),
             frame: ViewFrame {
                 width: width.max(1),
                 height: height.max(1),
@@ -108,13 +268,39 @@ impl Plan {
                 cos: rot.cos(),
                 sin: rot.sin(),
             },
-            program,
+            background: doc.image.background,
+            nodes: nodes(&doc.layers)?,
         })
     }
 
-    /// The coloring needs the orbit's derivative (distance estimation).
+    /// Every layer of the plan (masks included), in render order.
+    pub fn layers(&self) -> Vec<&LayerPlan> {
+        fn walk<'a>(list: &'a [Node], out: &mut Vec<&'a LayerPlan>) {
+            for n in list {
+                match n {
+                    Node::Layer { layer, mask, .. } => {
+                        if let Some(m) = mask {
+                            out.push(&m.layer);
+                        }
+                        out.push(layer);
+                    }
+                    Node::Group { children, mask, .. } => {
+                        if let Some(m) = mask {
+                            out.push(&m.layer);
+                        }
+                        walk(children, out);
+                    }
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(&self.nodes, &mut out);
+        out
+    }
+
+    /// Some layer's coloring needs derivatives.
     pub fn needs_derivative(&self) -> bool {
-        self.outside_method == OutsideMethod::Distance
+        self.layers().iter().any(|l| l.needs_derivative())
     }
 
     /// Arithmetic the view needs: pixels must stay well above the rounding step of the
@@ -218,7 +404,7 @@ pub struct OrbitResult {
 pub fn outside_value(method: OutsideMethod, o: &OrbitResult, pixel_size: f64) -> f64 {
     let n = o.iter as f64;
     match method {
-        OutsideMethod::Iterations | OutsideMethod::Solid => n,
+        OutsideMethod::Iterations | OutsideMethod::Solid | OutsideMethod::Formula => n,
         OutsideMethod::Smooth => smooth_iter(o),
         OutsideMethod::Distance => {
             let r2 = o.z.norm();
@@ -264,26 +450,32 @@ pub fn smooth_iter(o: &OrbitResult) -> f64 {
 /// Coloring value of an orbit that stayed bounded.
 pub fn inside_value(method: InsideMethod, o: &OrbitResult) -> f64 {
     match method {
-        InsideMethod::Solid => 0.0,
+        InsideMethod::Solid | InsideMethod::Formula => 0.0,
         InsideMethod::Magnitude => o.z.cabs(),
         InsideMethod::Angle => o.z.arg() / std::f64::consts::TAU + 0.5,
     }
 }
 
-/// Final linear RGB color of one sample.
-pub fn shade(plan: &Plan, o: &OrbitResult) -> [f32; 3] {
-    let fin = |c: [f32; 3]| if c.iter().all(|v| v.is_finite()) { c } else { [0.0; 3] };
-    if o.escaped {
-        if plan.outside_method == OutsideMethod::Solid {
-            return plan.outside.solid;
-        }
-        fin(plan.outside.color(outside_value(plan.outside_method, o, plan.frame.pixel_size())))
-    } else {
-        if plan.inside_method == InsideMethod::Solid {
-            return plan.inside.solid;
-        }
-        fin(plan.inside.color(inside_value(plan.inside_method, o)))
-    }
+/// Color (linear RGB, straight alpha) of one region by its native method (not Formula).
+pub fn shade_native(c: &ColorPlan, o: &OrbitResult, pixel_size: f64) -> [f32; 4] {
+    let v = match &c.method {
+        ColorMethod::Solid | ColorMethod::Formula(_) => return c.solid,
+        ColorMethod::Smooth => smooth_iter(o),
+        ColorMethod::Iterations => o.iter as f64,
+        ColorMethod::Distance => outside_value(OutsideMethod::Distance, o, pixel_size),
+        ColorMethod::Magnitude => inside_value(InsideMethod::Magnitude, o),
+        ColorMethod::Angle => inside_value(InsideMethod::Angle, o),
+    };
+    finite(c.color(v))
+}
+
+/// Color of a region colored by a formula's `#index` / `#solid`.
+pub fn shade_formula(c: &ColorPlan, index: f64, solid: bool) -> [f32; 4] {
+    if solid { c.solid } else { finite(c.color(index)) }
+}
+
+fn finite(c: [f32; 4]) -> [f32; 4] {
+    if c.iter().all(|v| v.is_finite()) { c } else { [0.0, 0.0, 0.0, 1.0] }
 }
 
 #[cfg(test)]

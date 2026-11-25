@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
 //! Progressive GPU renderer: one sample per pixel per pass, split into row bands (one
-//! submission each, adaptive height around a target time, so the driver never times out and
-//! the UI stays responsive). Shaders compile on a worker thread; parameter, view and coloring
-//! changes only rewrite buffers.
+//! submission each, adaptive height around a target time). Every band runs the plan's
+//! operations: layer kernels blend into band-sized scratch slots (groups and masks get slots of
+//! their own), compositing passes merge groups and add the finished sample to the image. Shaders
+//! compile on worker threads; parameter, view and coloring changes only rewrite buffers.
 
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, channel};
@@ -11,9 +12,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bytemuck::{Pod, Zeroable};
-use rfr_core::doc::{InsideMethod, OutsideMethod};
-use rfr_core::gradient::{LUT_SIZE, linear_to_srgb};
-use rfr_core::render::Plan;
+use rfr_core::doc::MaskSource;
+use rfr_core::gradient::LUT_SIZE;
+use rfr_core::render::{Blend, LayerPlan, Node, Plan, Precision};
 
 use crate::codegen::{self, MAX_PARAMS, Mode};
 
@@ -58,6 +59,7 @@ impl GpuContext {
     }
 }
 
+/// Layer kernel uniforms (kernel.wgsl `Uni`).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable, Default)]
 struct Uni {
@@ -72,55 +74,181 @@ struct Uni {
     in_solid: [f32; 4],
     band: [u32; 4],
     lo: [f32; 4],
+    blend: [u32; 4],
+    opacity: [f32; 4],
 }
 
-fn outside_index(m: OutsideMethod) -> u32 {
-    match m {
-        OutsideMethod::Iterations => 0,
-        OutsideMethod::Smooth => 1,
-        OutsideMethod::Distance => 2,
-        OutsideMethod::Solid => 3,
+/// Compositing uniforms (composite.wgsl `Op`).
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable, Default)]
+struct OpUni {
+    size: [u32; 4],
+    slots: [u32; 4],
+    mode: [u32; 4],
+    color: [f32; 4],
+    blend: [f32; 4],
+}
+
+const NONE: u32 = 0xffff_ffff;
+
+fn source_index(s: MaskSource) -> u32 {
+    match s {
+        MaskSource::Luminance => 0,
+        MaskSource::Alpha => 1,
     }
 }
 
-fn inside_index(m: InsideMethod) -> u32 {
-    match m {
-        InsideMethod::Solid => 0,
-        InsideMethod::Magnitude => 1,
-        InsideMethod::Angle => 2,
+/// The scalar mode a layer renders with: f32 (with derivatives when its coloring needs them)
+/// while that is precise enough, else double-float (distance estimation then falls back to the
+/// smooth iteration count).
+pub fn layer_mode(plan: &Plan, lp: &LayerPlan) -> Mode {
+    match plan.precision() {
+        Precision::Single if lp.needs_derivative() => Mode::Dual,
+        Precision::Single => Mode::Plain,
+        _ => Mode::Df64,
     }
 }
 
-fn uniforms(plan: &Plan) -> Uni {
+/// The mode of the plan's most demanding layer (status display, tests).
+pub fn renderer_mode(plan: &Plan) -> Mode {
+    let modes: Vec<Mode> = plan.layers().iter().map(|l| layer_mode(plan, l)).collect();
+    if modes.contains(&Mode::Df64) {
+        Mode::Df64
+    } else if modes.contains(&Mode::Dual) {
+        Mode::Dual
+    } else {
+        Mode::Plain
+    }
+}
+
+fn layer_uni(plan: &Plan, lp: &LayerPlan) -> Uni {
     let f = &plan.frame;
-    let o = &plan.outside;
-    let i = &plan.inside;
+    let (o, i) = (&lp.outside, &lp.inside);
     Uni {
         size: [f.width, f.height, 0, 0],
         view: [f.center[0] as f32, f.center[1] as f32, (f.radius / (f.height as f64 * 0.5)) as f32, plan.magn() as f32],
         rot: [f.cos as f32, f.sin as f32, f.pixel_size() as f32, 1.0],
-        iter: [plan.max_iter, plan.julia as u32, outside_index(plan.outside_method), inside_index(plan.inside_method)],
-        seed: [plan.seed[0] as f32, plan.seed[1] as f32, 0.0, 0.0],
+        iter: [lp.max_iter, lp.julia as u32, o.method_index(), i.method_index()],
+        seed: [lp.seed[0] as f32, lp.seed[1] as f32, 0.0, 0.0],
         outc: [o.transfer.index() as f32, o.density as f32, o.offset as f32, 0.0],
         inc: [i.transfer.index() as f32, i.density as f32, i.offset as f32, 0.0],
-        out_solid: [o.solid[0], o.solid[1], o.solid[2], 1.0],
-        in_solid: [i.solid[0], i.solid[1], i.solid[2], 1.0],
-        band: [0; 4],
+        out_solid: o.solid,
+        in_solid: i.solid,
+        band: [0, 0, 0, NONE],
         lo: [(f.center[0] - f.center[0] as f32 as f64) as f32, (f.center[1] - f.center[1] as f32 as f64) as f32, 0.0, 0.0],
+        blend: [0; 4],
+        opacity: [1.0, 0.0, 0.0, 0.0],
     }
 }
 
-fn params(plan: &Plan) -> Vec<[f32; 4]> {
-    let mut p = vec![[0.0f32; 4]; MAX_PARAMS];
-    for (k, v) in plan.values.iter().take(MAX_PARAMS).enumerate() {
-        let c = v.as_complex();
-        p[k] = [c[0] as f32, c[1] as f32, 0.0, 0.0];
+/// One step of a band.
+enum OpKind {
+    /// Layer `layer` (index into the plan's layers) blends into `dst`, or writes a mask there.
+    Layer {
+        layer: usize,
+        dst: u32,
+        mask: Option<u32>,
+        blend: Blend,
+        mask_out: Option<(MaskSource, bool)>,
+    },
+    Fill {
+        dst: u32,
+        color: [f32; 4],
+    },
+    Merge {
+        src: u32,
+        dst: u32,
+        mask: Option<u32>,
+        blend: Blend,
+    },
+    Accumulate {
+        src: u32,
+    },
+}
+
+/// Turns the node tree into operations with scratch slots (in the order of `Plan::layers`);
+/// returns the number of slots.
+fn schedule(plan: &Plan) -> (Vec<OpKind>, u32) {
+    struct S {
+        ops: Vec<OpKind>,
+        next_layer: usize,
+        used: u32,
+        free: Vec<u32>,
+        max: u32,
     }
-    p
+    impl S {
+        fn alloc(&mut self) -> u32 {
+            let s = self.free.pop().unwrap_or_else(|| {
+                self.used += 1;
+                self.used - 1
+            });
+            self.max = self.max.max(self.used);
+            s
+        }
+        fn mask(&mut self, m: &Option<rfr_core::render::MaskPlan>) -> Option<u32> {
+            let m = m.as_ref()?;
+            let slot = self.alloc();
+            let layer = self.next_layer;
+            self.next_layer += 1;
+            self.ops.push(OpKind::Layer {
+                layer,
+                dst: slot,
+                mask: None,
+                blend: Blend { mode: Default::default(), opacity: 1.0 },
+                mask_out: Some((m.source, m.invert)),
+            });
+            Some(slot)
+        }
+        fn nodes(&mut self, nodes: &[Node], dst: u32) {
+            for n in nodes {
+                match n {
+                    Node::Layer { blend, mask, .. } => {
+                        let m = self.mask(mask);
+                        let layer = self.next_layer;
+                        self.next_layer += 1;
+                        self.ops.push(OpKind::Layer { layer, dst, mask: m, blend: *blend, mask_out: None });
+                        if let Some(m) = m {
+                            self.free.push(m);
+                        }
+                    }
+                    Node::Group { children, blend, mask } => {
+                        let m = self.mask(mask);
+                        let g = self.alloc();
+                        self.ops.push(OpKind::Fill { dst: g, color: [0.0; 4] });
+                        self.nodes(children, g);
+                        self.ops.push(OpKind::Merge { src: g, dst, mask: m, blend: *blend });
+                        self.free.push(g);
+                        if let Some(m) = m {
+                            self.free.push(m);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut s = S { ops: Vec::new(), next_layer: 0, used: 1, free: Vec::new(), max: 1 };
+    s.ops.push(OpKind::Fill { dst: 0, color: plan.background });
+    s.nodes(&plan.nodes, 0);
+    s.ops.push(OpKind::Accumulate { src: 0 });
+    (s.ops, s.max)
 }
 
 /// Compiled pipelines shared by all renderers of a device, by shader signature.
 type PipelineCache = Arc<Mutex<HashMap<u64, Result<wgpu::ComputePipeline, String>>>>;
+
+/// GPU resources of one layer of the plan.
+struct LayerRes {
+    signature: u64,
+    params: wgpu::Buffer,
+    lut: wgpu::Buffer,
+    uni: Uni,
+}
+
+/// GPU resources of one operation.
+struct OpRes {
+    kind: OpKind,
+    uniform: wgpu::Buffer,
+}
 
 struct Target {
     width: u32,
@@ -134,27 +262,28 @@ pub struct GpuRenderer {
     ctx: GpuContext,
     layout: wgpu::BindGroupLayout,
     pipeline_layout: wgpu::PipelineLayout,
+    composite_pipeline: wgpu::ComputePipeline,
     display_pipeline: wgpu::ComputePipeline,
-    uniform_buf: wgpu::Buffer,
-    param_buf: wgpu::Buffer,
-    lut_buf: wgpu::Buffer,
     disp_buf: wgpu::Buffer,
     cache: PipelineCache,
-    /// Signature of the wanted shader and the pipeline once it is ready.
-    signature: u64,
-    mode: Option<Mode>,
-    pipeline: Option<wgpu::ComputePipeline>,
-    pending: Option<(u64, Receiver<()>)>,
+    pending: Vec<(u64, Receiver<()>)>,
     error: Option<String>,
+    layers: Vec<LayerRes>,
+    ops: Vec<OpRes>,
+    scratch: Option<(wgpu::Buffer, u32)>,
     target: Option<Target>,
-    uni: Option<Uni>,
+    plan_mode: Option<Mode>,
     samples: u32,
     row: u32,
     band_rows: u32,
     band_target: Duration,
     dirty_display: bool,
     generation: u64,
+    ready: bool,
 }
+
+/// Most bytes of scratch slots (the band height is limited by it).
+const SCRATCH_BUDGET: u64 = 256 << 20;
 
 impl GpuRenderer {
     pub fn new(ctx: GpuContext) -> GpuRenderer {
@@ -175,43 +304,47 @@ impl GpuRenderer {
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
-        let display_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("display"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("wgsl/display.wgsl").into()),
-        });
-        let display_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("display"),
-            layout: None,
-            module: &display_module,
-            entry_point: Some("main"),
-            compilation_options: Default::default(),
-            cache: None,
-        });
-        let buf =
-            |label, size: u64, usage| device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size, usage, mapped_at_creation: false });
-        let u = wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST;
+        let module = |label, src: String| {
+            device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(label), source: wgpu::ShaderSource::Wgsl(src.into()) })
+        };
+        let pipeline = |label, m: &wgpu::ShaderModule| {
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some(label),
+                layout: None,
+                module: m,
+                entry_point: Some("main"),
+                compilation_options: Default::default(),
+                cache: None,
+            })
+        };
+        let composite_pipeline = pipeline("composite", &module("composite", codegen::composite_shader()));
+        let display_pipeline = pipeline("display", &module("display", include_str!("wgsl/display.wgsl").to_string()));
         GpuRenderer {
-            uniform_buf: buf("uniforms", std::mem::size_of::<Uni>() as u64, u),
-            param_buf: buf("params", (MAX_PARAMS * 16) as u64, u),
-            lut_buf: buf("lut", (2 * LUT_SIZE * 16) as u64, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST),
-            disp_buf: buf("display", 16, u),
+            disp_buf: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("display"),
+                size: 16,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
             layout,
             pipeline_layout,
+            composite_pipeline,
             display_pipeline,
             cache: Arc::new(Mutex::new(HashMap::new())),
-            signature: 0,
-            mode: None,
-            pipeline: None,
-            pending: None,
+            pending: Vec::new(),
             error: None,
+            layers: Vec::new(),
+            ops: Vec::new(),
+            scratch: None,
             target: None,
-            uni: None,
+            plan_mode: None,
             samples: 0,
             row: 0,
             band_rows: 64,
             band_target: Duration::from_millis(12),
             dirty_display: false,
             generation: 0,
+            ready: false,
             ctx,
         }
     }
@@ -227,11 +360,11 @@ impl GpuRenderer {
         self.error.as_deref()
     }
     pub fn compiling(&self) -> bool {
-        self.pending.is_some()
+        !self.pending.is_empty()
     }
-    /// The scalar mode of the current shader.
+    /// The most demanding scalar mode of the current plan.
     pub fn mode(&self) -> Option<Mode> {
-        self.mode
+        self.plan_mode
     }
     pub fn output_view(&self) -> Option<&wgpu::TextureView> {
         self.target.as_ref().map(|t| &t.view)
@@ -247,27 +380,78 @@ impl GpuRenderer {
         self.band_target = t;
     }
 
-    /// Sets what to render. Restarts the accumulation; compiles a new shader (in the background)
-    /// only when the formula, its functions or the scalar mode changed.
+    /// Sets what to render. Restarts the accumulation; compiles shaders (in the background) only
+    /// for layers whose programs or modes changed.
     pub fn set_plan(&mut self, plan: &Plan) {
-        let mode = renderer_mode(plan);
-        let sig = codegen::signature(&plan.formula_id, &plan.program, &plan.values, mode);
-        self.mode = Some(mode);
-        if sig != self.signature {
-            self.signature = sig;
-            self.pipeline = None;
-            self.error = None;
-            self.request_pipeline(sig, plan, mode);
+        let device = self.ctx.device.clone();
+        let layers = plan.layers();
+        self.plan_mode = Some(renderer_mode(plan));
+        self.error = None;
+        let mut old = std::mem::take(&mut self.layers).into_iter();
+        let mut res = Vec::with_capacity(layers.len());
+        for lp in &layers {
+            let mode = layer_mode(plan, lp);
+            let signature = codegen::signature(lp, mode);
+            if codegen::param_programs(lp).iter().map(|p| p.program.params.len()).sum::<usize>() > MAX_PARAMS {
+                self.error = Some(format!("{}: too many parameters for one layer", lp.fractal.id));
+            }
+            let (params, lut) = match old.next() {
+                Some(r) => (r.params, r.lut),
+                None => (
+                    device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("params"),
+                        size: (MAX_PARAMS * 16) as u64,
+                        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                        mapped_at_creation: false,
+                    }),
+                    device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("lut"),
+                        size: (2 * LUT_SIZE * 16) as u64,
+                        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                        mapped_at_creation: false,
+                    }),
+                ),
+            };
+            self.ctx.queue.write_buffer(&params, 0, bytemuck::cast_slice(&codegen::param_values(lp)));
+            let mut l: Vec<[f32; 4]> = lp.outside.lut.clone();
+            l.extend_from_slice(&lp.inside.lut);
+            self.ctx.queue.write_buffer(&lut, 0, bytemuck::cast_slice(&l));
+            self.request_pipeline(signature, lp, mode);
+            res.push(LayerRes { signature, params, lut, uni: layer_uni(plan, lp) });
         }
+        self.layers = res;
+        let (ops, slots) = schedule(plan);
+        self.ops = ops
+            .into_iter()
+            .map(|kind| OpRes {
+                kind,
+                uniform: device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("op"),
+                    size: std::mem::size_of::<Uni>() as u64,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }),
+            })
+            .collect();
         let (w, h) = (plan.frame.width, plan.frame.height);
         if self.target.as_ref().is_none_or(|t| t.width != w || t.height != h) {
             self.target = Some(self.create_target(w, h));
         }
-        let mut lut: Vec<[f32; 4]> = plan.outside.lut.clone();
-        lut.extend_from_slice(&plan.inside.lut);
-        self.ctx.queue.write_buffer(&self.lut_buf, 0, bytemuck::cast_slice(&lut));
-        self.ctx.queue.write_buffer(&self.param_buf, 0, bytemuck::cast_slice(&params(plan)));
-        self.uni = Some(uniforms(plan));
+        // Scratch: `slots` band-sized slots.
+        let fit = (SCRATCH_BUDGET / (w as u64 * 16 * slots as u64)).max(8) as u32;
+        let max_rows = fit.min(h.next_multiple_of(8)) / 8 * 8;
+        let need = w as u64 * max_rows as u64 * 16 * slots as u64;
+        if self.scratch.as_ref().is_none_or(|(b, rows)| b.size() < need || *rows != max_rows) {
+            let b = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("scratch"),
+                size: need.max(16),
+                usage: wgpu::BufferUsages::STORAGE,
+                mapped_at_creation: false,
+            });
+            self.scratch = Some((b, max_rows));
+        }
+        self.band_rows = self.band_rows.min(max_rows).max(8);
+        self.update_ready();
         self.restart();
     }
 
@@ -304,16 +488,11 @@ impl GpuRenderer {
         Target { width, height, accum, texture, view }
     }
 
-    fn request_pipeline(&mut self, sig: u64, plan: &Plan, mode: Mode) {
-        if let Some(r) = self.cache.lock().ok().and_then(|c| c.get(&sig).cloned()) {
-            match r {
-                Ok(p) => self.pipeline = Some(p),
-                Err(e) => self.error = Some(e),
-            }
-            self.pending = None;
+    fn request_pipeline(&mut self, sig: u64, lp: &LayerPlan, mode: Mode) {
+        if self.cache.lock().ok().is_some_and(|c| c.contains_key(&sig)) || self.pending.iter().any(|(s, _)| *s == sig) {
             return;
         }
-        let source = codegen::kernel(&plan.program, &plan.values, mode);
+        let source = codegen::kernel(lp, mode);
         let device = self.ctx.device.clone();
         let layout = self.pipeline_layout.clone();
         let cache = self.cache.clone();
@@ -325,43 +504,40 @@ impl GpuRenderer {
             }
             let _ = tx.send(());
         });
-        self.pending = Some((sig, rx));
+        self.pending.push((sig, rx));
     }
 
-    fn poll_pipeline(&mut self) {
-        let ready = match &self.pending {
-            Some((_, rx)) => rx.try_recv().is_ok(),
-            None => false,
-        };
-        if ready {
-            self.finish_pending();
-        }
+    fn pipeline(&self, sig: u64) -> Option<Result<wgpu::ComputePipeline, String>> {
+        self.cache.lock().ok().and_then(|c| c.get(&sig).cloned())
     }
 
-    /// Takes the result of the finished background compile.
-    fn finish_pending(&mut self) {
-        let Some((sig, _)) = self.pending.take() else { return };
-        if sig != self.signature {
-            return;
+    /// Checks whether all pipelines of the plan are compiled (records the first error).
+    fn update_ready(&mut self) {
+        self.pending.retain(|(_, rx)| matches!(rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
+        let mut ready = true;
+        for l in &self.layers {
+            match self.pipeline(l.signature) {
+                Some(Ok(_)) => {}
+                Some(Err(e)) => {
+                    self.error.get_or_insert(e);
+                    ready = false;
+                }
+                None => ready = false,
+            }
         }
-        match self.cache.lock().ok().and_then(|c| c.get(&sig).cloned()) {
-            Some(Ok(p)) => self.pipeline = Some(p),
-            Some(Err(e)) => self.error = Some(e),
-            None => {}
-        }
+        self.ready = ready;
     }
 
-    /// Waits until the shader of the current plan is compiled.
+    /// Waits until the shaders of the current plan are compiled.
     pub fn wait_for_pipeline(&mut self) -> Result<(), String> {
-        if let Some((_, rx)) = &self.pending {
-            // Either the message or a closed channel: the compile thread is done.
+        for (_, rx) in std::mem::take(&mut self.pending) {
             let _ = rx.recv();
-            self.finish_pending();
         }
+        self.update_ready();
         if let Some(e) = &self.error {
             return Err(e.clone());
         }
-        if self.pipeline.is_none() {
+        if !self.ready {
             return Err("no shader for the current formula".into());
         }
         Ok(())
@@ -370,37 +546,92 @@ impl GpuRenderer {
     /// Renders bands until `budget` is used up or `max_samples` passes are complete. Returns
     /// whether anything was rendered.
     pub fn work(&mut self, budget: Duration, max_samples: u32) -> bool {
-        self.poll_pipeline();
-        if self.samples >= max_samples {
+        if !self.ready {
+            self.update_ready();
+        }
+        if !self.ready || self.samples >= max_samples || self.error.is_some() {
             return false;
         }
-        let (Some(t), Some(mut un), Some(pipeline)) = (self.target.as_ref(), self.uni, self.pipeline.clone()) else { return false };
-        let (width, height) = (t.width, t.height);
+        let (Some(t), Some((scratch, max_rows))) = (self.target.as_ref(), self.scratch.as_ref()) else { return false };
+        let (width, height, max_rows) = (t.width, t.height, *max_rows);
         let device = self.ctx.device.clone();
-        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("kernel"),
-            layout: &self.layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: self.uniform_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: self.param_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.lut_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: t.accum.as_entire_binding() },
-            ],
-        });
+        let stride = width * max_rows;
+        // Pipelines and bind groups per operation (valid for the whole call).
+        let mut steps = Vec::with_capacity(self.ops.len());
+        for op in &self.ops {
+            match &op.kind {
+                OpKind::Layer { layer, .. } => {
+                    let l = &self.layers[*layer];
+                    let Some(Ok(p)) = self.pipeline(l.signature) else { return false };
+                    let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("layer"),
+                        layout: &self.layout,
+                        entries: &[
+                            wgpu::BindGroupEntry { binding: 0, resource: op.uniform.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 1, resource: l.params.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 2, resource: l.lut.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 3, resource: scratch.as_entire_binding() },
+                        ],
+                    });
+                    steps.push((p, bind));
+                }
+                _ => {
+                    let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("composite"),
+                        layout: &self.composite_pipeline.get_bind_group_layout(0),
+                        entries: &[
+                            wgpu::BindGroupEntry { binding: 0, resource: op.uniform.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 1, resource: scratch.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 2, resource: t.accum.as_entire_binding() },
+                        ],
+                    });
+                    steps.push((self.composite_pipeline.clone(), bind));
+                }
+            }
+        }
         let start = Instant::now();
         let mut worked = false;
         while self.samples < max_samples {
-            let rows = self.band_rows.min(height - self.row);
-            un.size[2] = self.samples;
-            un.size[3] = self.row;
-            un.band[0] = rows;
-            self.ctx.queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&un));
+            let rows = self.band_rows.min(height - self.row).min(max_rows);
+            for op in &self.ops {
+                match &op.kind {
+                    OpKind::Layer { layer, dst, mask, blend, mask_out } => {
+                        let mut u = self.layers[*layer].uni;
+                        u.size[2] = self.samples;
+                        u.size[3] = self.row;
+                        u.band = [rows, mask_out.is_some() as u32, *dst, mask.unwrap_or(NONE)];
+                        let (source, invert) = mask_out.map_or((0, 0), |(s, i)| (source_index(s), i as u32));
+                        u.blend = [blend.mode.index(), stride, source, invert];
+                        u.opacity = [blend.opacity, 0.0, 0.0, 0.0];
+                        self.ctx.queue.write_buffer(&op.uniform, 0, bytemuck::bytes_of(&u));
+                    }
+                    other => {
+                        let mut u = OpUni { size: [width, rows, self.row, stride], ..Default::default() };
+                        match other {
+                            OpKind::Fill { dst, color } => {
+                                u.slots = [0, *dst, 0, NONE];
+                                u.color = *color;
+                            }
+                            OpKind::Merge { src, dst, mask, blend } => {
+                                u.slots = [1, *dst, *src, mask.unwrap_or(NONE)];
+                                u.mode = [blend.mode.index(), 0, 0, 0];
+                                u.blend = [blend.opacity, 0.0, 0.0, 0.0];
+                            }
+                            OpKind::Accumulate { src } => u.slots = [2, 0, *src, NONE],
+                            OpKind::Layer { .. } => unreachable!(),
+                        }
+                        self.ctx.queue.write_buffer(&op.uniform, 0, bytemuck::bytes_of(&u));
+                    }
+                }
+            }
             let mut enc = device.create_command_encoder(&Default::default());
             {
                 let mut pass = enc.begin_compute_pass(&Default::default());
-                pass.set_pipeline(&pipeline);
-                pass.set_bind_group(0, &bind, &[]);
-                pass.dispatch_workgroups(width.div_ceil(8), rows.div_ceil(8), 1);
+                for (p, bind) in &steps {
+                    pass.set_pipeline(p);
+                    pass.set_bind_group(0, bind, &[]);
+                    pass.dispatch_workgroups(width.div_ceil(8), rows.div_ceil(8), 1);
+                }
             }
             let t0 = Instant::now();
             self.ctx.queue.submit(Some(enc.finish()));
@@ -408,7 +639,7 @@ impl GpuRenderer {
             let dt = t0.elapsed();
             worked = true;
             let ratio = self.band_target.as_secs_f64() / dt.as_secs_f64().max(1e-5);
-            self.band_rows = ((rows as f64 * ratio.clamp(0.5, 2.0)).round() as u32).clamp(8, height.max(8)).next_multiple_of(8);
+            self.band_rows = ((rows as f64 * ratio.clamp(0.5, 2.0)).round() as u32).clamp(8, max_rows.max(8)).next_multiple_of(8).min(max_rows);
             self.row += rows;
             if self.row >= height {
                 self.row = 0;
@@ -431,7 +662,7 @@ impl GpuRenderer {
         }
         let Some(t) = self.target.as_ref() else { return };
         self.dirty_display = false;
-        self.ctx.queue.write_buffer(&self.disp_buf, 0, bytemuck::cast_slice(&[t.width, t.height, self.samples, 0]));
+        self.ctx.queue.write_buffer(&self.disp_buf, 0, bytemuck::cast_slice(&[t.width, t.height, self.samples, self.row]));
         let bind = self.ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("display"),
             layout: &self.display_pipeline.get_bind_group_layout(0),
@@ -452,8 +683,8 @@ impl GpuRenderer {
         self.generation += 1;
     }
 
-    /// Averaged linear RGB per pixel (reads the accumulation back).
-    pub fn read_linear(&self) -> Option<Vec<[f32; 3]>> {
+    /// Averaged linear RGB with straight alpha per pixel (reads the accumulation back).
+    pub fn read_linear(&self) -> Option<Vec<[f32; 4]>> {
         let t = self.target.as_ref()?;
         let size = t.width as u64 * t.height as u64 * 16;
         let staging = self.ctx.device.create_buffer(&wgpu::BufferDescriptor {
@@ -474,35 +705,28 @@ impl GpuRenderer {
         rx.recv().ok()?.ok()?;
         let data = slice.get_mapped_range().ok()?;
         let px: &[[f32; 4]] = bytemuck::cast_slice(&data[..]);
-        let out = px.iter().map(|a| {
-            let n = a[3].max(1.0);
-            [a[0] / n, a[1] / n, a[2] / n]
-        });
-        let out = out.collect();
+        let w = t.width as usize;
+        let out = px
+            .iter()
+            .enumerate()
+            .map(|(i, a)| {
+                let n = self.samples + ((i / w) < self.row as usize) as u32;
+                rfr_core::render::cpu::unpremultiply(*a, 1.0 / n.max(1) as f32)
+            })
+            .collect();
         drop(data);
         staging.unmap();
         Some(out)
     }
 
-    /// The image as 8-bit sRGB RGBA (same encoding as the CPU renderer).
+    /// The image as 8-bit sRGB RGBA with straight alpha (same encoding as the CPU renderer).
     pub fn read_rgba8(&self) -> Option<Vec<u8>> {
-        Some(self.read_linear()?.iter().flat_map(|c| [linear_to_srgb(c[0]), linear_to_srgb(c[1]), linear_to_srgb(c[2]), 255]).collect())
+        Some(rfr_core::render::cpu::rgba8(&self.read_linear()?))
     }
 
     /// The output texture (for copies by the caller).
     pub fn output_texture(&self) -> Option<&wgpu::Texture> {
         self.target.as_ref().map(|t| &t.texture)
-    }
-}
-
-/// The scalar mode a plan renders with: f32 (with derivatives when the coloring needs them)
-/// while that is precise enough, else double-float (distance estimation then falls back to the
-/// smooth iteration count).
-pub fn renderer_mode(plan: &Plan) -> Mode {
-    match plan.precision() {
-        rfr_core::render::Precision::Single if plan.needs_derivative() => Mode::Dual,
-        rfr_core::render::Precision::Single => Mode::Plain,
-        _ => Mode::Df64,
     }
 }
 
@@ -528,14 +752,17 @@ fn compile(device: &wgpu::Device, layout: &wgpu::PipelineLayout, source: &str) -
     Ok(pipeline)
 }
 
-/// Renders `samples` passes of `plan` and returns linear RGB per pixel.
-pub fn render_blocking(ctx: GpuContext, plan: &Plan, samples: u32, mut progress: impl FnMut(f32) -> bool) -> Result<Vec<[f32; 3]>, String> {
+/// Renders `samples` passes of `plan` and returns linear RGB with straight alpha per pixel.
+pub fn render_blocking(ctx: GpuContext, plan: &Plan, samples: u32, mut progress: impl FnMut(f32) -> bool) -> Result<Vec<[f32; 4]>, String> {
     let mut r = GpuRenderer::new(ctx);
     r.set_band_target(Duration::from_millis(40));
     r.set_plan(plan);
     r.wait_for_pipeline()?;
     while r.samples() < samples {
         r.work(Duration::from_millis(200), samples);
+        if let Some(e) = r.error() {
+            return Err(e.to_string());
+        }
         if !progress(r.samples() as f32 / samples as f32) {
             return Err("cancelled".into());
         }

@@ -34,12 +34,14 @@ pub enum Sys {
     /// Center of the view (complex) and magnification (real).
     Center,
     Magn,
+    /// The fractal's current `z` (colorings: `#z`).
+    Z,
 }
 
 impl Sys {
     pub fn ty(self) -> Ty {
         match self {
-            Sys::Pixel | Sys::C | Sys::ZPrev | Sys::Center => Ty::Complex,
+            Sys::Pixel | Sys::C | Sys::ZPrev | Sys::Center | Sys::Z => Ty::Complex,
             Sys::LastSqr | Sys::Magn => Ty::Real,
             Sys::MaxIt | Sys::NumIter => Ty::Int,
             Sys::IsMand => Ty::Bool,
@@ -317,6 +319,7 @@ pub const Z: usize = 0;
 #[derive(Clone, Debug, PartialEq)]
 pub struct Program {
     pub name: String,
+    pub kind: super::ast::ProgramKind,
     pub params: Vec<Param>,
     /// Local variables; slot [`Z`] is `z` (complex).
     pub locals: Vec<Local>,
@@ -329,6 +332,9 @@ pub struct Program {
     pub has_julia: bool,
     /// Uses transcendental functions or general powers (double-float mode is not exact).
     pub transcendental: bool,
+    /// Local slots of `#index` (colorings) and `#solid` (colorings, transformations).
+    pub index_slot: Option<usize>,
+    pub solid_slot: Option<usize>,
 }
 
 impl Program {

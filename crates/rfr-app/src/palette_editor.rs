@@ -114,7 +114,7 @@ fn strip(ui: &mut Ui, gradient: &mut Vec<ColorStop>, st: &mut State, blend: Blen
     let height = 24.0;
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), height + 12.0), egui::Sense::click_and_drag());
     let bar = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), height));
-    let lut = Gradient { stops: gradient.clone(), blend }.lut();
+    let lut = Gradient { stops: gradient.clone(), blend, alpha: Vec::new() }.lut();
     let mut mesh = egui::Mesh::default();
     let w = bar.width() / lut.len() as f32;
     for (i, c) in lut.iter().enumerate() {
