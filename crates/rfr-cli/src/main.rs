@@ -147,18 +147,34 @@ fn list_formulas() {
 }
 
 /// Compiles every formula file below `paths` and prints a summary with the failure reasons.
-fn check_formulas(paths: &[String]) -> Result<(), String> {
+/// Entries that use classes (`class`, `import`, `new`) are counted separately from classic ones.
+/// `--failures <file>` writes every failure (file, entry, error) to a text file.
+fn check_formulas(args: &[String]) -> Result<(), String> {
+    let mut paths = Vec::new();
+    let mut failures_out = None;
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--failures" {
+            failures_out = Some(PathBuf::from(value(args, &mut i, "--failures")?));
+        } else {
+            paths.push(args[i].clone());
+        }
+        i += 1;
+    }
     let mut files = Vec::new();
-    for p in paths {
+    for p in &paths {
         collect(Path::new(p), &mut files);
     }
     if files.is_empty() {
-        return Err("no .ufm or .frm files found".into());
+        return Err("no .ufm, .ucl, .uxf or .frm files found".into());
     }
     files.sort();
-    let (mut ok, mut failed) = (0usize, 0usize);
-    let mut per_kind: std::collections::BTreeMap<&str, (usize, usize)> = Default::default();
+    // (kind, classic) -> (ok, failed)
+    let mut counts: std::collections::BTreeMap<(&str, bool), (usize, usize)> = Default::default();
+    // (kind) -> (shader valid and CPU run fine, failed)
+    let mut renders: std::collections::BTreeMap<&str, (usize, usize)> = Default::default();
     let mut reasons: std::collections::BTreeMap<String, usize> = Default::default();
+    let mut list = String::new();
     for f in &files {
         let Ok(bytes) = std::fs::read(f) else { continue };
         let text = String::from_utf8_lossy(&bytes);
@@ -168,39 +184,159 @@ fn check_formulas(paths: &[String]) -> Result<(), String> {
             "uxf" => (rfr_core::formula::ProgramKind::Transform, "transformations"),
             _ => (rfr_core::formula::ProgramKind::Fractal, "fractal formulas"),
         };
-        let results = if text.contains("@language: frm-like/1") {
-            vec![(f.display().to_string(), rfr_core::formula::compile_frm(&text))]
+        #[allow(clippy::type_complexity)]
+        let results: Vec<(String, bool, Result<_, rfr_core::formula::Error>)> = if text.contains("@language: frm-like/1") {
+            vec![(String::new(), true, rfr_core::formula::compile_frm(&text))]
         } else {
-            rfr_core::formula::compile_ufm_file_kind(&text, kind)
+            let pre = rfr_core::formula::parse::preprocess(&text);
+            rfr_core::formula::parse::split_entries(&pre)
+                .iter()
+                .map(|e| {
+                    let lower = e.body.to_ascii_lowercase();
+                    let classic = !(lower.contains("import \"") || lower.contains("\nclass ") || lower.contains("= new ") || lower.contains("=new "));
+                    (
+                        e.name.clone(),
+                        classic,
+                        rfr_core::formula::parse::parse_ufm_entry(e).and_then(|a| rfr_core::formula::check::check_kind(&a, kind)),
+                    )
+                })
+                .collect()
         };
-        for (_, r) in results {
-            let e = per_kind.entry(label).or_default();
+        for (name, classic, r) in results {
+            let e = counts.entry((label, classic)).or_default();
             match r {
-                Ok(_) => {
-                    ok += 1;
+                Ok(prog) => {
                     e.0 += 1;
+                    let rr = renders.entry(label).or_default();
+                    match render_check(prog, kind) {
+                        Ok(()) => rr.0 += 1,
+                        Err(why) => {
+                            rr.1 += 1;
+                            list.push_str(&format!("{}\t{name}\trender\t{why}\n", f.display()));
+                        }
+                    }
                 }
                 Err(err) => {
-                    failed += 1;
                     e.1 += 1;
-                    // Group reasons without names and numbers.
-                    let key: String = err.msg.split('\'').enumerate().map(|(i, s)| if i % 2 == 1 { "…" } else { s }).collect::<Vec<_>>().join("'");
-                    *reasons.entry(key).or_default() += 1;
+                    if classic {
+                        // Group reasons without names and numbers.
+                        let key: String =
+                            err.msg.split('\'').enumerate().map(|(i, s)| if i % 2 == 1 { "…" } else { s }).collect::<Vec<_>>().join("'");
+                        *reasons.entry(key).or_default() += 1;
+                    }
+                    list.push_str(&format!("{}\t{name}\t{}\t{err}\n", f.display(), if classic { "classic" } else { "classes" }));
                 }
             }
         }
     }
-    let total = ok + failed;
-    println!("{} files, {total} entries: {ok} compile ({:.1} %), {failed} fail", files.len(), 100.0 * ok as f64 / total.max(1) as f64);
-    for (label, (o, f)) in &per_kind {
-        println!("  {label}: {o} of {} compile ({:.1} %)", o + f, 100.0 * *o as f64 / (o + f).max(1) as f64);
+    let (ok, failed) = counts.values().fold((0, 0), |a, c| (a.0 + c.0, a.1 + c.1));
+    println!(
+        "{} files, {} entries: {ok} compile ({:.1} %), {failed} fail",
+        files.len(),
+        ok + failed,
+        100.0 * ok as f64 / (ok + failed).max(1) as f64
+    );
+    for ((label, classic), (o, f)) in &counts {
+        println!(
+            "  {label} ({}): {o} of {} compile ({:.1} %)",
+            if *classic { "classic" } else { "with classes" },
+            o + f,
+            100.0 * *o as f64 / (o + f).max(1) as f64
+        );
     }
+    for (label, (o, f)) in &renders {
+        println!("  {label} that compile and render (valid shader, CPU run): {o} of {}", o + f);
+    }
+    println!("Reasons (classic entries):");
     let mut top: Vec<_> = reasons.into_iter().collect();
     top.sort_by_key(|t| std::cmp::Reverse(t.1));
-    for (msg, n) in top.iter().take(25) {
+    for (msg, n) in top.iter().take(30) {
         println!("{n:>6}  {msg}");
     }
+    if let Some(p) = failures_out {
+        std::fs::write(&p, list).map_err(|e| format!("{}: {e}", p.display()))?;
+        println!("failures written to {}", p.display());
+    }
     Ok(())
+}
+
+/// Puts a compiled program into a layer (with the built-in Mandelbrot for colorings and
+/// transformations), validates the layer's shader and runs it on the CPU at a few points.
+fn render_check(prog: rfr_core::formula::Program, kind: rfr_core::formula::ProgramKind) -> Result<(), String> {
+    use rfr_core::formula::ProgramKind;
+    use rfr_core::render::{ColorMethod, ColorPlan, LayerPlan, Prog};
+    let prog = std::sync::Arc::new(prog);
+    let values: Vec<_> = prog.params.iter().map(|p| p.default.clone()).collect();
+    let mine = Prog { id: "check".into(), program: prog.clone(), values: values.clone() };
+    let mandel = Prog::resolve("rfract:Mandelbrot", &Default::default(), ProgramKind::Fractal)?;
+    let color = |method| ColorPlan {
+        method,
+        lut: vec![[0.5; 4]; 1024],
+        transfer: rfr_core::doc::Transfer::Linear,
+        density: 1.0,
+        offset: 0.0,
+        solid: [0.0, 0.0, 0.0, 1.0],
+    };
+    let lp = match kind {
+        ProgramKind::Fractal => LayerPlan {
+            fractal: mine,
+            max_iter: 50,
+            julia: false,
+            seed: [0.0; 2],
+            transforms: vec![],
+            outside: color(ColorMethod::Smooth),
+            inside: color(ColorMethod::Solid),
+        },
+        ProgramKind::Coloring => LayerPlan {
+            fractal: mandel,
+            max_iter: 50,
+            julia: false,
+            seed: [0.0; 2],
+            transforms: vec![],
+            outside: color(ColorMethod::Formula(mine.clone())),
+            inside: color(ColorMethod::Formula(mine)),
+        },
+        ProgramKind::Transform => LayerPlan {
+            fractal: mandel,
+            max_iter: 50,
+            julia: false,
+            seed: [0.0; 2],
+            transforms: vec![mine],
+            outside: color(ColorMethod::Smooth),
+            inside: color(ColorMethod::Solid),
+        },
+    };
+    let src = rfr_gpu::codegen::kernel(&lp, rfr_gpu::codegen::Mode::Plain);
+    let module = naga::front::wgsl::parse_str(&src).map_err(|e| format!("shader: {}", e.message()))?;
+    naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty()).validate(&module).map_err(|e| {
+        let mut msg = format!("shader: {}", e.as_inner());
+        let mut src: Option<&dyn std::error::Error> = std::error::Error::source(e.as_inner());
+        while let Some(s) = src {
+            msg.push_str(&format!(": {s}"));
+            src = s.source();
+        }
+        msg
+    })?;
+    // CPU: a small render of the layer (panics count as failures).
+    let doc_free = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let plan = rfr_core::render::Plan {
+            frame: rfr_core::render::ViewFrame { width: 4, height: 3, center: [-0.5, 0.0], radius: 1.5, cos: 1.0, sin: 0.0 },
+            background: [0.0, 0.0, 0.0, 1.0],
+            nodes: vec![rfr_core::render::Node::Layer {
+                layer: Box::new(lp),
+                blend: rfr_core::render::Blend { mode: Default::default(), opacity: 1.0 },
+                mask: None,
+            }],
+        };
+        let mut r = rfr_core::render::cpu::CpuRenderer::new(plan);
+        r.pass();
+    }));
+    doc_free.map_err(|e| {
+        format!(
+            "CPU run panicked: {}",
+            e.downcast_ref::<String>().cloned().or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_default()
+        )
+    })
 }
 
 fn collect(p: &Path, out: &mut Vec<PathBuf>) {

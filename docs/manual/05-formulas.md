@@ -50,6 +50,34 @@ The command line checks formula files and reports what does not compile yet:
 rfr-cli formulas --check path/to/formulas
 ```
 
+### What the UFM support covers
+
+- Types `bool`, `int`, `float`, `complex` and `color`; declared variables keep their type,
+  undeclared ones take the widest type assigned to them.
+- Sections `global:`, `init:`, `loop:`, `bailout:`, `final:`, `transform:` and `default:`;
+  `if`/`elseif`/`else`, `while`, `repeat … until`; several statements on one line separated
+  by commas; chained assignments (`z = c = #pixel`).
+- Parameters of all simple kinds (bool, int, enumerations, float, complex, color, function);
+  undeclared `@name` parameters become complex parameters, undeclared `@fn` function
+  parameters default to `ident`. Assigning to a parameter (`@p = …`) turns it into a
+  variable that starts with the parameter's value.
+- Arrays: `float a[10]`, `complex b[4, 4]`, dynamic arrays with `setLength(a, n)` and
+  `length(a)`. Each sample keeps its own arrays (at most 4096 elements; dynamic arrays get
+  2048). Arrays as large as the image (summing over all pixels) are not supported. Indices
+  outside the array are clamped to its ends.
+- Colors: `rgb`, `rgba`, `hsl`, `hsla` (hue 0 to 6), `red`, `green`, `blue`, `alpha`, `hue`,
+  `sat`, `lum`, `blend`, `compose`, `gradient` (the coloring's gradient) and the merge
+  functions (`mergenormal`, `mergemultiply`, `mergescreen`, … `mergeluminance`). Colors are
+  sRGB values from 0 to 1 with straight alpha. A coloring formula that writes `#color` colors
+  the region directly; the gradient then only serves `gradient()`.
+- Symbols `#pixel`, `#z`, `#c`, `#zprev`, `#numiter`, `#maxiter`, `#ismand`, `#center`,
+  `#magn`, `#x`, `#y`, `#width`, `#height`, `#screenpixel`, `#screenmax`, `#angle`,
+  `#random` (a new random complex number per use) and `#randomrange`; `random(seed)` gives
+  the next pseudo-random integer after `seed`.
+- FractInt syntax inside UFM files (`init : loop, bailout`), its predefined names (`pixel`,
+  `p1`…`p6`, `fn1`…`fn4`, `whitesq`, `scrnpix`, `maxit`, `lastsqr`, `rand`, …) and the
+  preprocessor (`$define`, `$ifdef`, `$ifndef`, `$else`, `$endif`).
+
 !!! note
-    This version compiles a subset of the UFM language (no classes or coloring formulas yet);
-    the check lists the missing features by frequency.
+    Not supported yet: classes (`class`, `import`, `new`), user functions, image parameters
+    and `.upr` parameter files. The check lists what fails by frequency.

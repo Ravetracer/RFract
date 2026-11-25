@@ -83,6 +83,16 @@ fn param_widget(ui: &mut Ui, salt: &str, p: &Param, value: &mut ParamValue) -> b
                 }
             });
         }
+        (ParamKind::Color, ParamValue::Color(c)) => {
+            // Formula colors are sRGB-encoded; the picker works on linear values.
+            use rfr_core::render::composite::{srgb_decode, srgb_encode};
+            let mut lin = [srgb_decode(c[0] as f32), srgb_decode(c[1] as f32), srgb_decode(c[2] as f32), c[3].clamp(0.0, 1.0) as f32];
+            let before_lin = lin;
+            ui.color_edit_button_rgba_unmultiplied(&mut lin).on_hover_text(&tip);
+            if lin != before_lin {
+                *c = [srgb_encode(lin[0]) as f64, srgb_encode(lin[1]) as f64, srgb_encode(lin[2]) as f64, lin[3] as f64];
+            }
+        }
         _ => {
             ui.label(RichText::new("?").color(theme::WARN));
         }

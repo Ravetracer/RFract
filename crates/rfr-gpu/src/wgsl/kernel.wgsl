@@ -34,7 +34,7 @@ struct Uni {
 }
 
 struct Params {
-    p: array<vec4<f32>, 256>,
+    p: array<vec4<f32>, 4096>,
 }
 
 @group(0) @binding(0) var<uniform> U: Uni;
@@ -44,12 +44,22 @@ struct Params {
 @group(0) @binding(3) var<storage, read_write> scratch: array<vec4<f32>>;
 
 const LUT_SIZE: u32 = 1024u;
+//@RNG_DECL
 const TAU: f32 = 6.283185307179586;
 
 fn hash(v: u32) -> u32 {
     let state = v * 747796405u + 2891336453u;
     let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
     return (word >> 22u) ^ word;
+}
+
+// One step of the generator behind #random: a value in -1..1 (rfr_core::formula::cpu::rnd_next).
+fn rnd_step(s: ptr<private, u32>) -> f32 {
+    let st = *s * 747796405u + 2891336453u;
+    *s = st;
+    let word = ((st >> ((st >> 28u) + 4u)) ^ st) * 277803737u;
+    let v = (word >> 22u) ^ word;
+    return f32(v >> 8u) / 8388608.0 - 1.0;
 }
 
 fn transfer(kind: u32, v: f32) -> f32 {
@@ -71,6 +81,70 @@ fn lut_sample(base: u32, t: f32) -> vec4<f32> {
 }
 
 fn norm2(v: vec2<f32>) -> f32 { return dot(v, v); }
+
+// Formula colors: sRGB-encoded RGBA, straight alpha, hue 0..6 (rfr_core::formula::color).
+fn k_hsla(h0: f32, s: f32, l: f32, a: f32) -> vec4<f32> {
+    let h = h0 - 6.0 * floor(h0 / 6.0);
+    let c = (1.0 - abs(2.0 * l - 1.0)) * clamp(s, 0.0, 1.0);
+    let x = c * (1.0 - abs(h - 2.0 * floor(h / 2.0) - 1.0));
+    let m = l - 0.5 * c;
+    var rgb: vec3<f32>;
+    switch u32(h) {
+        case 0u: { rgb = vec3<f32>(c, x, 0.0); }
+        case 1u: { rgb = vec3<f32>(x, c, 0.0); }
+        case 2u: { rgb = vec3<f32>(0.0, c, x); }
+        case 3u: { rgb = vec3<f32>(0.0, x, c); }
+        case 4u: { rgb = vec3<f32>(x, 0.0, c); }
+        default: { rgb = vec3<f32>(c, 0.0, x); }
+    }
+    return vec4<f32>(rgb + vec3<f32>(m), a);
+}
+
+fn k_hsl(c: vec4<f32>) -> vec3<f32> {
+    let mx = max(max(c.x, c.y), c.z);
+    let mn = min(min(c.x, c.y), c.z);
+    let l = 0.5 * (mx + mn);
+    let d = mx - mn;
+    if d <= 1e-12 {
+        return vec3<f32>(0.0, 0.0, l);
+    }
+    let s = d / max(1.0 - abs(2.0 * l - 1.0), 1e-12);
+    var h: f32;
+    if mx == c.x {
+        let t = (c.y - c.z) / d;
+        h = t - 6.0 * floor(t / 6.0);
+    } else if mx == c.y {
+        h = (c.z - c.x) / d + 2.0;
+    } else {
+        h = (c.x - c.y) / d + 4.0;
+    }
+    return vec3<f32>(h, s, l);
+}
+
+fn k_compose(b: vec4<f32>, t: vec4<f32>, amount: f32) -> vec4<f32> {
+    let a = t.w * amount;
+    return vec4<f32>(b.xyz + (t.xyz - b.xyz) * a, b.w + a * (1.0 - b.w));
+}
+
+fn k_merge(mode: u32, b: vec4<f32>, t: vec4<f32>) -> vec4<f32> {
+    return vec4<f32>(b_blend(mode, b.xyz, t.xyz), t.w);
+}
+
+// The coloring's gradient (base: LUT offset; 0xffffffff: none, a gray ramp).
+fn k_gradient(base: u32, t: f32) -> vec4<f32> {
+    if base == 0xffffffffu {
+        let g = fract(t);
+        return vec4<f32>(g, g, g, 1.0);
+    }
+    let c = lut_sample(base, t);
+    return vec4<f32>(srgb_enc(c.x), srgb_enc(c.y), srgb_enc(c.z), c.w);
+}
+
+// A formula's #color as a region color (linear RGB, alpha).
+fn k_direct(k: vec4<f32>) -> vec4<f32> {
+    let c = clamp(k, vec4<f32>(0.0), vec4<f32>(1.0));
+    return finite4(vec4<f32>(srgb_dec(c.x), srgb_dec(c.y), srgb_dec(c.z), c.w));
+}
 
 fn smooth_iter(z: vec2<f32>, zp: vec2<f32>, zp2: vec2<f32>, iter: u32) -> f32 {
     let n = f32(iter);
@@ -166,8 +240,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if x >= U.size.x || gid.y >= U.band.x || y >= U.size.y {
         return;
     }
-//@MODE_INIT
     let s = U.size.z;
+    let rng_base = hash(x ^ hash(y ^ hash(s + 0x9E3779B9u)));
+//@MODE_INIT
     // Sample position inside the pixel (R2 sequence in 32-bit fixed point) and derivative direction.
     let ha = hash(x ^ hash(y + 0x68E31DA4u));
     let hb = hash(ha);

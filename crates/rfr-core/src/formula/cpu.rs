@@ -17,6 +17,8 @@ pub struct Frame<S> {
     pub ints: Vec<i64>,
     pub reals: Vec<S>,
     pub cx: Vec<Cx<S>>,
+    /// Colors (sRGB-encoded RGBA).
+    pub colors: Vec<[f64; 4]>,
     pub pixel: Cx<S>,
     pub c: Cx<S>,
     pub zprev: Cx<S>,
@@ -28,12 +30,52 @@ pub struct Frame<S> {
     pub magn: S,
     /// The fractal's current `z` (read by colorings as `#z`).
     pub zcur: Cx<S>,
+    /// Image position of the pixel and image size.
+    pub px: i64,
+    pub py: i64,
+    pub width: i64,
+    pub height: i64,
+    /// View rotation in radians.
+    pub angle: f64,
+    /// State of `#random` (the same generator as the GPU's).
+    pub rng: RngState,
+}
+
+/// Generator state of `#random`; an atomic so frames can be shared with worker threads (each
+/// thread uses its own frame).
+#[derive(Debug, Default)]
+pub struct RngState(pub std::sync::atomic::AtomicU32);
+
+impl Clone for RngState {
+    fn clone(&self) -> Self {
+        RngState(std::sync::atomic::AtomicU32::new(self.get()))
+    }
+}
+
+impl RngState {
+    pub fn get(&self) -> u32 {
+        self.0.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    pub fn set(&self, v: u32) {
+        self.0.store(v, std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// One step of the random generator behind `#random`: returns a value in -1..1 (mirrored by
+/// `rnd_next` in kernel.wgsl).
+pub fn rnd_next(state: &RngState) -> f64 {
+    let s = state.get().wrapping_mul(747_796_405).wrapping_add(2_891_336_453);
+    state.set(s);
+    let word = ((s >> ((s >> 28) + 4)) ^ s).wrapping_mul(277_803_737);
+    let v = (word >> 22) ^ word;
+    (v >> 8) as f64 / 8_388_608.0 - 1.0
 }
 
 type BFn<S> = Box<dyn Fn(&Frame<S>) -> bool + Send + Sync>;
 type IFn<S> = Box<dyn Fn(&Frame<S>) -> i64 + Send + Sync>;
 type RFn<S> = Box<dyn Fn(&Frame<S>) -> S + Send + Sync>;
 type CFn<S> = Box<dyn Fn(&Frame<S>) -> Cx<S> + Send + Sync>;
+type KFn<S> = Box<dyn Fn(&Frame<S>) -> [f64; 4] + Send + Sync>;
 type SFn<S> = Box<dyn Fn(&mut Frame<S>) + Send + Sync>;
 
 enum E<S> {
@@ -41,13 +83,16 @@ enum E<S> {
     I(IFn<S>),
     R(RFn<S>),
     C(CFn<S>),
+    K(KFn<S>),
 }
 
 /// How the program's locals map onto the frame's typed vectors.
 #[derive(Clone, Debug)]
 struct Layout {
     slot: Vec<(Ty, usize)>,
-    counts: [usize; 4],
+    /// Element count per local (1 for scalars).
+    cap: Vec<usize>,
+    counts: [usize; 5],
 }
 
 /// Outcome of iterating one sample.
@@ -80,6 +125,8 @@ pub struct Compiled<S> {
     fin: Vec<SFn<S>>,
     index_slot: Option<usize>,
     solid_slot: Option<usize>,
+    /// `#color` when the program assigns it.
+    color_slot: Option<usize>,
 }
 
 /// Real `x^y`: positive bases through exp/log, zero gives zero, negative bases use the real
@@ -189,6 +236,8 @@ struct Cc<'a, S> {
     prog: &'a Program,
     layout: &'a Layout,
     values: &'a [ParamValue],
+    /// The coloring's gradient for `gradient(t)` (linear RGB, alpha).
+    lut: std::sync::Arc<Vec<[f32; 4]>>,
     _s: std::marker::PhantomData<S>,
 }
 
@@ -233,6 +282,74 @@ impl<'a, S: Scalar + Send + Sync + 'static> Cc<'a, S> {
             _ => unreachable!("expected complex: {e:?}"),
         }
     }
+    fn k(&self, e: &Expr) -> KFn<S> {
+        match self.expr(e) {
+            E::K(f) => f,
+            _ => unreachable!("expected color: {e:?}"),
+        }
+    }
+
+    fn color_op(&self, op: ColorOp, a: &[Expr]) -> E<S> {
+        use super::color;
+        match op {
+            ColorOp::Rgba | ColorOp::Hsla => {
+                let (x, y, z, w) = (self.r(&a[0]), self.r(&a[1]), self.r(&a[2]), self.r(&a[3]));
+                if op == ColorOp::Rgba {
+                    E::K(Box::new(move |f| [x(f).v(), y(f).v(), z(f).v(), w(f).v()]))
+                } else {
+                    E::K(Box::new(move |f| {
+                        let [r, g, b] = color::hsl_to_rgb(x(f).v(), y(f).v(), z(f).v());
+                        [r, g, b, w(f).v()]
+                    }))
+                }
+            }
+            ColorOp::Red | ColorOp::Green | ColorOp::Blue | ColorOp::Alpha => {
+                let c = self.k(&a[0]);
+                let i = match op {
+                    ColorOp::Red => 0,
+                    ColorOp::Green => 1,
+                    ColorOp::Blue => 2,
+                    _ => 3,
+                };
+                E::R(Box::new(move |f| S::from_f64(c(f)[i])))
+            }
+            ColorOp::Hue | ColorOp::Sat | ColorOp::Lum => {
+                let c = self.k(&a[0]);
+                let i = match op {
+                    ColorOp::Hue => 0,
+                    ColorOp::Sat => 1,
+                    _ => 2,
+                };
+                E::R(Box::new(move |f| S::from_f64(color::rgb_to_hsl(c(f))[i])))
+            }
+            ColorOp::Blend | ColorOp::Compose => {
+                let (x, y, t) = (self.k(&a[0]), self.k(&a[1]), self.r(&a[2]));
+                if op == ColorOp::Blend {
+                    E::K(Box::new(move |f| color::blend(x(f), y(f), t(f).v())))
+                } else {
+                    E::K(Box::new(move |f| color::compose(x(f), y(f), t(f).v())))
+                }
+            }
+            ColorOp::Merge(m) => {
+                let (x, y) = (self.k(&a[0]), self.k(&a[1]));
+                E::K(Box::new(move |f| color::merge(m, x(f), y(f))))
+            }
+            ColorOp::Gradient => {
+                let t = self.r(&a[0]);
+                let lut = self.lut.clone();
+                E::K(Box::new(move |f| {
+                    let t = t(f).v();
+                    if lut.is_empty() {
+                        let g = t.rem_euclid(1.0);
+                        return [g, g, g, 1.0];
+                    }
+                    let c = crate::gradient::lut_sample(&lut, t);
+                    let e = crate::render::composite::srgb_encode;
+                    [e(c[0]) as f64, e(c[1]) as f64, e(c[2]) as f64, c[3] as f64]
+                }))
+            }
+        }
+    }
 
     fn expr(&self, e: &Expr) -> E<S> {
         match &e.kind {
@@ -259,6 +376,19 @@ impl<'a, S: Scalar + Send + Sync + 'static> Cc<'a, S> {
                     Ty::Int => E::I(Box::new(move |f| f.ints[k])),
                     Ty::Real => E::R(Box::new(move |f| f.reals[k])),
                     Ty::Complex => E::C(Box::new(move |f| f.cx[k])),
+                    Ty::Color => E::K(Box::new(move |f| f.colors[k])),
+                }
+            }
+            Kind::Index(slot, idx) => {
+                let (ty, k) = self.layout.slot[*slot];
+                let last = self.layout.cap[*slot] as i64 - 1;
+                let i = self.i(idx);
+                match ty {
+                    Ty::Bool => E::B(Box::new(move |f| f.bools[k + i(f).clamp(0, last) as usize])),
+                    Ty::Int => E::I(Box::new(move |f| f.ints[k + i(f).clamp(0, last) as usize])),
+                    Ty::Real => E::R(Box::new(move |f| f.reals[k + i(f).clamp(0, last) as usize])),
+                    Ty::Complex => E::C(Box::new(move |f| f.cx[k + i(f).clamp(0, last) as usize])),
+                    Ty::Color => E::K(Box::new(move |f| f.colors[k + i(f).clamp(0, last) as usize])),
                 }
             }
             Kind::Param(i) => {
@@ -281,6 +411,10 @@ impl<'a, S: Scalar + Send + Sync + 'static> Cc<'a, S> {
                         let z = Cx::from_f64(c[0], c[1]);
                         E::C(Box::new(move |_| z))
                     }
+                    Ty::Color => {
+                        let c = v.as_color();
+                        E::K(Box::new(move |_| c))
+                    }
                 }
             }
             Kind::Sys(s) => match s {
@@ -291,6 +425,18 @@ impl<'a, S: Scalar + Send + Sync + 'static> Cc<'a, S> {
                 Sys::LastSqr => E::R(Box::new(|f| f.lastsqr)),
                 Sys::Magn => E::R(Box::new(|f| f.magn)),
                 Sys::Z => E::C(Box::new(|f| f.zcur)),
+                Sys::X => E::I(Box::new(|f| f.px)),
+                Sys::Y => E::I(Box::new(|f| f.py)),
+                Sys::Width => E::I(Box::new(|f| f.width)),
+                Sys::Height => E::I(Box::new(|f| f.height)),
+                Sys::ScreenPixel => E::C(Box::new(|f| Cx::from_f64(f.px as f64, f.py as f64))),
+                Sys::ScreenMax => E::C(Box::new(|f| Cx::from_f64(f.width as f64, f.height as f64))),
+                Sys::Angle => E::R(Box::new(|f| S::from_f64(f.angle))),
+                Sys::Random => E::C(Box::new(|f| {
+                    let re = rnd_next(&f.rng);
+                    let im = rnd_next(&f.rng);
+                    Cx::from_f64(re, im)
+                })),
                 Sys::MaxIt => E::I(Box::new(|f| f.maxit)),
                 Sys::NumIter => E::I(Box::new(|f| f.numiter)),
                 Sys::IsMand => E::B(Box::new(|f| f.ismand)),
@@ -300,7 +446,7 @@ impl<'a, S: Scalar + Send + Sync + 'static> Cc<'a, S> {
                 E::I(a) => E::I(Box::new(move |f| a(f).wrapping_neg())),
                 E::R(a) => E::R(Box::new(move |f| -a(f))),
                 E::C(a) => E::C(Box::new(move |f| -a(f))),
-                E::B(_) => unreachable!(),
+                E::B(_) | E::K(_) => unreachable!(),
             },
             Kind::Not(a) => {
                 let a = self.b(a);
@@ -362,7 +508,7 @@ impl<'a, S: Scalar + Send + Sync + 'static> Cc<'a, S> {
                             if op == Cmp::Ne { !eq } else { eq }
                         }))
                     }
-                    Ty::Bool => unreachable!(),
+                    Ty::Bool | Ty::Color => unreachable!(),
                 }
             }
             Kind::And(a, b) => {
@@ -374,6 +520,11 @@ impl<'a, S: Scalar + Send + Sync + 'static> Cc<'a, S> {
                 E::B(Box::new(move |f| a(f) || b(f)))
             }
             Kind::Call(func, args) => self.call(*func, args, e.ty),
+            Kind::ColorOp(op, args) => self.color_op(*op, args),
+            Kind::RandomInt(a) => {
+                let a = self.i(a);
+                E::I(Box::new(move |f| crate::render::hash(a(f) as u32) as i32 as i64))
+            }
             Kind::CallParam(i, a) => {
                 let func = self.func_choice(*i);
                 let a = self.c(a);
@@ -491,6 +642,35 @@ impl<'a, S: Scalar + Send + Sync + 'static> Cc<'a, S> {
                     (Ty::Int, E::I(v)) => Box::new(move |f| f.ints[k] = v(f)),
                     (Ty::Real, E::R(v)) => Box::new(move |f| f.reals[k] = v(f)),
                     (Ty::Complex, E::C(v)) => Box::new(move |f| f.cx[k] = v(f)),
+                    (Ty::Color, E::K(v)) => Box::new(move |f| f.colors[k] = v(f)),
+                    _ => unreachable!("assignment type mismatch"),
+                }
+            }
+            Stmt::SetIndex(slot, idx, e) => {
+                let (ty, k) = self.layout.slot[*slot];
+                let last = self.layout.cap[*slot] as i64 - 1;
+                let i = self.i(idx);
+                match (ty, self.expr(e)) {
+                    (Ty::Bool, E::B(v)) => Box::new(move |f| {
+                        let j = k + i(f).clamp(0, last) as usize;
+                        f.bools[j] = v(f)
+                    }),
+                    (Ty::Int, E::I(v)) => Box::new(move |f| {
+                        let j = k + i(f).clamp(0, last) as usize;
+                        f.ints[j] = v(f)
+                    }),
+                    (Ty::Real, E::R(v)) => Box::new(move |f| {
+                        let j = k + i(f).clamp(0, last) as usize;
+                        f.reals[j] = v(f)
+                    }),
+                    (Ty::Complex, E::C(v)) => Box::new(move |f| {
+                        let j = k + i(f).clamp(0, last) as usize;
+                        f.cx[j] = v(f)
+                    }),
+                    (Ty::Color, E::K(v)) => Box::new(move |f| {
+                        let j = k + i(f).clamp(0, last) as usize;
+                        f.colors[j] = v(f)
+                    }),
                     _ => unreachable!("assignment type mismatch"),
                 }
             }
@@ -567,7 +747,12 @@ fn cmp_f(op: Cmp, a: f64, b: f64) -> bool {
 impl<S: Scalar + Send + Sync + 'static> Compiled<S> {
     /// Compiles `prog` with the parameter values `values` (missing ones use the defaults).
     pub fn new(prog: &Program, values: &[ParamValue]) -> Self {
-        let mut counts = [0usize; 4];
+        Self::with_gradient(prog, values, Vec::new())
+    }
+
+    /// [`Compiled::new`] for colorings: `lut` is the gradient `gradient(t)` reads.
+    pub fn with_gradient(prog: &Program, values: &[ParamValue], lut: Vec<[f32; 4]>) -> Self {
+        let mut counts = [0usize; 5];
         let slot = prog
             .locals
             .iter()
@@ -577,18 +762,22 @@ impl<S: Scalar + Send + Sync + 'static> Compiled<S> {
                     Ty::Int => 1,
                     Ty::Real => 2,
                     Ty::Complex => 3,
+                    Ty::Color => 4,
                 };
-                counts[k] += 1;
-                (l.ty, counts[k] - 1)
+                let n = l.cap.unwrap_or(1);
+                counts[k] += n;
+                (l.ty, counts[k] - n)
             })
             .collect();
-        let layout = Layout { slot, counts };
-        let cc = Cc::<S> { prog, layout: &layout, values, _s: std::marker::PhantomData };
+        let cap = prog.locals.iter().map(|l| l.cap.unwrap_or(1)).collect();
+        let layout = Layout { slot, cap, counts };
+        let cc = Cc::<S> { prog, layout: &layout, values, lut: std::sync::Arc::new(lut), _s: std::marker::PhantomData };
         let init = cc.stmts(&prog.init);
         let body = cc.stmts(&prog.body);
         let bailout = cc.b(&prog.bailout);
         let fin = cc.stmts(&prog.fin);
-        Compiled { layout, init, body, bailout, fin, index_slot: prog.index_slot, solid_slot: prog.solid_slot }
+        let color_slot = prog.color_slot.filter(|_| prog.direct);
+        Compiled { layout, init, body, bailout, fin, index_slot: prog.index_slot, solid_slot: prog.solid_slot, color_slot }
     }
 
     /// A frame for this program (reuse it for many samples; [`Compiled::run`] resets it).
@@ -599,6 +788,7 @@ impl<S: Scalar + Send + Sync + 'static> Compiled<S> {
             ints: vec![0; c[1]],
             reals: vec![S::zero(); c[2]],
             cx: vec![Cx::zero(); c[3]],
+            colors: vec![[0.0; 4]; c[4]],
             pixel: Cx::zero(),
             c: Cx::zero(),
             zprev: Cx::zero(),
@@ -609,6 +799,12 @@ impl<S: Scalar + Send + Sync + 'static> Compiled<S> {
             center: Cx::zero(),
             magn: S::one(),
             zcur: Cx::zero(),
+            px: 0,
+            py: 0,
+            width: 1,
+            height: 1,
+            angle: 0.0,
+            rng: RngState::default(),
         }
     }
 
@@ -617,6 +813,7 @@ impl<S: Scalar + Send + Sync + 'static> Compiled<S> {
         f.ints.iter_mut().for_each(|v| *v = 0);
         f.reals.iter_mut().for_each(|v| *v = S::zero());
         f.cx.iter_mut().for_each(|v| *v = Cx::zero());
+        f.colors.iter_mut().for_each(|v| *v = [0.0; 4]);
         f.zprev = Cx::zero();
         f.lastsqr = S::zero();
         f.numiter = 0;
@@ -633,6 +830,12 @@ impl<S: Scalar + Send + Sync + 'static> Compiled<S> {
         self.init.iter().for_each(|s| s(f));
         self.body.iter().for_each(|s| s(f));
         (f.cx[z], self.solid(f))
+    }
+
+    /// Coloring: `#color` after [`Compiled::color_final`] when the program sets it (direct
+    /// coloring), sRGB-encoded RGBA.
+    pub fn direct_color(&self, f: &Frame<S>) -> Option<[f64; 4]> {
+        self.color_slot.map(|s| f.colors[self.layout.slot[s].1])
     }
 
     fn solid(&self, f: &Frame<S>) -> bool {

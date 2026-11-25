@@ -61,6 +61,8 @@ pub enum Expr {
     Bool(bool),
     /// `(re, im)`
     Complex(Box<Expr>, Box<Expr>),
+    /// A string (compared with enumeration parameters: `@mode == "Julia"`).
+    Str(String),
     Ident(String),
     /// `#name`
     Sys(String),
@@ -76,6 +78,8 @@ pub enum Expr {
     Binary(BinOp, Box<Expr>, Box<Expr>),
     /// `|e|`
     Mag(Box<Expr>),
+    /// `a[i]`, `a[i, j]`
+    Index(String, Vec<Expr>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -87,6 +91,8 @@ pub enum Target {
         re: bool,
         var: String,
     },
+    /// `a[i] = …`
+    Index(String, Vec<Expr>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,15 +101,52 @@ pub enum DeclTy {
     Int,
     Float,
     Complex,
+    Color,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Stmt {
-    Assign { target: Target, value: Expr, line: usize },
-    Decl { ty: DeclTy, name: String, value: Option<Expr>, line: usize },
-    If { arms: Vec<(Expr, Vec<Stmt>)>, els: Vec<Stmt>, line: usize },
-    While { cond: Expr, body: Vec<Stmt>, line: usize },
-    Repeat { body: Vec<Stmt>, cond: Expr, line: usize },
+    Assign {
+        target: Target,
+        value: Expr,
+        line: usize,
+    },
+    Decl {
+        ty: DeclTy,
+        name: String,
+        value: Option<Expr>,
+        line: usize,
+    },
+    If {
+        arms: Vec<(Expr, Vec<Stmt>)>,
+        els: Vec<Stmt>,
+        line: usize,
+    },
+    While {
+        cond: Expr,
+        body: Vec<Stmt>,
+        line: usize,
+    },
+    Repeat {
+        body: Vec<Stmt>,
+        cond: Expr,
+        line: usize,
+    },
+    /// Several statements from one line (chained assignments `z = c = pixel`).
+    Seq(Vec<Stmt>),
+    /// `float a[n, m]` (sizes) or `float a[]` (dynamic: no sizes, see `setLength`).
+    ArrayDecl {
+        ty: DeclTy,
+        name: String,
+        dims: Vec<Expr>,
+        line: usize,
+    },
+    /// A procedure call statement (`setLength(a, n)`).
+    Call {
+        name: String,
+        args: Vec<Expr>,
+        line: usize,
+    },
 }
 
 /// Parameter kinds of formula definitions.
@@ -116,6 +159,8 @@ pub enum ParamKind {
     Complex,
     /// A function of the standard library, chosen by name (`sin`, `sqr`, …).
     Func,
+    /// RGBA color (sRGB-encoded channels 0…1, straight alpha).
+    Color,
 }
 
 /// A parameter value as stored in documents and formula defaults.
@@ -126,6 +171,8 @@ pub enum ParamValue {
     Int(i64),
     Float(f64),
     Complex([f64; 2]),
+    /// RGBA, sRGB-encoded channels 0…1.
+    Color([f64; 4]),
     Func(String),
 }
 
@@ -136,6 +183,7 @@ impl ParamValue {
             ParamValue::Int(i) => *i as f64,
             ParamValue::Float(f) => *f,
             ParamValue::Complex(c) => c[0],
+            ParamValue::Color(c) => c[0],
             ParamValue::Func(_) => 0.0,
         }
     }
@@ -143,6 +191,15 @@ impl ParamValue {
         match self {
             ParamValue::Complex(c) => *c,
             other => [other.as_f64(), 0.0],
+        }
+    }
+    pub fn as_color(&self) -> [f64; 4] {
+        match self {
+            ParamValue::Color(c) => *c,
+            other => {
+                let v = other.as_f64();
+                [v, v, v, 1.0]
+            }
         }
     }
 }

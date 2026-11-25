@@ -4,6 +4,19 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
 
 ## [Unreleased]
 
+### Added
+
+- UFM formulas: arrays (fixed and dynamic), the `color` type with color parameters and color
+  functions, direct coloring through `#color`, merge functions, `random(seed)`,
+  `#randomrange`, assignments to parameters, FractInt syntax inside UFM files and the
+  `$define`/`$ifdef` preprocessor, several statements per line.
+- Coloring *Direct color (hue by angle)*.
+- Color parameters in the inspector (color picker).
+
+### Changed
+
+- Formula parameters: up to 4096 values per layer (was 256).
+
 ## [0.3.0] - 2026-11-25
 
 Stage 2: layers, coloring, transformations, gradients.

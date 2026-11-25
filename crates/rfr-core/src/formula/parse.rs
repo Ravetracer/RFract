@@ -11,6 +11,8 @@ pub enum Tok {
     Sys(String),
     Param(String),
     Num(f64, bool),
+    /// Imaginary number literal (`2i`).
+    Imag(f64),
     Str(String),
     Op(&'static str),
     Newline,
@@ -74,12 +76,33 @@ fn lex(src: &str, first_line: usize) -> Result<Vec<Token>, Error> {
                 }
             }
             b'"' => {
-                let start = i + 1;
+                // Strings end at the closing quote; a backslash at the end of a line continues
+                // them on the next line.
+                let mut text = String::new();
+                let first = line;
                 i += 1;
+                let mut seg = i;
                 while i < b.len() && b[i] != b'"' && b[i] != b'\n' {
+                    if b[i] == b'\\' {
+                        let mut j = i + 1;
+                        while j < b.len() && (b[j] == b' ' || b[j] == b'\t' || b[j] == b'\r') {
+                            j += 1;
+                        }
+                        if j < b.len() && b[j] == b'\n' {
+                            text.push_str(&src[seg..i]);
+                            line += 1;
+                            i = j + 1;
+                            while i < b.len() && (b[i] == b' ' || b[i] == b'\t') {
+                                i += 1;
+                            }
+                            seg = i;
+                            continue;
+                        }
+                    }
                     i += 1;
                 }
-                out.push(Token { tok: Tok::Str(src[start..i].to_string()), line });
+                text.push_str(&src[seg..i]);
+                out.push(Token { tok: Tok::Str(text), line: first });
                 if i < b.len() && b[i] == b'"' {
                     i += 1;
                 }
@@ -154,14 +177,40 @@ fn lex_number(src: &str, mut i: usize, line: usize, out: &mut Vec<Token>) -> Res
     }
     let text = &src[start..i];
     let v: f64 = text.parse().or_else(|_| format!("{text}0").parse()).map_err(|_| Error { line, msg: format!("bad number '{text}'") })?;
+    // Imaginary literal: 2i, 1e-30i.
+    if i < b.len() && (b[i] == b'i' || b[i] == b'I') && !(i + 1 < b.len() && (b[i + 1].is_ascii_alphanumeric() || b[i + 1] == b'_')) {
+        out.push(Token { tok: Tok::Imag(v), line });
+        return Ok(i + 1);
+    }
     out.push(Token { tok: Tok::Num(v, int), line });
     Ok(i)
+}
+
+/// Value of a constant numeric expression (numbers and arithmetic).
+fn fold_const(e: &Expr) -> Option<f64> {
+    Some(match e {
+        Expr::Num { v, .. } => *v,
+        Expr::Unary(UnOp::Neg, a) => -fold_const(a)?,
+        Expr::Binary(op, a, b) => {
+            let (x, y) = (fold_const(a)?, fold_const(b)?);
+            match op {
+                BinOp::Add => x + y,
+                BinOp::Sub => x - y,
+                BinOp::Mul => x * y,
+                BinOp::Div if y != 0.0 => x / y,
+                _ => return None,
+            }
+        }
+        _ => return None,
+    })
 }
 
 struct Parser {
     toks: Vec<Token>,
     pos: usize,
     dialect: Dialect,
+    /// FractInt syntax (inside UFM files or `.frm`): every number is complex, no integers.
+    fractint: bool,
 }
 
 const FRM_SECTIONS: [&str; 4] = ["parameters", "init", "loop", "bailout"];
@@ -229,6 +278,8 @@ impl Parser {
                 Ok(())
             }
             Tok::Eof => Ok(()),
+            // FractInt syntax: the colon ends the init statements (consumed by the caller).
+            Tok::Op(":") if self.fractint => Ok(()),
             // UFM allows several statements on one line separated by commas.
             Tok::Op(",") if self.dialect == Dialect::Ufm => {
                 self.next();
@@ -319,7 +370,9 @@ impl Parser {
     fn primary(&mut self) -> Result<Expr, Error> {
         let line = self.line();
         match self.next() {
-            Tok::Num(v, int) => Ok(Expr::Num { v, int: int && self.dialect == Dialect::Ufm }),
+            Tok::Num(v, int) => Ok(Expr::Num { v, int: int && self.dialect == Dialect::Ufm && !self.fractint }),
+            Tok::Imag(v) => Ok(Expr::Complex(Box::new(Expr::Num { v: 0.0, int: false }), Box::new(Expr::Num { v, int: false }))),
+            Tok::Str(s) => Ok(Expr::Str(s)),
             Tok::Op("(") => {
                 let a = self.expr()?;
                 if self.eat_op(",") {
@@ -344,6 +397,10 @@ impl Parser {
                     let args = self.args()?;
                     return Ok(Expr::Call { name, param: false, args });
                 }
+                if self.eat_op("[") {
+                    let idx = self.index_list()?;
+                    return Ok(Expr::Index(name, idx));
+                }
                 Ok(Expr::Ident(name))
             }
             Tok::Sys(name) => Ok(Expr::Sys(name)),
@@ -361,6 +418,21 @@ impl Parser {
     /// Inside `|…|`: a `|` ends the magnitude, so `||` cannot start inside it unless spaced.
     fn binary_no_or(&mut self) -> Result<Expr, Error> {
         self.binary(2)
+    }
+
+    /// Indexes up to the closing `]` (the `[` is consumed); empty for `[]`.
+    fn index_list(&mut self) -> Result<Vec<Expr>, Error> {
+        let mut out = Vec::new();
+        if self.eat_op("]") {
+            return Ok(out);
+        }
+        loop {
+            out.push(self.expr()?);
+            if self.eat_op("]") {
+                return Ok(out);
+            }
+            self.expect_op(",")?;
+        }
     }
 
     fn args(&mut self) -> Result<Vec<Expr>, Error> {
@@ -451,6 +523,7 @@ impl Parser {
                     "int" => Some(DeclTy::Int),
                     "float" => Some(DeclTy::Float),
                     "complex" => Some(DeclTy::Complex),
+                    "color" => Some(DeclTy::Color),
                     _ => None,
                 },
                 _ => None,
@@ -458,9 +531,64 @@ impl Parser {
             if let (Some(ty), Tok::Ident(_)) = (ty, self.peek_at(1)) {
                 self.next();
                 let Tok::Ident(name) = self.next() else { unreachable!() };
-                let value = if self.eat_op("=") { Some(self.expr()?) } else { None };
+                if self.eat_op("[") {
+                    let dims = self.index_list()?;
+                    // `complex a[0] = v`: an element assignment with a redundant type.
+                    if self.eat_op("=") {
+                        let value = self.expr()?;
+                        self.end_of_statement()?;
+                        return Ok(Stmt::Assign { target: Target::Index(name, dims), value, line });
+                    }
+                    self.end_of_statement()?;
+                    return Ok(Stmt::ArrayDecl { ty, name, dims, line });
+                }
+                if !self.eat_op("=") {
+                    self.end_of_statement()?;
+                    return Ok(Stmt::Decl { ty, name, value: None, line });
+                }
+                // complex a = complex b = (0, 0): the inner declarations first.
+                let mut chain = vec![(ty, name)];
+                loop {
+                    let next_ty = match self.peek() {
+                        Tok::Ident(s) => match s.to_ascii_lowercase().as_str() {
+                            "bool" => Some(DeclTy::Bool),
+                            "int" => Some(DeclTy::Int),
+                            "float" => Some(DeclTy::Float),
+                            "complex" => Some(DeclTy::Complex),
+                            "color" => Some(DeclTy::Color),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    match (next_ty, self.peek().clone(), self.peek_at(1).clone(), self.peek_at(2).clone()) {
+                        (Some(t), _, Tok::Ident(n), Tok::Op("=")) => {
+                            self.next();
+                            self.next();
+                            self.next();
+                            chain.push((t, n));
+                        }
+                        // complex z = c1 = c2 = 0: the plain names get the same type.
+                        (None, Tok::Ident(n), Tok::Op("="), _) => {
+                            self.next();
+                            self.next();
+                            chain.push((ty, n));
+                        }
+                        _ => break,
+                    }
+                }
+                let value = self.expr()?;
                 self.end_of_statement()?;
-                return Ok(Stmt::Decl { ty, name, value, line });
+                if chain.len() == 1 {
+                    let (ty, name) = chain.pop().unwrap();
+                    return Ok(Stmt::Decl { ty, name, value: Some(value), line });
+                }
+                let mut out = Vec::new();
+                let mut v = value;
+                for (t, n) in chain.into_iter().rev() {
+                    out.push(Stmt::Decl { ty: t, name: n.clone(), value: Some(v), line });
+                    v = Expr::Ident(n);
+                }
+                return Ok(Stmt::Seq(out));
             }
         }
         // Assignment target
@@ -480,16 +608,155 @@ impl Parser {
                 self.next();
                 Target::Var(v)
             }
+            (Tok::Ident(v), Tok::Op("[")) => {
+                self.next();
+                self.next();
+                let idx = self.index_list()?;
+                Target::Index(v, idx)
+            }
+            (Tok::Ident(f), Tok::Op("(")) if self.dialect == Dialect::Ufm => {
+                // A procedure call statement: setLength(a, n).
+                self.next();
+                self.next();
+                let args = self.args()?;
+                self.end_of_statement()?;
+                return Ok(Stmt::Call { name: f, args, line });
+            }
             (Tok::Sys(v), Tok::Op("=")) => {
                 self.next();
                 Target::Sys(v)
             }
+            // `@p = …`: the parameter becomes a variable that starts with its value.
+            (Tok::Param(v), Tok::Op("=")) if self.dialect == Dialect::Ufm => {
+                self.next();
+                Target::Var(format!("@{v}"))
+            }
             (t, _) => return err(line, format!("expected a statement, found {}", show(&t))),
         };
         self.expect_op("=")?;
+        // z = c = pixel: the inner assignments first, the outer ones read the inner variable.
+        let mut chain = vec![target];
+        loop {
+            match (self.peek().clone(), self.peek_at(1).clone()) {
+                (Tok::Ident(v), Tok::Op("=")) => {
+                    self.next();
+                    self.next();
+                    chain.push(Target::Var(v));
+                }
+                (Tok::Sys(v), Tok::Op("=")) => {
+                    self.next();
+                    self.next();
+                    chain.push(Target::Sys(v));
+                }
+                (Tok::Ident(v), Tok::Op("[")) => {
+                    // `a[i] = …` inside a chain; otherwise the value expression starts here.
+                    let save = self.pos;
+                    self.next();
+                    self.next();
+                    match self.index_list() {
+                        Ok(idx) if self.eat_op("=") => chain.push(Target::Index(v, idx)),
+                        _ => {
+                            self.pos = save;
+                            break;
+                        }
+                    }
+                }
+                _ => break,
+            }
+        }
         let value = self.expr()?;
         self.end_of_statement()?;
-        Ok(Stmt::Assign { target, value, line })
+        if chain.len() == 1 {
+            return Ok(Stmt::Assign { target: chain.pop().unwrap(), value, line });
+        }
+        let mut out = Vec::new();
+        let mut v = value;
+        for t in chain.into_iter().rev() {
+            let read = match &t {
+                Target::Var(n) => match n.strip_prefix('@') {
+                    Some(p) => Expr::Param(p.to_string()),
+                    None => Expr::Ident(n.clone()),
+                },
+                Target::Sys(n) => Expr::Sys(n.clone()),
+                Target::Index(n, idx) => Expr::Index(n.clone(), idx.clone()),
+                Target::Comp { .. } => v.clone(),
+            };
+            out.push(Stmt::Assign { target: t, value: v, line });
+            v = read;
+        }
+        Ok(Stmt::Seq(out))
+    }
+
+    /// Statement position: a bare expression ahead (not an assignment, declaration or block)?
+    fn at_expression_statement(&self) -> bool {
+        if self.is_kw("if") || self.is_kw("while") || self.is_kw("repeat") {
+            return false;
+        }
+        match (self.peek(), self.peek_at(1)) {
+            (Tok::Ident(_) | Tok::Sys(_), Tok::Op("=")) => false,
+            (Tok::Ident(_), Tok::Op("[")) => false,
+            (Tok::Ident(t), Tok::Ident(_)) if ["bool", "int", "float", "complex"].contains(&t.to_ascii_lowercase().as_str()) => false,
+            // real(x) = … assigns a component.
+            (Tok::Ident(f), Tok::Op("(")) if f.eq_ignore_ascii_case("real") || f.eq_ignore_ascii_case("imag") => {
+                !(matches!(self.peek_at(3), Tok::Op(")")) && matches!(self.peek_at(4), Tok::Op("=")))
+            }
+            _ => true,
+        }
+    }
+
+    /// FractInt syntax: `init statements : loop statements, bailout expression` (statements
+    /// separated by commas or line ends). Without a colon all statements form a
+    /// transformation's `transform` section (UFM transformations may omit the label).
+    fn fractint_body(&mut self, f: &mut FormulaAst) -> Result<(), Error> {
+        self.fractint = true;
+        let mut first: Vec<Stmt> = Vec::new();
+        let mut first_expr: Option<Expr> = None;
+        let mut colon = false;
+        loop {
+            while matches!(self.peek(), Tok::Newline | Tok::Op(",")) {
+                self.next();
+            }
+            if *self.peek() == Tok::Eof || self.is_op("}") || self.at_section().is_some() {
+                break;
+            }
+            if self.eat_op(":") {
+                colon = true;
+                break;
+            }
+            if self.at_expression_statement() {
+                first_expr = Some(self.expr()?);
+                self.end_of_statement()?;
+            } else {
+                first.push(self.statement()?);
+            }
+        }
+        if !colon {
+            f.transform = first;
+            f.bailout = first_expr;
+            return Ok(());
+        }
+        f.init = first;
+        loop {
+            while matches!(self.peek(), Tok::Newline | Tok::Op(",")) {
+                self.next();
+            }
+            if *self.peek() == Tok::Eof || self.is_op("}") || self.at_section().is_some() {
+                break;
+            }
+            if self.at_expression_statement() {
+                let e = self.expr()?;
+                self.end_of_statement()?;
+                // The last bare expression is the bailout condition; earlier ones do nothing.
+                f.bailout = Some(e);
+            } else {
+                f.bailout = None;
+                f.body.push(self.statement()?);
+            }
+        }
+        if f.bailout.is_none() {
+            return err(self.line(), "the FractInt formula has no bailout condition (its last expression)");
+        }
+        Ok(())
     }
 
     // ---- parameter declarations ----
@@ -585,6 +852,33 @@ impl Parser {
             }
             Tok::Ident(s) if s.eq_ignore_ascii_case("true") => ParamValue::Bool(true),
             Tok::Ident(s) if s.eq_ignore_ascii_case("false") => ParamValue::Bool(false),
+            Tok::Ident(s) if matches!(s.to_ascii_lowercase().as_str(), "rgb" | "rgba" | "hsl" | "hsla") && self.is_op("(") => {
+                self.next();
+                let mut v = Vec::new();
+                loop {
+                    let Some(x) = self.expr().ok().as_ref().and_then(fold_const) else {
+                        self.pos = save;
+                        return None;
+                    };
+                    v.push(x);
+                    if self.eat_op(")") {
+                        break;
+                    }
+                    if !self.eat_op(",") {
+                        self.pos = save;
+                        return None;
+                    }
+                }
+                let lower = s.to_ascii_lowercase();
+                let n = if lower.ends_with('a') { 4 } else { 3 };
+                if v.len() != n {
+                    self.pos = save;
+                    return None;
+                }
+                let a = if n == 4 { v[3] } else { 1.0 };
+                let [r, g, b] = if lower.starts_with("hsl") { super::color::hsl_to_rgb(v[0], v[1], v[2]) } else { [v[0], v[1], v[2]] };
+                ParamValue::Color([r, g, b, a])
+            }
             Tok::Ident(s) => {
                 // Function default: sin() or sin
                 if self.eat_op("(") {
@@ -598,6 +892,30 @@ impl Parser {
             }
         };
         Some(v)
+    }
+
+    /// Skips the rest of one `key = value` item of a parameter block: up to the end of the line
+    /// or a comma (one-line blocks: `param x, caption = "X", default = 1, endparam`).
+    fn skip_item(&mut self) {
+        let mut depth = 0i32;
+        loop {
+            match self.peek() {
+                Tok::Newline | Tok::Eof => break,
+                Tok::Op(",") if depth == 0 => break,
+                Tok::Op("(") => depth += 1,
+                Tok::Op(")") => depth -= 1,
+                Tok::Ident(w) if depth == 0 && (w.eq_ignore_ascii_case("endparam") || w.eq_ignore_ascii_case("endfunc")) => return,
+                _ => {}
+            }
+            self.next();
+        }
+        self.skip_separators();
+    }
+
+    fn skip_separators(&mut self) {
+        while matches!(self.peek(), Tok::Newline | Tok::Op(",")) {
+            self.next();
+        }
     }
 
     fn skip_line(&mut self) {
@@ -624,20 +942,27 @@ impl Parser {
                 "int" => Some(ParamKind::Int),
                 "float" => Some(ParamKind::Float),
                 "complex" => Some(ParamKind::Complex),
-                "color" => Some(ParamKind::Float),
+                "color" => Some(ParamKind::Color),
                 _ => None,
             };
+            if typed.is_some() && matches!(self.peek_at(1), Tok::Ident(s) if s.eq_ignore_ascii_case("func")) {
+                self.next();
+                self.next();
+                let p = self.ufm_func_block()?;
+                f.params.push(p);
+                continue;
+            }
             if typed.is_some() && matches!(self.peek_at(1), Tok::Ident(s) if s.eq_ignore_ascii_case("param")) {
                 self.next();
                 self.next();
-                let p = self.ufm_param_block(typed, word.eq_ignore_ascii_case("color"))?;
+                let p = self.ufm_param_block(typed)?;
                 f.params.extend(p);
                 continue;
             }
             match lower.as_str() {
                 "param" => {
                     self.next();
-                    let p = self.ufm_param_block(None, false)?;
+                    let p = self.ufm_param_block(None)?;
                     f.params.extend(p);
                 }
                 "func" => {
@@ -676,11 +1001,11 @@ impl Parser {
         }
     }
 
-    /// `[type] param name … endparam`. Returns nothing for color parameters (not supported yet).
-    fn ufm_param_block(&mut self, kind: Option<ParamKind>, color: bool) -> Result<Option<ParamDecl>, Error> {
+    /// `[type] param name … endparam`.
+    fn ufm_param_block(&mut self, kind: Option<ParamKind>) -> Result<Option<ParamDecl>, Error> {
         let line = self.line();
         let name = match self.next() {
-            Tok::Ident(n) => n,
+            Tok::Ident(n) | Tok::Param(n) => n,
             t => return err(line, format!("expected a parameter name, found {}", show(&t))),
         };
         let mut p = ParamDecl {
@@ -695,7 +1020,7 @@ impl Parser {
             classic: None,
         };
         let mut default = None;
-        self.skip_newlines();
+        self.skip_separators();
         loop {
             if self.is_kw("endparam") {
                 self.next();
@@ -705,12 +1030,12 @@ impl Parser {
                 return err(line, "'param' without 'endparam'");
             }
             let Tok::Ident(key) = self.peek().clone() else {
-                self.skip_line();
+                self.skip_item();
                 continue;
             };
             self.next();
             if !self.eat_op("=") {
-                self.skip_line();
+                self.skip_item();
                 continue;
             }
             match key.to_ascii_lowercase().as_str() {
@@ -735,14 +1060,12 @@ impl Parser {
                 }
                 _ => {}
             }
-            self.skip_line();
-        }
-        if color {
-            return Ok(None);
+            self.skip_item();
         }
         if kind.is_none() {
             p.kind = match &default {
                 Some(ParamValue::Complex(_)) => ParamKind::Complex,
+                Some(ParamValue::Color(_)) => ParamKind::Color,
                 Some(ParamValue::Bool(_)) => ParamKind::Bool,
                 Some(ParamValue::Int(_)) if !p.items.is_empty() => ParamKind::Int,
                 _ if !p.items.is_empty() => ParamKind::Int,
@@ -756,6 +1079,8 @@ impl Parser {
             (ParamKind::Int, None) => ParamValue::Int(0),
             (ParamKind::Complex, Some(v)) => ParamValue::Complex(v.as_complex()),
             (ParamKind::Complex, None) => ParamValue::Complex([0.0, 0.0]),
+            (ParamKind::Color, Some(v)) => ParamValue::Color(v.as_color()),
+            (ParamKind::Color, None) => ParamValue::Color([0.0, 0.0, 0.0, 1.0]),
             (_, Some(v)) => ParamValue::Float(v.as_f64()),
             (_, None) => ParamValue::Float(0.0),
         };
@@ -765,7 +1090,7 @@ impl Parser {
     fn ufm_func_block(&mut self) -> Result<ParamDecl, Error> {
         let line = self.line();
         let name = match self.next() {
-            Tok::Ident(n) => n,
+            Tok::Ident(n) | Tok::Param(n) => n,
             t => return err(line, format!("expected a function parameter name, found {}", show(&t))),
         };
         let mut p = ParamDecl {
@@ -779,7 +1104,7 @@ impl Parser {
             items: Vec::new(),
             classic: None,
         };
-        self.skip_newlines();
+        self.skip_separators();
         loop {
             if self.is_kw("endfunc") {
                 self.next();
@@ -789,7 +1114,7 @@ impl Parser {
                 return err(line, "'func' without 'endfunc'");
             }
             let Tok::Ident(key) = self.peek().clone() else {
-                self.skip_line();
+                self.skip_item();
                 continue;
             };
             self.next();
@@ -813,7 +1138,7 @@ impl Parser {
                     _ => {}
                 }
             }
-            self.skip_line();
+            self.skip_item();
         }
     }
 
@@ -842,8 +1167,13 @@ impl Parser {
                 break;
             }
             let Some(section) = self.at_section() else {
+                if !seen_section && self.dialect == Dialect::Ufm {
+                    // No section label first: FractInt syntax (sections such as default: may follow).
+                    self.fractint_body(&mut f)?;
+                    seen_section = true;
+                    continue;
+                }
                 if !seen_section {
-                    // FractInt-style body without sections: not supported in these dialects.
                     return err(self.line(), "expected a section such as 'init:'");
                 }
                 return err(self.line(), format!("unexpected {}", show(self.peek())));
@@ -889,6 +1219,7 @@ fn show(t: &Tok) -> String {
         Tok::Sys(s) => format!("'#{s}'"),
         Tok::Param(s) => format!("'@{s}'"),
         Tok::Num(v, _) => format!("'{v}'"),
+        Tok::Imag(v) => format!("'{v}i'"),
         Tok::Str(s) => format!("\"{s}\""),
         Tok::Op(o) => format!("'{o}'"),
         Tok::Newline => "the end of the line".into(),
@@ -928,10 +1259,63 @@ pub fn parse_frm(src: &str) -> Result<FormulaAst, Error> {
     let Some((name, rest)) = hl.split_once('{') else { return err(hi + 1, "expected 'Name {'") };
     let body = &src[start + (hl.len() - rest.len())..];
     let toks = lex(body, hi + 1)?;
-    let mut p = Parser { toks, pos: 0, dialect: Dialect::Frm };
+    let mut p = Parser { toks, pos: 0, dialect: Dialect::Frm, fractint: false };
     let f = p.formula_body(name.trim().to_string())?;
     p.expect_op("}")?;
     Ok(f)
+}
+
+/// Symbols the preprocessor treats as defined (`$ifdef VER50`): RFract reads formulas written
+/// for version 5 of the UFM language.
+const PREDEFINED: [&str; 3] = ["VER30", "VER40", "VER50"];
+
+/// Applies `$define`, `$undef`, `$ifdef`, `$ifndef`, `$else` and `$endif` (case-insensitive).
+/// Removed lines stay as empty lines, so line numbers keep matching the file.
+pub fn preprocess(src: &str) -> String {
+    if !src.contains('$') {
+        return src.to_string();
+    }
+    let mut defined: std::collections::HashSet<String> = PREDEFINED.iter().map(|s| s.to_string()).collect();
+    // Stack of (this branch active, any branch taken, parent active).
+    let mut stack: Vec<(bool, bool)> = Vec::new();
+    let active = |stack: &Vec<(bool, bool)>| stack.iter().all(|(a, _)| *a);
+    let mut out = String::with_capacity(src.len());
+    for line in src.split_inclusive('\n') {
+        let t = line.trim_start();
+        if let Some(rest) = t.strip_prefix('$') {
+            let mut words = rest.split(|c: char| c.is_whitespace() || c == ';');
+            let dir = words.next().unwrap_or("").to_ascii_lowercase();
+            let name = words.find(|w| !w.is_empty()).unwrap_or("").to_ascii_uppercase();
+            match dir.as_str() {
+                "define" if active(&stack) => {
+                    defined.insert(name);
+                }
+                "undef" if active(&stack) => {
+                    defined.remove(&name);
+                }
+                "ifdef" => stack.push((defined.contains(&name), false)),
+                "ifndef" => stack.push((!defined.contains(&name), false)),
+                "else" => {
+                    if let Some(top) = stack.last_mut() {
+                        top.1 = true;
+                        top.0 = !top.0;
+                    }
+                }
+                "endif" => {
+                    stack.pop();
+                }
+                _ => {}
+            }
+            out.push_str(if line.ends_with('\n') { "\n" } else { "" });
+            continue;
+        }
+        if active(&stack) {
+            out.push_str(line);
+        } else {
+            out.push_str(if line.ends_with('\n') { "\n" } else { "" });
+        }
+    }
+    out
 }
 
 /// One entry of a UFM syntax file: its name, the line it starts on and its body.
@@ -1014,7 +1398,7 @@ pub fn split_entries(src: &str) -> Vec<Entry<'_>> {
 /// Parses one entry of a UFM syntax file.
 pub fn parse_ufm_entry(e: &Entry) -> Result<FormulaAst, Error> {
     let toks = lex(e.body, e.line)?;
-    let mut p = Parser { toks, pos: 0, dialect: Dialect::Ufm };
+    let mut p = Parser { toks, pos: 0, dialect: Dialect::Ufm, fractint: false };
     p.formula_body(e.name.clone())
 }
 

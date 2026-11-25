@@ -33,7 +33,7 @@ struct LayerF<S> {
 
 impl<S: Scalar + Send + Sync + 'static> LayerK<S> {
     fn new(lp: &LayerPlan) -> LayerK<S> {
-        let coloring = |c: &super::ColorPlan| c.formula().map(|p| Compiled::new(&p.program, &p.values));
+        let coloring = |c: &super::ColorPlan| c.formula().map(|p| Compiled::with_gradient(&p.program, &p.values, c.lut.clone()));
         LayerK {
             fractal: Compiled::new(&lp.fractal.program, &lp.fractal.values),
             transforms: lp.transforms.iter().map(|t| Compiled::new(&t.program, &t.values)).collect(),
@@ -51,8 +51,29 @@ impl<S: Scalar + Send + Sync + 'static> LayerK<S> {
         }
     }
 
-    /// Color (linear RGB, straight alpha) of the layer at plane point `p`.
-    fn eval(&self, f: &mut LayerF<S>, lp: &LayerPlan, plan: &Plan, mut p: Cx<S>) -> [f32; 4] {
+    /// Color (linear RGB, straight alpha) of the layer at plane point `p` of pixel `pix`
+    /// (x, y, sample index).
+    fn eval(&self, f: &mut LayerF<S>, lp: &LayerPlan, plan: &Plan, mut p: Cx<S>, pix: (u32, u32, u32)) -> [f32; 4] {
+        // Screen values and one random stream per program (kernel.wgsl seeds the same way).
+        let base = super::hash(pix.0 ^ super::hash(pix.1 ^ super::hash(pix.2.wrapping_add(0x9E37_79B9))));
+        let screen = |fr: &mut Frame<S>, tag: u32| {
+            fr.px = pix.0 as i64;
+            fr.py = pix.1 as i64;
+            fr.width = plan.frame.width as i64;
+            fr.height = plan.frame.height as i64;
+            fr.angle = plan.frame.sin.atan2(plan.frame.cos);
+            fr.rng.set(super::hash(base ^ tag));
+        };
+        screen(&mut f.fractal, 1);
+        for (k, tf) in f.transforms.iter_mut().enumerate() {
+            screen(tf, 2 + k as u32);
+        }
+        if let Some(fr) = f.outside.as_mut() {
+            screen(fr, 100);
+        }
+        if let Some(fr) = f.inside.as_mut() {
+            screen(fr, 101);
+        }
         for (t, tf) in self.transforms.iter().zip(f.transforms.iter_mut()) {
             let (q, solid) = t.transform(tf, p);
             if solid {
@@ -99,7 +120,7 @@ impl<S: Scalar + Send + Sync + 'static> LayerK<S> {
             if let (Some(k), Some(fr)) = (k, fr) {
                 fr.zcur = o.z;
                 let (index, solid) = k.color_final(fr, o.iter, o.zprev);
-                return shade_formula(region, index.v(), solid);
+                return shade_formula(region, index.v(), solid, k.direct_color(fr));
             }
             return region.solid;
         }
@@ -132,14 +153,14 @@ impl Kernel {
         }
     }
     /// The layer's color at plane point `p`; `turn` is the derivative's direction (a turn).
-    fn eval(&self, f: &mut KernelF, lp: &LayerPlan, plan: &Plan, p: C64, turn: f64) -> [f32; 4] {
+    fn eval(&self, f: &mut KernelF, lp: &LayerPlan, plan: &Plan, p: C64, turn: f64, pix: (u32, u32, u32)) -> [f32; 4] {
         match (self, f) {
-            (Kernel::Plain(k), KernelF::Plain(f)) => k.eval(f, lp, plan, p),
+            (Kernel::Plain(k), KernelF::Plain(f)) => k.eval(f, lp, plan, p, pix),
             (Kernel::Dual(k), KernelF::Dual(f)) => {
                 // Derivative along a direction that turns from sample to sample (non-analytic
                 // formulas average over directions); |dz| is per plane unit.
                 let (s, c) = (turn * std::f64::consts::TAU).sin_cos();
-                k.eval(f, lp, plan, Cx::new(Dual::new(p.re, c), Dual::new(p.im, s)))
+                k.eval(f, lp, plan, Cx::new(Dual::new(p.re, c), Dual::new(p.im, s)), pix)
             }
             _ => unreachable!("kernel and frames differ"),
         }
@@ -163,13 +184,14 @@ struct Ctx<'a> {
     plan: &'a Plan,
     p: C64,
     turn: f64,
+    pix: (u32, u32, u32),
 }
 
 impl Ctx<'_> {
     fn layer(&mut self, lp: &LayerPlan) -> [f32; 4] {
         let i = self.next;
         self.next += 1;
-        self.kernels[i].eval(&mut self.frames[i], lp, self.plan, self.p, self.turn)
+        self.kernels[i].eval(&mut self.frames[i], lp, self.plan, self.p, self.turn, self.pix)
     }
 }
 
@@ -209,8 +231,8 @@ impl CpuRenderer {
     }
 
     /// Color (linear RGB, straight alpha) of one sample at image position (x, y).
-    fn sample(&self, frames: &mut [KernelF], x: f64, y: f64, turn: f64) -> [f32; 4] {
-        let mut ctx = Ctx { kernels: &self.kernels, frames, next: 0, plan: &self.plan, p: self.plan.frame.plane(x, y), turn };
+    fn sample(&self, frames: &mut [KernelF], x: f64, y: f64, turn: f64, pix: (u32, u32, u32)) -> [f32; 4] {
+        let mut ctx = Ctx { kernels: &self.kernels, frames, next: 0, plan: &self.plan, p: self.plan.frame.plane(x, y), turn, pix };
         composite_nodes(&self.plan.nodes, self.plan.background, &mut ctx)
     }
 
@@ -226,7 +248,7 @@ impl CpuRenderer {
             |frames, (y, row)| {
                 for (x, acc) in row.iter_mut().enumerate() {
                     let (u, v, turn) = sample_offset(x as u32, y as u32, s);
-                    let c = this.sample(frames, x as f64 + u, y as f64 + v, turn);
+                    let c = this.sample(frames, x as f64 + u, y as f64 + v, turn, (x as u32, y as u32, s));
                     acc[0] += c[0] * c[3];
                     acc[1] += c[1] * c[3];
                     acc[2] += c[2] * c[3];
@@ -254,7 +276,7 @@ impl CpuRenderer {
         let layers = self.plan.layers();
         let lp = layers.first()?;
         let mut f = self.kernels.first()?.frames();
-        Some(self.kernels[0].eval(&mut f, lp, &self.plan, p, 0.0))
+        Some(self.kernels[0].eval(&mut f, lp, &self.plan, p, 0.0, (0, 0, 0)))
     }
 }
 

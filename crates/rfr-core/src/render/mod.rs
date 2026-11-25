@@ -370,11 +370,13 @@ pub fn resolve_value(kind: ParamKind, default: &ParamValue, v: Option<&ParamValu
         (ParamKind::Bool, ParamValue::Bool(_))
         | (ParamKind::Int, ParamValue::Int(_))
         | (ParamKind::Float, ParamValue::Float(_))
-        | (ParamKind::Complex, ParamValue::Complex(_)) => v.clone(),
+        | (ParamKind::Complex, ParamValue::Complex(_))
+        | (ParamKind::Color, ParamValue::Color(_)) => v.clone(),
         (ParamKind::Bool, other) => ParamValue::Bool(other.as_f64() != 0.0),
         (ParamKind::Int, other) => ParamValue::Int(other.as_f64().round() as i64),
         (ParamKind::Float, other) => ParamValue::Float(other.as_f64()),
         (ParamKind::Complex, other) => ParamValue::Complex(other.as_complex()),
+        (ParamKind::Color, other) => ParamValue::Color(other.as_color()),
     }
 }
 
@@ -486,9 +488,19 @@ pub fn shade_native(c: &ColorPlan, o: &OrbitResult, pixel_size: f64) -> [f32; 4]
     finite(c.color(v))
 }
 
-/// Color of a region colored by a formula's `#index` / `#solid`.
-pub fn shade_formula(c: &ColorPlan, index: f64, solid: bool) -> [f32; 4] {
-    if solid { c.solid } else { finite(c.color(index)) }
+/// Color of a region colored by a formula's `#index` / `#solid`, or by its `#color`
+/// (`direct`, sRGB-encoded RGBA) when it sets one.
+pub fn shade_formula(c: &ColorPlan, index: f64, solid: bool, direct: Option<[f64; 4]>) -> [f32; 4] {
+    if solid {
+        return c.solid;
+    }
+    match direct {
+        Some(k) => {
+            let d = |v: f64| composite::srgb_decode(v.clamp(0.0, 1.0) as f32);
+            finite([d(k[0]), d(k[1]), d(k[2]), k[3].clamp(0.0, 1.0) as f32])
+        }
+        None => finite(c.color(index)),
+    }
 }
 
 fn finite(c: [f32; 4]) -> [f32; 4] {

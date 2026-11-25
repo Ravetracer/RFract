@@ -31,7 +31,7 @@ const KERNEL: &str = include_str!("wgsl/kernel.wgsl");
 const BLEND: &str = include_str!("wgsl/blend.wgsl");
 
 /// Parameters the `P` uniform can hold (all programs of a layer together).
-pub const MAX_PARAMS: usize = 256;
+pub const MAX_PARAMS: usize = 4096;
 
 struct Gen<'a> {
     prog: &'a Program,
@@ -70,6 +70,10 @@ impl Gen<'_> {
             }
             Kind::Complex(a, b) => format!("Cx({}, {})", self.expr(a), self.expr(b)),
             Kind::Local(i) => format!("{}{i}", self.prefix),
+            Kind::Index(i, idx) => {
+                let cap = self.prog.locals[*i].cap.unwrap_or(1);
+                format!("{}{i}[clamp({}, 0, {})]", self.prefix, self.expr(idx), cap - 1)
+            }
             Kind::Param(i) => {
                 let k = self.base + i;
                 match self.prog.params[*i].ty {
@@ -77,6 +81,7 @@ impl Gen<'_> {
                     Ty::Int => format!("i32(P.p[{k}].x)"),
                     Ty::Real => format!("s_c(P.p[{k}].x)"),
                     Ty::Complex => format!("c_f(P.p[{k}].x, P.p[{k}].y)"),
+                    Ty::Color => format!("P.p[{k}]"),
                 }
             }
             Kind::Sys(s) => match s {
@@ -90,6 +95,15 @@ impl Gen<'_> {
                 Sys::Center => "center".into(),
                 Sys::Magn => "magn".into(),
                 Sys::Z => "l0".into(),
+                Sys::X => "i32(x)".into(),
+                Sys::Y => "i32(y)".into(),
+                Sys::Width => "i32(U.size.x)".into(),
+                Sys::Height => "i32(U.size.y)".into(),
+                Sys::ScreenPixel => "c_f(f32(x), f32(y))".into(),
+                Sys::ScreenMax => "c_f(f32(U.size.x), f32(U.size.y))".into(),
+                Sys::Angle => "s_c(atan2(U.rot.y, U.rot.x))".into(),
+                // WGSL evaluates arguments left to right, like the CPU's two draws.
+                Sys::Random => format!("c_f(rnd_step(&rng_{p}), rnd_step(&rng_{p}))", p = self.prefix),
             },
             Kind::Conv(inner) => self.conv(inner, e.ty),
             Kind::Neg(a) => match e.ty {
@@ -149,9 +163,38 @@ impl Gen<'_> {
             Kind::And(a, b) => format!("({} && {})", self.expr(a), self.expr(b)),
             Kind::Or(a, b) => format!("({} || {})", self.expr(a), self.expr(b)),
             Kind::Call(f, args) => self.call(*f, args, e.ty),
+            Kind::ColorOp(op, a) => self.color_op(*op, a),
+            Kind::RandomInt(a) => format!("bitcast<i32>(hash(bitcast<u32>({})))", self.expr(a)),
             Kind::CallParam(i, a) => {
                 let f = self.funcs.get(*i).copied().flatten().unwrap_or(Func::Ident);
                 self.complex_call(f, &self.expr(a))
+            }
+        }
+    }
+
+    fn color_op(&self, op: ColorOp, a: &[Expr]) -> String {
+        let r = |i: usize| format!("s_v({})", self.expr(&a[i]));
+        let k = |i: usize| self.expr(&a[i]);
+        match op {
+            ColorOp::Rgba => format!("vec4<f32>({}, {}, {}, {})", r(0), r(1), r(2), r(3)),
+            ColorOp::Hsla => format!("k_hsla({}, {}, {}, {})", r(0), r(1), r(2), r(3)),
+            ColorOp::Red => format!("s_c(({}).x)", k(0)),
+            ColorOp::Green => format!("s_c(({}).y)", k(0)),
+            ColorOp::Blue => format!("s_c(({}).z)", k(0)),
+            ColorOp::Alpha => format!("s_c(({}).w)", k(0)),
+            ColorOp::Hue => format!("s_c(k_hsl({}).x)", k(0)),
+            ColorOp::Sat => format!("s_c(k_hsl({}).y)", k(0)),
+            ColorOp::Lum => format!("s_c(k_hsl({}).z)", k(0)),
+            ColorOp::Blend => format!("mix({}, {}, {})", k(0), k(1), r(2)),
+            ColorOp::Compose => format!("k_compose({}, {}, {})", k(0), k(1), r(2)),
+            ColorOp::Merge(m) => format!("k_merge({}u, {}, {})", m.index(), k(0), k(1)),
+            ColorOp::Gradient => {
+                let base = match self.prefix.as_str() {
+                    "ko" => "0u",
+                    "ki" => "LUT_SIZE",
+                    _ => "0xffffffffu",
+                };
+                format!("k_gradient({base}, {})", r(0))
             }
         }
     }
@@ -218,6 +261,10 @@ impl Gen<'_> {
                 Stmt::Assign(i, e) => {
                     let _ = writeln!(out, "{pad}{}{i} = {};", self.prefix, self.expr(e));
                 }
+                Stmt::SetIndex(i, idx, e) => {
+                    let cap = self.prog.locals[*i].cap.unwrap_or(1);
+                    let _ = writeln!(out, "{pad}{}{i}[clamp({}, 0, {})] = {};", self.prefix, self.expr(idx), cap - 1, self.expr(e));
+                }
                 Stmt::SetPart { local, re, value } => {
                     let _ = writeln!(out, "{pad}{}{local}.{} = {};", self.prefix, if *re { "re" } else { "im" }, self.expr(value));
                 }
@@ -267,6 +314,7 @@ fn wgsl_ty(t: Ty) -> &'static str {
         Ty::Int => "i32",
         Ty::Real => "S",
         Ty::Complex => "Cx",
+        Ty::Color => "vec4<f32>",
     }
 }
 
@@ -276,6 +324,7 @@ fn zero(t: Ty) -> &'static str {
         Ty::Int => "0",
         Ty::Real => "s_c(0.0)",
         Ty::Complex => "c_f(0.0, 0.0)",
+        Ty::Color => "vec4<f32>(0.0)",
     }
 }
 
@@ -318,8 +367,13 @@ pub fn param_values(lp: &LayerPlan) -> Vec<[f32; 4]> {
     for prog in param_programs(lp) {
         for v in &prog.values {
             if k < MAX_PARAMS {
-                let c = v.as_complex();
-                p[k] = [c[0] as f32, c[1] as f32, 0.0, 0.0];
+                p[k] = match v {
+                    ParamValue::Color(c) => c.map(|x| x as f32),
+                    v => {
+                        let c = v.as_complex();
+                        [c[0] as f32, c[1] as f32, 0.0, 0.0]
+                    }
+                };
             }
             k += 1;
         }
@@ -329,6 +383,11 @@ pub fn param_values(lp: &LayerPlan) -> Vec<[f32; 4]> {
 
 fn locals(g: &Gen, out: &mut String, pad: &str, first: Option<&str>) {
     for (i, l) in g.prog.locals.iter().enumerate() {
+        if let Some(cap) = l.cap {
+            // Function-scope variables start zeroed.
+            let _ = writeln!(out, "{pad}var {}{i}: array<{}, {cap}>;", g.prefix, wgsl_ty(l.ty));
+            continue;
+        }
         let init = if i == 0
             && let Some(f) = first
         {
@@ -395,7 +454,18 @@ pub fn kernel(lp: &LayerPlan, mode: Mode) -> String {
                 g.stmts(&g.prog.fin, &mut out, 4, counter);
                 let idx = g.prog.index_slot.map_or("0.0".to_string(), |s| format!("s_v({}{s})", g.prefix));
                 let solid = g.prog.solid_slot.map_or("false".to_string(), |s| format!("{}{s}", g.prefix));
-                let _ = writeln!(out, "                col = shade_formula({inside}, {idx}, {solid});");
+                match g.prog.color_slot.filter(|_| g.prog.direct) {
+                    Some(k) => {
+                        let _ = writeln!(
+                            out,
+                            "                if {solid} {{\n                    col = shade_formula({inside}, 0.0, true);\n                }} else {{\n                    col = k_direct({}{k});\n                }}",
+                            g.prefix
+                        );
+                    }
+                    None => {
+                        let _ = writeln!(out, "                col = shade_formula({inside}, {idx}, {solid});");
+                    }
+                }
             }
             None => {
                 let _ = writeln!(out, "                col = shade_native({inside}, zv, zpv, zp2v, iter, dzv);");
@@ -413,9 +483,21 @@ pub fn kernel(lp: &LayerPlan, mode: Mode) -> String {
         }
         Mode::Df64 => "    var pixel = Cx(dd_add(dd(U.view.x, U.lo.x), dd_f(off.x)), dd_add(dd(U.view.y, U.lo.y), dd_f(off.y)));".to_string(),
     };
-    let mode_init = if mode == Mode::Df64 { "    dd_one = U.rot.w;" } else { "" };
+    let mut mode_init = if mode == Mode::Df64 { "    dd_one = U.rot.w;\n".to_string() } else { String::new() };
+    // One random stream per program (render::cpu seeds the same way).
+    let mut rng_decl = String::new();
+    let streams: Vec<(&str, u32)> = std::iter::once((fractal.prefix.as_str(), 1u32))
+        .chain(transforms.iter().enumerate().map(|(k, g)| (g.prefix.as_str(), 2 + k as u32)))
+        .chain(outside.iter().map(|g| (g.prefix.as_str(), 100)))
+        .chain(inside.iter().map(|g| (g.prefix.as_str(), 101)))
+        .collect();
+    for (p, tag) in streams {
+        let _ = writeln!(rng_decl, "var<private> rng_{p}: u32;");
+        let _ = writeln!(mode_init, "    rng_{p} = hash(rng_base ^ {tag}u);");
+    }
     let kernel = KERNEL
-        .replace("//@MODE_INIT", mode_init)
+        .replace("//@MODE_INIT", &mode_init)
+        .replace("//@RNG_DECL", &rng_decl)
         .replace("//@PIXEL", &pixel)
         .replace("//@TRANSFORMS", tr.trim_end())
         .replace("//@LOCALS", loc.trim_end())

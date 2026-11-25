@@ -5,6 +5,7 @@
 
 pub mod ast;
 pub mod check;
+pub mod color;
 pub mod cpu;
 pub mod ir;
 pub mod library;

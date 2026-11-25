@@ -12,6 +12,8 @@ pub enum Ty {
     Int,
     Real,
     Complex,
+    /// RGBA (sRGB-encoded channels, straight alpha); never converted to or from numbers.
+    Color,
 }
 
 /// Values the host provides or maintains.
@@ -36,14 +38,26 @@ pub enum Sys {
     Magn,
     /// The fractal's current `z` (colorings: `#z`).
     Z,
+    /// Image position of the pixel (int) and image size (int).
+    X,
+    Y,
+    Width,
+    Height,
+    /// Image position of the pixel and image size as complex numbers.
+    ScreenPixel,
+    ScreenMax,
+    /// Rotation of the view in radians.
+    Angle,
+    /// A new random complex number with both parts in -1..1 at every use.
+    Random,
 }
 
 impl Sys {
     pub fn ty(self) -> Ty {
         match self {
-            Sys::Pixel | Sys::C | Sys::ZPrev | Sys::Center | Sys::Z => Ty::Complex,
-            Sys::LastSqr | Sys::Magn => Ty::Real,
-            Sys::MaxIt | Sys::NumIter => Ty::Int,
+            Sys::Pixel | Sys::C | Sys::ZPrev | Sys::Center | Sys::Z | Sys::ScreenPixel | Sys::ScreenMax | Sys::Random => Ty::Complex,
+            Sys::LastSqr | Sys::Magn | Sys::Angle => Ty::Real,
+            Sys::MaxIt | Sys::NumIter | Sys::X | Sys::Y | Sys::Width | Sys::Height => Ty::Int,
             Sys::IsMand => Ty::Bool,
         }
     }
@@ -275,6 +289,12 @@ pub enum Kind {
     Call(Func, Vec<Expr>),
     /// Call through a function parameter (complex → complex).
     CallParam(usize, Box<Expr>),
+    /// UFM `random(seed)`: the next pseudo-random int after `seed` (32-bit hash, sign kept).
+    RandomInt(Box<Expr>),
+    /// Color constructor, channel or mixing function (see [`ColorOp`] for the operands).
+    ColorOp(ColorOp, Vec<Expr>),
+    /// Element of the array local `slot` at the (flat, int) index, clamped to its capacity.
+    Index(usize, Box<Expr>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -287,6 +307,8 @@ pub enum Stmt {
         value: Expr,
     },
     If(Vec<(Expr, Vec<Stmt>)>, Vec<Stmt>),
+    /// `array[index] = value` (flat int index, clamped).
+    SetIndex(usize, Expr, Expr),
     While(Expr, Vec<Stmt>),
     Repeat(Vec<Stmt>, Expr),
 }
@@ -298,7 +320,14 @@ pub const MAX_INNER_LOOP: u32 = 65536;
 pub struct Local {
     pub name: String,
     pub ty: Ty,
+    /// Arrays: the number of elements the local holds (indexes are clamped to it).
+    pub cap: Option<usize>,
 }
+
+/// Elements an array holds when its size is not a constant (the GPU keeps arrays per sample).
+pub const ARRAY_CAP: usize = 2048;
+/// The most elements a constant-size array may have.
+pub const ARRAY_MAX: usize = 4096;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Param {
@@ -335,6 +364,35 @@ pub struct Program {
     /// Local slots of `#index` (colorings) and `#solid` (colorings, transformations).
     pub index_slot: Option<usize>,
     pub solid_slot: Option<usize>,
+    /// Local slot of `#color` (colorings); `direct` when the program assigns it (the color
+    /// then replaces the gradient lookup of `#index`).
+    pub color_slot: Option<usize>,
+    pub direct: bool,
+}
+
+/// Color operations of formulas (`super::color`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ColorOp {
+    /// `rgba(r, g, b, a)` (real × 4 → color; `rgb` passes alpha 1).
+    Rgba,
+    /// `hsla(h, s, l, a)` (real × 4 → color; hue 0…6).
+    Hsla,
+    /// Channels (color → real).
+    Red,
+    Green,
+    Blue,
+    Alpha,
+    Hue,
+    Sat,
+    Lum,
+    /// `blend(a, b, t)` (color, color, real → color).
+    Blend,
+    /// `compose(bottom, top, amount)` (color, color, real → color).
+    Compose,
+    /// `merge…(bottom, top)` (color, color → color).
+    Merge(crate::doc::MergeMode),
+    /// `gradient(t)`: the coloring's gradient at `t` (real → color).
+    Gradient,
 }
 
 impl Program {

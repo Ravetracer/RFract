@@ -56,7 +56,8 @@ below the gradient, which can also be transparent.
 
 Coloring algorithms are formulas in UFM syntax (`formulas/rfract/rfract.ucl`): `init:` runs
 once, `loop:` after every iteration, `final:` at the end; they read `#z` and write `#index`
-(the gradient position) or `#solid`.
+(the gradient position), `#solid` or `#color` (a direct color, see *Formula files* in the Formulas chapter). *Direct color (hue by angle)* is an example
+of a direct coloring: it composes hues over the gradient and multiplies a tint color.
 
 ## The gradient editor
 

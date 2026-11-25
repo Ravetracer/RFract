@@ -431,3 +431,59 @@ final:
 default:
   title = "Iteration of closest approach (bof61)"
 }
+
+DirectHue {
+; Direct coloring: writes #color instead of a gradient index. The hue follows the final angle
+; of z, the lightness ripples with the smooth iteration count, composed over the gradient and
+; tinted with a color parameter.
+final:
+  float r = max(cabs(#z), 1.0001)
+  float n = #numiter - log(log(r) + 1.0) / log(2.0)
+  float a = atan2(#z) / (2 * #pi) + 0.5
+  color h = hsl(a * 6 + @shift, @saturation, 0.5 + 0.2 * sin(n * @rings))
+  color k = compose(gradient(n * @density), h, @amount)
+  #color = blend(k, mergemultiply(k, @tint), @tintamount)
+default:
+  title = "Direct color (hue by angle)"
+  float param shift
+    caption = "Hue shift"
+    default = 0
+    hint = "Added to the hue (0 to 6 is one turn: red, yellow, green, cyan, blue, magenta)."
+  endparam
+  float param saturation
+    caption = "Saturation"
+    default = 0.8
+    min = 0
+    max = 1
+    hint = "Saturation of the angle colors."
+  endparam
+  float param rings
+    caption = "Rings"
+    default = 0.6
+    hint = "How fast the lightness ripples with the iteration count."
+  endparam
+  float param density
+    caption = "Gradient density"
+    default = 0.05
+    hint = "Gradient positions per iteration for the color underneath."
+  endparam
+  float param amount
+    caption = "Hue amount"
+    default = 0.7
+    min = 0
+    max = 1
+    hint = "Opacity of the angle colors over the gradient."
+  endparam
+  color param tint
+    caption = "Tint"
+    default = rgb(1.0, 0.85, 0.6)
+    hint = "Color multiplied over the result."
+  endparam
+  float param tintamount
+    caption = "Tint amount"
+    default = 0.5
+    min = 0
+    max = 1
+    hint = "How much of the multiplied tint shows."
+  endparam
+}

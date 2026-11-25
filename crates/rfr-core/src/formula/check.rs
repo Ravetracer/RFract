@@ -15,6 +15,10 @@ struct Ck<'a> {
     dialect: Dialect,
     kind: ProgramKind,
     index_slot: Option<usize>,
+    color_slot: Option<usize>,
+    direct: bool,
+    /// Variables with a declared type (UFM `float x`): assignments convert, never widen.
+    declared: std::collections::HashSet<String>,
     solid_slot: Option<usize>,
     params: Vec<Param>,
     locals: Vec<Local>,
@@ -27,6 +31,8 @@ struct Ck<'a> {
     classic: HashMap<String, usize>,
     has_julia: bool,
     transcendental: bool,
+    /// Arrays: element slot and the slots of their dimension sizes.
+    arrays: HashMap<String, (usize, Vec<usize>)>,
 }
 
 fn conv(e: Expr, ty: Ty) -> Expr {
@@ -72,6 +78,144 @@ impl<'a> Ck<'a> {
         }
     }
 
+    /// A parameter used but not declared (allowed in UFM syntax): complex with default 0, a
+    /// function parameter defaulting to `ident`, or an enumeration whose items come from the
+    /// strings it is compared with.
+    fn implicit_param(&mut self, name: &str, kind: ParamKind) -> usize {
+        if let Some(i) = self.param_index(name) {
+            return i;
+        }
+        let default = match kind {
+            ParamKind::Func => ast::ParamValue::Func("ident".into()),
+            ParamKind::Int => ast::ParamValue::Int(0),
+            _ => ast::ParamValue::Complex([0.0, 0.0]),
+        };
+        self.params.push(Param {
+            name: name.to_string(),
+            kind,
+            ty: param_ty(kind),
+            default,
+            caption: name.to_string(),
+            hint: String::new(),
+            min: None,
+            max: None,
+            items: Vec::new(),
+        });
+        self.params.len() - 1
+    }
+
+    /// Value of a constant size expression (numbers, parameter defaults, arithmetic, rounding).
+    fn const_eval(&self, e: &ast::Expr) -> Option<f64> {
+        Some(match e {
+            ast::Expr::Num { v, .. } => *v,
+            ast::Expr::Param(n) => self.params[self.param_index(n)?].default.as_f64(),
+            ast::Expr::Unary(UnOp::Neg, a) => -self.const_eval(a)?,
+            ast::Expr::Binary(op, a, b) => {
+                let (x, y) = (self.const_eval(a)?, self.const_eval(b)?);
+                match op {
+                    BinOp::Add => x + y,
+                    BinOp::Sub => x - y,
+                    BinOp::Mul => x * y,
+                    BinOp::Div if y != 0.0 => x / y,
+                    _ => return None,
+                }
+            }
+            ast::Expr::Call { name, param: false, args } if args.len() == 1 => {
+                let v = self.const_eval(&args[0])?;
+                match name.to_ascii_lowercase().as_str() {
+                    "round" => v.round(),
+                    "floor" => v.floor(),
+                    "ceil" => v.ceil(),
+                    "trunc" => v.trunc(),
+                    "abs" => v.abs(),
+                    "real" => v,
+                    _ => return None,
+                }
+            }
+            _ => return None,
+        })
+    }
+
+    /// Declares an array: its elements and one int local per dimension size.
+    fn declare_array(&mut self, ty: DeclTy, name: &str, dims: &[ast::Expr], line: usize, out: &mut Vec<Stmt>) -> Result<(), Error> {
+        let key = self.norm(name);
+        let t = match ty {
+            DeclTy::Bool => Ty::Bool,
+            DeclTy::Int => Ty::Int,
+            DeclTy::Float => Ty::Real,
+            DeclTy::Complex => Ty::Complex,
+            DeclTy::Color => Ty::Color,
+        };
+        fn uses_screen(e: &ast::Expr) -> bool {
+            match e {
+                ast::Expr::Sys(s) => matches!(s.to_ascii_lowercase().as_str(), "width" | "height" | "screenmax"),
+                ast::Expr::Unary(_, a) | ast::Expr::Mag(a) => uses_screen(a),
+                ast::Expr::Binary(_, a, b) | ast::Expr::Complex(a, b) => uses_screen(a) || uses_screen(b),
+                ast::Expr::Call { args, .. } | ast::Expr::Index(_, args) => args.iter().any(uses_screen),
+                _ => false,
+            }
+        }
+        if dims.iter().any(uses_screen) {
+            return err(line, format!("the image-sized array '{name}' is not supported (arrays are kept per sample, not per image)"));
+        }
+        let sizes: Option<Vec<f64>> = dims.iter().map(|d| self.const_eval(d)).collect();
+        let cap = match sizes {
+            Some(v) if !v.is_empty() => {
+                let n = v.iter().map(|x| x.max(1.0)).product::<f64>();
+                if n > ARRAY_MAX as f64 {
+                    return err(line, format!("the array '{name}' has {n} elements; at most {ARRAY_MAX} are supported"));
+                }
+                (n as usize).max(1)
+            }
+            _ => ARRAY_CAP,
+        };
+        let slot = match self.arrays.get(&key) {
+            Some(&(s, _)) => s,
+            None => {
+                self.locals.push(Local { name: key.clone(), ty: t, cap: Some(cap) });
+                self.locals.len() - 1
+            }
+        };
+        let ndim = dims.len().max(1);
+        let mut dim_slots = Vec::new();
+        for k in 0..ndim {
+            let dk = format!("#dim{k}:{key}");
+            let i = self.local(&dk, Ty::Int);
+            dim_slots.push(i);
+            let v = match dims.get(k) {
+                Some(d) => {
+                    let e = self.expr(d, line)?;
+                    conv(self.numeric(e), Ty::Int)
+                }
+                None => Expr { ty: Ty::Int, kind: Kind::Int(0) },
+            };
+            out.push(Stmt::Assign(i, v));
+        }
+        self.arrays.insert(key, (slot, dim_slots));
+        Ok(())
+    }
+
+    /// Flat element index of `name[idx…]` and the array's slot.
+    fn array_index(&mut self, name: &str, idx: &[ast::Expr], line: usize) -> Result<(usize, Expr), Error> {
+        let key = self.norm(name);
+        let Some((slot, dims)) = self.arrays.get(&key).cloned() else { return err(line, format!("'{name}' is not an array")) };
+        if idx.is_empty() || idx.len() > dims.len() {
+            return err(line, format!("'{name}' needs {} index(es)", dims.len()));
+        }
+        let mut acc = {
+            let e = self.expr(&idx[0], line)?;
+            conv(self.numeric(e), Ty::Int)
+        };
+        for (k, ix) in idx.iter().enumerate().skip(1) {
+            let d = Expr { ty: Ty::Int, kind: Kind::Local(dims[k]) };
+            let e = self.expr(ix, line)?;
+            let i = conv(self.numeric(e), Ty::Int);
+            let mul = Expr { ty: Ty::Int, kind: Kind::Arith(Arith::Mul, Box::new(acc), Box::new(d)) };
+            acc = Expr { ty: Ty::Int, kind: Kind::Arith(Arith::Add, Box::new(mul), Box::new(i)) };
+        }
+        Ok((slot, acc))
+    }
+
     fn sys(&mut self, s: Sys) -> Expr {
         if s == Sys::IsMand {
             self.has_julia = true;
@@ -92,7 +236,7 @@ impl<'a> Ck<'a> {
             return i;
         }
         let ty = self.preset.get(&key).copied().map_or(ty, |p| p.max(ty));
-        self.locals.push(Local { name: key.clone(), ty });
+        self.locals.push(Local { name: key.clone(), ty, cap: None });
         self.slots.insert(key, self.locals.len() - 1);
         self.locals.len() - 1
     }
@@ -100,6 +244,9 @@ impl<'a> Ck<'a> {
     /// Value of a plain identifier.
     fn ident(&mut self, name: &str, line: usize) -> Result<Expr, Error> {
         let key = self.norm(name);
+        if self.arrays.contains_key(&key) {
+            return err(line, format!("the array '{name}' needs an index"));
+        }
         if key == "z" {
             return Ok(Expr { ty: Ty::Complex, kind: Kind::Local(Z) });
         }
@@ -139,7 +286,75 @@ impl<'a> Ck<'a> {
             let i = self.local(name, Ty::Complex);
             return Ok(Expr { ty: self.locals[i].ty, kind: Kind::Local(i) });
         }
+        if self.dialect == Dialect::Ufm {
+            // Older UFM style: plain names for the predefined values and parameters.
+            match key.as_str() {
+                "pixel" => return Ok(self.sys(Sys::Pixel)),
+                "pi" => return Ok(real(std::f64::consts::PI)),
+                "e" => return Ok(real(std::f64::consts::E)),
+                // FractInt's predefined values.
+                "whitesq" => {
+                    let x = self.sys(Sys::X);
+                    let y = self.sys(Sys::Y);
+                    let sum = Expr { ty: Ty::Int, kind: Kind::Arith(Arith::Add, Box::new(x), Box::new(y)) };
+                    let m = Expr { ty: Ty::Int, kind: Kind::Arith(Arith::Mod, Box::new(sum), Box::new(Expr { ty: Ty::Int, kind: Kind::Int(2) })) };
+                    return Ok(Expr { ty: Ty::Bool, kind: Kind::Cmp(Cmp::Eq, Box::new(m), Box::new(Expr { ty: Ty::Int, kind: Kind::Int(1) })) });
+                }
+                "scrnpix" => return Ok(self.sys(Sys::ScreenPixel)),
+                "scrnmax" => return Ok(self.sys(Sys::ScreenMax)),
+                "maxit" => return Ok(conv(self.sys(Sys::MaxIt), Ty::Real)),
+                "lastsqr" => return Ok(self.sys(Sys::LastSqr)),
+                "ismand" => return Ok(self.sys(Sys::IsMand)),
+                "rand" => return Ok(self.sys(Sys::Random)),
+                "center" => return Ok(self.sys(Sys::Center)),
+                "p1" | "p2" | "p3" | "p4" | "p5" | "p6" => {
+                    let i = self.implicit_param(&key, ParamKind::Complex);
+                    return Ok(Expr { ty: self.params[i].ty, kind: Kind::Param(i) });
+                }
+                _ => {}
+            }
+        }
         err(line, format!("unknown name '{name}'"))
+    }
+
+    /// Parameters assigned somewhere (`@p = …`) become locals that start with the value.
+    fn shadow_params(&mut self) -> Vec<Stmt> {
+        fn walk(stmts: &[ast::Stmt], out: &mut Vec<String>) {
+            for s in stmts {
+                match s {
+                    ast::Stmt::Assign { target: Target::Var(v), .. } if v.starts_with('@') => out.push(v[1..].to_string()),
+                    ast::Stmt::If { arms, els, .. } => {
+                        arms.iter().for_each(|(_, b)| walk(b, out));
+                        walk(els, out);
+                    }
+                    ast::Stmt::While { body, .. } | ast::Stmt::Repeat { body, .. } | ast::Stmt::Seq(body) => walk(body, out),
+                    _ => {}
+                }
+            }
+        }
+        let mut names = Vec::new();
+        let a = self.ast;
+        for b in [&a.global, &a.init, &a.body, &a.fin, &a.transform] {
+            walk(b, &mut names);
+        }
+        let mut out = Vec::new();
+        for n in names {
+            let key = format!("@{}", self.norm(&n));
+            if self.slots.contains_key(&key) {
+                continue;
+            }
+            let i = match self.param_index(&n) {
+                Some(i) => i,
+                None => self.implicit_param(&n, ParamKind::Complex),
+            };
+            if self.params[i].kind == ParamKind::Func {
+                continue;
+            }
+            let ty = self.params[i].ty;
+            let slot = self.local(&key, ty);
+            out.push(Stmt::Assign(slot, conv(Expr { ty, kind: Kind::Param(i) }, self.locals[slot].ty)));
+        }
+        out
     }
 
     fn assigned_anywhere(&self, key: &str) -> bool {
@@ -154,7 +369,7 @@ impl<'a> Ck<'a> {
                 }
                 ast::Stmt::Decl { name, .. } => name.eq_ignore_ascii_case(key),
                 ast::Stmt::If { arms, els, .. } => arms.iter().any(|(_, b)| walk(b, key, ufm)) || walk(els, key, ufm),
-                ast::Stmt::While { body, .. } | ast::Stmt::Repeat { body, .. } => walk(body, key, ufm),
+                ast::Stmt::While { body, .. } | ast::Stmt::Repeat { body, .. } | ast::Stmt::Seq(body) => walk(body, key, ufm),
                 _ => false,
             })
         }
@@ -172,6 +387,7 @@ impl<'a> Ck<'a> {
                 return Ok(Expr { ty: Ty::Bool, kind: Kind::Local(self.solid_slot.unwrap_or(0)) });
             }
             (ProgramKind::Coloring | ProgramKind::Transform, "z") => return Ok(self.sys(Sys::Z)),
+            (ProgramKind::Coloring, "color") => return Ok(Expr { ty: Ty::Color, kind: Kind::Local(self.color_slot.unwrap_or(0)) }),
             _ => {}
         }
         let s = match lower.as_str() {
@@ -186,6 +402,15 @@ impl<'a> Ck<'a> {
             "ismand" => Sys::IsMand,
             "c" => Sys::C,
             "zprev" => Sys::ZPrev,
+            "x" => Sys::X,
+            "y" => Sys::Y,
+            "width" => Sys::Width,
+            "height" => Sys::Height,
+            "screenpixel" | "scrnpix" => Sys::ScreenPixel,
+            "screenmax" | "scrnmax" => Sys::ScreenMax,
+            "angle" => Sys::Angle,
+            "random" | "rand" => Sys::Random,
+            "randomrange" => return Ok(real(2147483647.0)),
             other => return err(line, format!("'#{other}' is not supported in formulas yet")),
         };
         Ok(self.sys(s))
@@ -217,13 +442,26 @@ impl<'a> Ck<'a> {
             }
             ast::Expr::Ident(name) => self.ident(name, line)?,
             ast::Expr::Sys(name) => self.ufm_sys(name, line)?,
+            ast::Expr::Param(name) if self.slots.contains_key(&format!("@{}", self.norm(name))) => {
+                let i = self.slots[&format!("@{}", self.norm(name))];
+                Expr { ty: self.locals[i].ty, kind: Kind::Local(i) }
+            }
             ast::Expr::Param(name) => match self.param_index(name) {
                 Some(i) if self.params[i].kind == ParamKind::Func => {
                     return err(line, format!("the function parameter '@{name}' can only be called"));
                 }
                 Some(i) => Expr { ty: self.params[i].ty, kind: Kind::Param(i) },
+                None if self.dialect == Dialect::Ufm => {
+                    let i = self.implicit_param(name, ParamKind::Complex);
+                    Expr { ty: self.params[i].ty, kind: Kind::Param(i) }
+                }
                 None => return err(line, format!("unknown parameter '@{name}'")),
             },
+            ast::Expr::Index(name, idx) => {
+                let (slot, i) = self.array_index(name, idx, line)?;
+                Expr { ty: self.locals[slot].ty, kind: Kind::Index(slot, Box::new(i)) }
+            }
+            ast::Expr::Str(_) => return err(line, "a text can only be compared with an enumeration parameter (@mode == \"Julia\")"),
             ast::Expr::Mag(inner) => {
                 let v = {
                     let v = self.expr(inner, line)?;
@@ -288,6 +526,15 @@ impl<'a> Ck<'a> {
             };
             return Ok(Expr { ty, kind: Kind::Pow(Box::new(conv(base, ty)), Box::new(ex)) });
         }
+        if matches!(op, BinOp::Eq | BinOp::Ne) {
+            let pair = match (a, b) {
+                (ast::Expr::Param(p), ast::Expr::Str(s)) | (ast::Expr::Str(s), ast::Expr::Param(p)) => Some((p, s)),
+                _ => None,
+            };
+            if let Some((p, s)) = pair {
+                return self.enum_compare(op, p, s, line);
+            }
+        }
         let l = self.expr(a, line)?;
         let r = self.expr(b, line)?;
         let logic =
@@ -332,6 +579,30 @@ impl<'a> Ck<'a> {
         })
     }
 
+    /// `@param == "Item"`: compares an enumeration's value with the index of the item.
+    fn enum_compare(&mut self, op: BinOp, name: &str, item: &str, line: usize) -> Result<Expr, Error> {
+        let i = match self.param_index(name) {
+            Some(i) => i,
+            None if self.dialect == Dialect::Ufm => self.implicit_param(name, ParamKind::Int),
+            None => return err(line, format!("unknown parameter '@{name}'")),
+        };
+        let wanted = item.trim();
+        let p = &mut self.params[i];
+        let idx = match p.items.iter().position(|it| it.trim().eq_ignore_ascii_case(wanted)) {
+            Some(k) => k as i64,
+            None if p.kind == ParamKind::Int && p.default == ast::ParamValue::Int(0) && p.caption == p.name => {
+                // An implicit enumeration: its items are the texts it is compared with.
+                p.items.push(wanted.to_string());
+                (p.items.len() - 1) as i64
+            }
+            None => -1,
+        };
+        let ty = self.params[i].ty;
+        let lhs = conv(Expr { ty, kind: Kind::Param(i) }, Ty::Int);
+        let c = if op == BinOp::Eq { Cmp::Eq } else { Cmp::Ne };
+        Ok(Expr { ty: Ty::Bool, kind: Kind::Cmp(c, Box::new(lhs), Box::new(Expr { ty: Ty::Int, kind: Kind::Int(idx) })) })
+    }
+
     fn func_param(&self, name: &str, param: bool) -> Option<usize> {
         let i = if param || self.dialect == Dialect::Frm { self.param_index(name) } else { None };
         let i = i.or_else(|| if self.dialect == Dialect::Frm { self.classic.get(name).copied() } else { None });
@@ -353,6 +624,23 @@ impl<'a> Ck<'a> {
             self.transcendental = true;
             return Ok(Expr { ty: Ty::Complex, kind: Kind::CallParam(i, Box::new(a)) });
         }
+        let lower_name = name.to_ascii_lowercase();
+        if self.dialect == Dialect::Ufm && lower_name == "random" && args.len() == 1 {
+            let v = self.expr(&args[0], line)?;
+            let a = conv(self.numeric(v), Ty::Int);
+            return Ok(Expr { ty: Ty::Int, kind: Kind::RandomInt(Box::new(a)) });
+        }
+        let old_style = self.dialect == Dialect::Ufm && !param && matches!(lower_name.as_str(), "fn1" | "fn2" | "fn3" | "fn4");
+        if (param && self.dialect == Dialect::Ufm && self.param_index(name).is_none()) || old_style {
+            if args.len() != 1 {
+                return err(line, format!("'{name}' takes one argument"));
+            }
+            let i = self.implicit_param(&lower_name, ParamKind::Func);
+            let v = self.expr(&args[0], line)?;
+            let a = conv(self.numeric(v), Ty::Complex);
+            self.transcendental = true;
+            return Ok(Expr { ty: Ty::Complex, kind: Kind::CallParam(i, Box::new(a)) });
+        }
         if param {
             return err(line, format!("unknown function parameter '@{name}'"));
         }
@@ -360,11 +648,22 @@ impl<'a> Ck<'a> {
             return err(line, format!("'{name}' is not bound to a function parameter"));
         }
         let lower = name.to_ascii_lowercase();
+        if lower == "length"
+            && let [ast::Expr::Ident(a)] = args
+            && let Some((_, dims)) = self.arrays.get(&self.norm(a))
+        {
+            return Ok(Expr { ty: Ty::Int, kind: Kind::Local(dims[0]) });
+        }
         let lname = if self.dialect == Dialect::Frm { name.to_string() } else { lower.clone() };
         let mut vals = Vec::new();
         for a in args {
             let v = self.expr(a, line)?;
             vals.push(self.numeric(v));
+        }
+        if self.dialect == Dialect::Ufm
+            && let Some(e) = self.color_call(&lname, &mut vals, line)?
+        {
+            return Ok(e);
         }
         let two_real = |f: Func, vals: Vec<Expr>| -> Result<Expr, Error> {
             if vals.len() != 2 {
@@ -415,6 +714,59 @@ impl<'a> Ck<'a> {
         Ok(Expr { ty: Ty::Complex, kind: Kind::Call(f, vec![conv(a, Ty::Complex)]) })
     }
 
+    /// Color constructors, channels and mixing functions; `None` for other names.
+    fn color_call(&mut self, name: &str, vals: &mut Vec<Expr>, line: usize) -> Result<Option<Expr>, Error> {
+        let count = vals.len();
+        let first_is_color = vals.first().is_some_and(|v| v.ty == Ty::Color);
+        let want = |n: usize| -> Result<(), Error> { if count != n { err(line, format!("'{name}' takes {n} argument(s)")) } else { Ok(()) } };
+        let color = |op: ColorOp, args: Vec<Expr>| Some(Expr { ty: Ty::Color, kind: Kind::ColorOp(op, args) });
+        let channel = |op: ColorOp, args: Vec<Expr>| Some(Expr { ty: Ty::Real, kind: Kind::ColorOp(op, args) });
+        let mut take = std::mem::take(vals).into_iter();
+        let mut next = |ty: Ty| conv(take.next().unwrap(), ty);
+        Ok(match name {
+            "rgb" | "rgba" | "hsl" | "hsla" => {
+                let n = if name.ends_with('a') { 4 } else { 3 };
+                want(n)?;
+                let mut a: Vec<Expr> = (0..n).map(|_| next(Ty::Real)).collect();
+                if n == 3 {
+                    a.push(real(1.0));
+                }
+                color(if name.starts_with("hsl") { ColorOp::Hsla } else { ColorOp::Rgba }, a)
+            }
+            "red" | "green" | "blue" | "alpha" | "hue" | "sat" | "lum" if count == 1 && first_is_color => {
+                let op = match name {
+                    "red" => ColorOp::Red,
+                    "green" => ColorOp::Green,
+                    "blue" => ColorOp::Blue,
+                    "alpha" => ColorOp::Alpha,
+                    "hue" => ColorOp::Hue,
+                    "sat" => ColorOp::Sat,
+                    _ => ColorOp::Lum,
+                };
+                channel(op, vec![next(Ty::Color)])
+            }
+            "blend" | "compose" => {
+                want(3)?;
+                let a = vec![next(Ty::Color), next(Ty::Color), next(Ty::Real)];
+                color(if name == "blend" { ColorOp::Blend } else { ColorOp::Compose }, a)
+            }
+            "gradient" => {
+                want(1)?;
+                color(ColorOp::Gradient, vec![next(Ty::Real)])
+            }
+            _ => match super::color::merge_mode(name) {
+                Some(m) => {
+                    want(2)?;
+                    color(ColorOp::Merge(m), vec![next(Ty::Color), next(Ty::Color)])
+                }
+                None => {
+                    *vals = take.collect();
+                    None
+                }
+            },
+        })
+    }
+
     fn assign(&mut self, name: &str, value: Expr, line: usize) -> Result<Stmt, Error> {
         let key = self.norm(name);
         if key == "z" {
@@ -428,7 +780,7 @@ impl<'a> Ck<'a> {
         }
         let i = self.local(name, value.ty);
         let ty = self.locals[i].ty;
-        if value.ty > ty {
+        if value.ty > ty && !self.declared.contains(&key) {
             let w = self.widen.entry(key).or_insert(value.ty);
             *w = (*w).max(value.ty);
         }
@@ -453,8 +805,18 @@ impl<'a> Ck<'a> {
                                 (ProgramKind::Coloring | ProgramKind::Transform, "solid") => {
                                     out.push(Stmt::Assign(self.solid_slot.unwrap_or(0), conv(v, Ty::Bool)))
                                 }
+                                (ProgramKind::Coloring, "color") => {
+                                    self.direct = true;
+                                    out.push(Stmt::Assign(self.color_slot.unwrap_or(0), conv(v, Ty::Color)))
+                                }
                                 _ => return err(*line, format!("'#{name}' cannot be assigned here")),
                             }
+                        }
+                        Target::Index(name, idx) => {
+                            let (slot, i) = self.array_index(name, idx, *line)?;
+                            let t = self.locals[slot].ty;
+                            let v = if t == Ty::Bool { v } else { self.numeric(v) };
+                            out.push(Stmt::SetIndex(slot, i, conv(v, t)));
                         }
                         Target::Comp { re, var } => {
                             let key = self.norm(var);
@@ -472,6 +834,7 @@ impl<'a> Ck<'a> {
                         DeclTy::Int => Ty::Int,
                         DeclTy::Float => Ty::Real,
                         DeclTy::Complex => Ty::Complex,
+                        DeclTy::Color => Ty::Color,
                     };
                     let key = self.norm(name);
                     if key == "z" {
@@ -481,7 +844,10 @@ impl<'a> Ck<'a> {
                         }
                         continue;
                     }
-                    self.preset.entry(key).or_insert(t);
+                    self.preset.entry(key.clone()).or_insert(t);
+                    if self.dialect == Dialect::Ufm {
+                        self.declared.insert(key);
+                    }
                     let i = self.local(name, t);
                     if let Some(v) = value {
                         let v = self.expr(v, *line)?;
@@ -508,6 +874,18 @@ impl<'a> Ck<'a> {
                     };
                     out.push(Stmt::While(c, self.stmts(body)?));
                 }
+                ast::Stmt::Seq(list) => out.extend(self.stmts(list)?),
+                ast::Stmt::ArrayDecl { ty, name, dims, line } => self.declare_array(*ty, name, dims, *line, &mut out)?,
+                ast::Stmt::Call { name, args, line } => match (name.to_ascii_lowercase().as_str(), args.as_slice()) {
+                    ("setlength", [ast::Expr::Ident(a), n]) => {
+                        let Some((_, dims)) = self.arrays.get(&self.norm(a)).cloned() else { return err(*line, format!("'{a}' is not an array")) };
+                        let e = self.expr(n, *line)?;
+                        out.push(Stmt::Assign(dims[0], conv(self.numeric(e), Ty::Int)));
+                    }
+                    // Debug output of the original program: nothing to show here.
+                    ("print", _) => {}
+                    _ => return err(*line, format!("unknown procedure '{name}'")),
+                },
                 ast::Stmt::Repeat { body, cond, line } => {
                     let b = self.stmts(body)?;
                     let c = {
@@ -529,6 +907,38 @@ pub fn param_ty(kind: ParamKind) -> Ty {
         ParamKind::Int => Ty::Int,
         ParamKind::Float => Ty::Real,
         ParamKind::Complex | ParamKind::Func => Ty::Complex,
+        ParamKind::Color => Ty::Color,
+    }
+}
+
+/// A color used as a number somewhere in `stmts` (conversions, arithmetic, numeric functions)?
+fn color_misuse(stmts: &[Stmt]) -> Option<usize> {
+    for s in stmts {
+        let bad = match s {
+            Stmt::Assign(_, e) | Stmt::SetPart { value: e, .. } => color_misuse_expr(e),
+            Stmt::SetIndex(_, i, e) => color_misuse_expr(i) || color_misuse_expr(e),
+            Stmt::If(arms, els) => arms.iter().any(|(c, b)| color_misuse_expr(c) || color_misuse(b).is_some()) || color_misuse(els).is_some(),
+            Stmt::While(c, b) | Stmt::Repeat(b, c) => color_misuse_expr(c) || color_misuse(b).is_some(),
+        };
+        if bad {
+            return Some(0);
+        }
+    }
+    None
+}
+
+fn color_misuse_expr(e: &Expr) -> bool {
+    let colored = |x: &Expr| x.ty == Ty::Color;
+    match &e.kind {
+        Kind::Conv(a) => e.ty == Ty::Color || a.ty == Ty::Color || color_misuse_expr(a),
+        Kind::ColorOp(_, args) => args.iter().any(color_misuse_expr),
+        Kind::Index(_, i) => color_misuse_expr(i),
+        Kind::Complex(a, b) | Kind::Arith(_, a, b) | Kind::Pow(a, b) | Kind::PowN(a, b) | Kind::Cmp(_, a, b) | Kind::And(a, b) | Kind::Or(a, b) => {
+            colored(a) || colored(b) || color_misuse_expr(a) || color_misuse_expr(b)
+        }
+        Kind::Neg(a) | Kind::Not(a) | Kind::PowI(a, _) | Kind::CallParam(_, a) | Kind::RandomInt(a) => colored(a) || color_misuse_expr(a),
+        Kind::Call(_, args) => args.iter().any(|a| colored(a) || color_misuse_expr(a)),
+        Kind::Bool(_) | Kind::Int(_) | Kind::Real(_) | Kind::Local(_) | Kind::Param(_) | Kind::Sys(_) => false,
     }
 }
 
@@ -540,33 +950,45 @@ pub fn check(ast: &FormulaAst) -> Result<Program, Error> {
 /// Checks a parsed formula of the given kind.
 pub fn check_kind(ast: &FormulaAst, kind: ProgramKind) -> Result<Program, Error> {
     let mut preset = HashMap::new();
-    for _round in 0..6 {
+    for _round in 0..16 {
         let mut ck = Ck {
             ast,
             dialect: ast.dialect,
             kind,
             index_slot: None,
             solid_slot: None,
+            color_slot: None,
+            direct: false,
+            declared: Default::default(),
             params: Vec::new(),
-            locals: vec![Local { name: "z".into(), ty: Ty::Complex }],
+            locals: vec![Local { name: "z".into(), ty: Ty::Complex, cap: None }],
             slots: HashMap::new(),
             preset: preset.clone(),
             widen: HashMap::new(),
             classic: HashMap::new(),
             has_julia: false,
             transcendental: false,
+            arrays: HashMap::new(),
         };
         ck.slots.insert("z".into(), Z);
         if kind == ProgramKind::Coloring {
-            ck.locals.push(Local { name: "#index".into(), ty: Ty::Real });
+            ck.locals.push(Local { name: "#index".into(), ty: Ty::Real, cap: None });
             ck.index_slot = Some(ck.locals.len() - 1);
         }
         if kind != ProgramKind::Fractal {
-            ck.locals.push(Local { name: "#solid".into(), ty: Ty::Bool });
+            ck.locals.push(Local { name: "#solid".into(), ty: Ty::Bool, cap: None });
             ck.solid_slot = Some(ck.locals.len() - 1);
+        }
+        if kind == ProgramKind::Coloring {
+            ck.locals.push(Local { name: "#color".into(), ty: Ty::Color, cap: None });
+            ck.color_slot = Some(ck.locals.len() - 1);
         }
         for p in &ast.params {
             if ck.param_index(&p.name).is_some() {
+                // UFM files repeat declarations now and then; the first one counts.
+                if ast.dialect == Dialect::Ufm {
+                    continue;
+                }
                 return err(0, format!("parameter '{}' is declared twice", p.name));
             }
             if p.kind == ParamKind::Func {
@@ -590,7 +1012,8 @@ pub fn check_kind(ast: &FormulaAst, kind: ProgramKind) -> Result<Program, Error>
                 ck.classic.insert(slot.clone(), ck.params.len() - 1);
             }
         }
-        let mut init = ck.stmts(&ast.global)?;
+        let mut init = ck.shadow_params();
+        init.extend(ck.stmts(&ast.global)?);
         init.extend(ck.stmts(&ast.init)?);
         let body = if kind == ProgramKind::Transform { ck.stmts(&ast.transform)? } else { ck.stmts(&ast.body)? };
         let bailout = match (&ast.bailout, kind) {
@@ -602,6 +1025,10 @@ pub fn check_kind(ast: &FormulaAst, kind: ProgramKind) -> Result<Program, Error>
             _ => Expr { ty: Ty::Bool, kind: Kind::Bool(true) },
         };
         let fin = ck.stmts(&ast.fin)?;
+        if let Some(line) = [&init, &body, &fin].iter().find_map(|b| color_misuse(b)).or(color_misuse_expr(&bailout).then_some(0)) {
+            let _ = line;
+            return err(0, "colors can only be used with color functions (rgb, blend, compose, red, …), not as numbers");
+        }
         if !ck.widen.is_empty() {
             let mut changed = false;
             for (k, t) in ck.widen {
@@ -619,6 +1046,8 @@ pub fn check_kind(ast: &FormulaAst, kind: ProgramKind) -> Result<Program, Error>
             kind,
             index_slot: ck.index_slot,
             solid_slot: ck.solid_slot,
+            color_slot: ck.color_slot,
+            direct: ck.direct,
             params: ck.params,
             locals: ck.locals,
             init,
