@@ -318,6 +318,23 @@ impl Plan {
         }
     }
 
+    /// Shifts every layer's gradients by `by` (one is a full turn): color cycling. Masks keep
+    /// their colors.
+    pub fn shift_colors(&mut self, by: f64) {
+        fn walk(nodes: &mut [Node], by: f64) {
+            for n in nodes {
+                match n {
+                    Node::Layer { layer, .. } => {
+                        layer.outside.offset += by;
+                        layer.inside.offset += by;
+                    }
+                    Node::Group { children, .. } => walk(children, by),
+                }
+            }
+        }
+        walk(&mut self.nodes, by);
+    }
+
     /// Magnification for `#magn` (1.5 / radius).
     pub fn magn(&self) -> f64 {
         1.5 / self.frame.radius

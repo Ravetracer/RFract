@@ -21,7 +21,7 @@ Commands:
       -s, --samples <n>      Samples per pixel (default: the document's)
       --cpu                  Render on the CPU (the reference renderer)
   formulas                   List the built-in formulas with their ids
-  formulas --check <path>…   Compile formula files (.ufm, .frm) or folders and report
+  formulas --check <path>…   Compile formula files (.ufm, .ucl, .uxf, .frm) or folders and report
   info                       Program version, GPU, denoiser and settings folders
   help                       This text
 
@@ -157,29 +157,44 @@ fn check_formulas(paths: &[String]) -> Result<(), String> {
     }
     files.sort();
     let (mut ok, mut failed) = (0usize, 0usize);
+    let mut per_kind: std::collections::BTreeMap<&str, (usize, usize)> = Default::default();
     let mut reasons: std::collections::BTreeMap<String, usize> = Default::default();
     for f in &files {
         let Ok(bytes) = std::fs::read(f) else { continue };
         let text = String::from_utf8_lossy(&bytes);
+        let ext = f.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+        let (kind, label) = match ext.as_str() {
+            "ucl" => (rfr_core::formula::ProgramKind::Coloring, "colorings"),
+            "uxf" => (rfr_core::formula::ProgramKind::Transform, "transformations"),
+            _ => (rfr_core::formula::ProgramKind::Fractal, "fractal formulas"),
+        };
         let results = if text.contains("@language: frm-like/1") {
             vec![(f.display().to_string(), rfr_core::formula::compile_frm(&text))]
         } else {
-            rfr_core::formula::compile_ufm_file(&text)
+            rfr_core::formula::compile_ufm_file_kind(&text, kind)
         };
         for (_, r) in results {
+            let e = per_kind.entry(label).or_default();
             match r {
-                Ok(_) => ok += 1,
-                Err(e) => {
+                Ok(_) => {
+                    ok += 1;
+                    e.0 += 1;
+                }
+                Err(err) => {
                     failed += 1;
+                    e.1 += 1;
                     // Group reasons without names and numbers.
-                    let key: String = e.msg.split('\'').enumerate().map(|(i, s)| if i % 2 == 1 { "…" } else { s }).collect::<Vec<_>>().join("'");
+                    let key: String = err.msg.split('\'').enumerate().map(|(i, s)| if i % 2 == 1 { "…" } else { s }).collect::<Vec<_>>().join("'");
                     *reasons.entry(key).or_default() += 1;
                 }
             }
         }
     }
     let total = ok + failed;
-    println!("{} files, {total} formulas: {ok} compile ({:.1} %), {failed} fail", files.len(), 100.0 * ok as f64 / total.max(1) as f64);
+    println!("{} files, {total} entries: {ok} compile ({:.1} %), {failed} fail", files.len(), 100.0 * ok as f64 / total.max(1) as f64);
+    for (label, (o, f)) in &per_kind {
+        println!("  {label}: {o} of {} compile ({:.1} %)", o + f, 100.0 * *o as f64 / (o + f).max(1) as f64);
+    }
     let mut top: Vec<_> = reasons.into_iter().collect();
     top.sort_by_key(|t| std::cmp::Reverse(t.1));
     for (msg, n) in top.iter().take(25) {
@@ -195,7 +210,7 @@ fn collect(p: &Path, out: &mut Vec<PathBuf>) {
                 collect(&e.path(), out);
             }
         }
-    } else if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("ufm") || e.eq_ignore_ascii_case("frm")) {
+    } else if p.extension().is_some_and(|e| ["ufm", "ucl", "uxf", "frm"].iter().any(|x| e.eq_ignore_ascii_case(x))) {
         out.push(p.to_path_buf());
     }
 }

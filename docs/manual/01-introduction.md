@@ -6,10 +6,11 @@ them into stills and animations with glow, chromatic aberration, lighting and de
 
 ![RFract](images/cover.jpg)
 
-This manual describes version {{version}}, an early development version: one fractal layer
-with 552 built-in formulas, smooth, banded and distance-estimate coloring, a gradient editor,
-GPU rendering with automatic double precision for deep views, and PNG export. Layers, more
-colorings, effects, deep zoom beyond double precision and animation follow in later versions.
+This manual describes version {{version}}, an early development version: layers with merge
+modes, groups and masks, 552 built-in formulas, 13 coloring algorithms, 11 transformations,
+gradients with opacity, GPU rendering with automatic double precision for deep views, and PNG
+export with transparency. Effects, deep zoom beyond double precision and animation follow in
+later versions.
 
 ## Related programs
 

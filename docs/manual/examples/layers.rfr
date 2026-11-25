@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "image": {"width": 960, "height": 540, "samples": 64, "background": [0.0, 0.0, 0.0, 1.0]},
+  "view": {"center": ["-0.7453", "0.1127"], "radius": 0.0065, "rotation": 0},
+  "layers": [
+    {"name": "Base", "formula": "rfract:Mandelbrot", "max_iter": 1500,
+     "outside_method": "formula",
+     "outside": {"formula": "rfract-coloring:TriangleInequality", "transfer": "linear", "density": 1.2, "offset": 0.55,
+                 "gradient": {"stops": [{"pos":0.0,"color":[0.01,0.0,0.03]},{"pos":0.35,"color":[0.25,0.02,0.4]},{"pos":0.6,"color":[0.95,0.45,0.1]},{"pos":0.8,"color":[1.0,0.95,0.7]},{"pos":1.0,"color":[0.01,0.0,0.03]}], "blend": "smooth"}},
+     "inside_method": "formula",
+     "inside": {"formula": "rfract-coloring:OrbitTrap", "params": {"shape": 2, "radius": 0.3, "width": 0.25}, "transfer": "linear", "density": 1.0}},
+    {"name": "Stalks", "formula": "rfract:Mandelbrot", "max_iter": 1500, "merge": "screen", "opacity": 0.8,
+     "outside_method": "formula",
+     "outside": {"formula": "rfract-coloring:PickoverStalks", "params": {"width": 0.02}, "solid_alpha": 0.0, "transfer": "linear", "density": 1.0,
+                 "gradient": {"stops": [{"pos":0.0,"color":[0.6,0.9,1.0]},{"pos":1.0,"color":[0.0,0.05,0.2]}], "blend": "smooth", "alpha": [{"pos":0.0,"alpha":1.0},{"pos":0.9,"alpha":0.0}]}},
+     "inside": {"solid": [0,0,0], "solid_alpha": 0.0}}
+  ]
+}

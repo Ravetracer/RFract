@@ -10,7 +10,7 @@ use std::sync::{Mutex, OnceLock};
 
 use egui::{RichText, Ui};
 use egui_phosphor::regular as ph;
-use rfr_core::gradient::{Blend, Gradient, Stop as ColorStop};
+use rfr_core::gradient::{AlphaStop, Blend, Gradient, Stop as ColorStop};
 use rfr_core::palette::{self, Adjust, Harmony, Order, PaletteOptions};
 use serde::{Deserialize, Serialize};
 
@@ -56,6 +56,8 @@ struct State {
     out: Vec<ColorStop>,
     save_name: String,
     message: Option<String>,
+    /// Gradients of the last imported file (to pick from).
+    imported: Vec<(String, Gradient)>,
 }
 
 impl Default for State {
@@ -69,20 +71,23 @@ impl Default for State {
             out: Vec::new(),
             save_name: String::new(),
             message: None,
+            imported: Vec::new(),
         }
     }
 }
 
 /// Gradient strip, presets and tools, generator, adjustments, blend mode and the color stops.
 pub fn gradient_editor(ui: &mut Ui, g: &mut Gradient) {
-    let blend = g.blend;
-    let gradient = &mut g.stops;
     let id = ui.id().with("palette-editor");
     let mut st: State = ui.data(|d| d.get_temp(id)).unwrap_or_default();
+    files(ui, g, &mut st);
+    let blend = g.blend;
+    let alpha = g.alpha.clone();
+    let gradient = &mut g.stops;
     if st.selected.is_some_and(|i| i >= gradient.len()) {
         st.selected = None;
     }
-    strip(ui, gradient, &mut st, blend);
+    strip(ui, gradient, &mut st, blend, &alpha);
     ui.add_space(4.0);
     toolbar(ui, gradient, &mut st);
     if let Some(m) = &st.message {
@@ -92,6 +97,7 @@ pub fn gradient_editor(ui: &mut Ui, g: &mut Gradient) {
     adjustments(ui, gradient, &mut st);
     ui.add_space(4.0);
     stops(ui, gradient, &mut st);
+    opacity(ui, &mut g.alpha);
     ui.data_mut(|d| d.insert_temp(id, st));
     widgets::grid(ui, "gradient-blend", |ui| {
         widgets::label(ui, "Blend", "How neighboring colors blend (always through the perceptual OKLab color space)");
@@ -110,11 +116,28 @@ pub fn gradient_editor(ui: &mut Ui, g: &mut Gradient) {
 /// The gradient with a marker per stop: drag a marker to move the stop, click the strip to add
 /// a stop there, right-click (or double-click) a marker to remove it. Clicking a marker selects
 /// its stop in the list.
-fn strip(ui: &mut Ui, gradient: &mut Vec<ColorStop>, st: &mut State, blend: Blend) {
+fn strip(ui: &mut Ui, gradient: &mut Vec<ColorStop>, st: &mut State, blend: Blend, alpha: &[AlphaStop]) {
     let height = 24.0;
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), height + 12.0), egui::Sense::click_and_drag());
     let bar = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), height));
-    let lut = Gradient { stops: gradient.clone(), blend, alpha: Vec::new() }.lut();
+    let lut = Gradient { stops: gradient.clone(), blend, alpha: alpha.to_vec() }.lut();
+    let painter = ui.painter();
+    // A checkerboard shows through transparent parts.
+    let cell = height / 2.0;
+    let mut x = bar.left();
+    let mut k = 0;
+    while x < bar.right() {
+        for row in 0..2 {
+            let shade = if (k + row) % 2 == 0 { 70 } else { 110 };
+            let r = egui::Rect::from_min_max(
+                egui::pos2(x, bar.top() + row as f32 * cell),
+                egui::pos2((x + cell).min(bar.right()), bar.top() + (row + 1) as f32 * cell),
+            );
+            painter.rect_filled(r, 0.0, egui::Color32::from_gray(shade));
+        }
+        x += cell;
+        k += 1;
+    }
     let mut mesh = egui::Mesh::default();
     let w = bar.width() / lut.len() as f32;
     for (i, c) in lut.iter().enumerate() {
@@ -122,9 +145,9 @@ fn strip(ui: &mut Ui, gradient: &mut Vec<ColorStop>, st: &mut State, blend: Blen
             egui::pos2(bar.left() + i as f32 * w, bar.top()),
             egui::pos2(bar.left() + (i + 1) as f32 * w + 0.5, bar.bottom()),
         );
-        mesh.add_colored_rect(r, widgets::to_color32([c[0], c[1], c[2]]));
+        let s = widgets::to_color32([c[0], c[1], c[2]]);
+        mesh.add_colored_rect(r, egui::Color32::from_rgba_unmultiplied(s.r(), s.g(), s.b(), (c[3].clamp(0.0, 1.0) * 255.0) as u8));
     }
-    let painter = ui.painter();
     painter.add(egui::Shape::mesh(mesh));
     painter.rect_stroke(bar, egui::CornerRadius::same(4), egui::Stroke::new(1.0, theme::BORDER), egui::StrokeKind::Outside);
     let x_of = |pos: f64| bar.left() + pos.clamp(0.0, 1.0) as f32 * bar.width();
@@ -489,4 +512,98 @@ fn stops(ui: &mut Ui, gradient: &mut Vec<ColorStop>, st: &mut State) {
         gradient.push(ColorStop::new(0.5, c));
         st.selected = Some(gradient.len() - 1);
     }
+}
+
+/// Import and export of gradient files.
+fn files(ui: &mut Ui, g: &mut Gradient, st: &mut State) {
+    ui.horizontal(|ui| {
+        if ui.button(format!("{}  Import…", icons::IMPORT)).on_hover_text("Read gradients from a file: .ugr, .map, .ggr, .gpl, .cpt").clicked()
+            && let Some(p) = rfd::FileDialog::new().add_filter("Gradients", &["ugr", "map", "ggr", "gpl", "cpt"]).pick_file()
+        {
+            match rfr_core::gradient_io::import(&p) {
+                Ok(list) => {
+                    *g = list[0].1.clone();
+                    st.selected = None;
+                    st.message = Some(if list.len() > 1 {
+                        format!("{} gradients in the file; showing \"{}\" (pick another next to Export)", list.len(), list[0].0)
+                    } else {
+                        format!("Imported \"{}\"", list[0].0)
+                    });
+                    st.imported = if list.len() > 1 { list } else { Vec::new() };
+                }
+                Err(e) => st.message = Some(e),
+            }
+        }
+        if ui
+            .button(format!("{}  Export…", icons::EXPORT))
+            .on_hover_text("Write the gradient to a file: .ugr (with opacity), .map (256 colors) or .ggr")
+            .clicked()
+            && let Some(p) = rfd::FileDialog::new()
+                .add_filter("UFM gradient", &["ugr"])
+                .add_filter("FractInt palette", &["map"])
+                .add_filter("GIMP gradient", &["ggr"])
+                .set_file_name("gradient.ugr")
+                .save_file()
+        {
+            let p = if p.extension().is_none() { p.with_extension("ugr") } else { p };
+            let name = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Gradient".into());
+            st.message = Some(match rfr_core::gradient_io::export(&p, &name, g) {
+                Ok(()) => format!("Exported {}", p.display()),
+                Err(e) => e,
+            });
+        }
+        if !st.imported.is_empty() {
+            egui::ComboBox::from_id_salt("imported-gradients").selected_text("From the file…").height(400.0).show_ui(ui, |ui| {
+                for (name, grad) in &st.imported {
+                    if ui.button(name).on_hover_text("Use this gradient from the imported file").clicked() {
+                        *g = grad.clone();
+                        st.selected = None;
+                    }
+                }
+            });
+        }
+    });
+}
+
+/// The opacity curve: points with position and opacity (empty: fully opaque).
+fn opacity(ui: &mut Ui, alpha: &mut Vec<AlphaStop>) {
+    egui::CollapsingHeader::new(RichText::new(format!("{}  Opacity", icons::MASK)).size(theme::fs(12.0))).id_salt("palette-opacity").show(ui, |ui| {
+        if alpha.is_empty() {
+            ui.label(
+                RichText::new("Fully opaque. Add points to make parts of the gradient transparent (the layers below show through).")
+                    .size(theme::fs(11.0))
+                    .color(theme::TEXT_MUTED),
+            );
+        }
+        let mut remove = None;
+        for (i, a) in alpha.iter_mut().enumerate() {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().slider_width = 110.0;
+                ui.add(egui::Slider::new(&mut a.pos, 0.0..=1.0).max_decimals(3).text("pos")).on_hover_text("Position on the gradient");
+                ui.add(egui::Slider::new(&mut a.alpha, 0.0..=1.0).max_decimals(2).text("opacity"))
+                    .on_hover_text("Opacity at this position (0 transparent, 1 opaque)");
+                if widgets::icon_button(ui, icons::X, "Remove this point").clicked() {
+                    remove = Some(i);
+                }
+            });
+        }
+        if let Some(i) = remove {
+            alpha.remove(i);
+        }
+        ui.horizontal(|ui| {
+            if ui
+                .button(format!("{}  Add point", icons::PLUS))
+                .on_hover_text("A new opacity point (opacity blends linearly between points and repeats like the colors)")
+                .clicked()
+            {
+                if alpha.is_empty() {
+                    alpha.push(AlphaStop { pos: 0.0, alpha: 1.0 });
+                }
+                alpha.push(AlphaStop { pos: 0.5, alpha: 0.0 });
+            }
+            if !alpha.is_empty() && ui.button("Opaque").on_hover_text("Remove all points: the gradient is fully opaque again").clicked() {
+                alpha.clear();
+            }
+        });
+    });
 }

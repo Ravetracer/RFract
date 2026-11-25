@@ -4,8 +4,8 @@
 
 The window has four parts:
 
-- **Left**: the layer and the **formula browser**. Click a formula to use it; the view jumps
-  to the region the formula suggests.
+- **Left**: the **layer list** and the **formula browser**. Click a formula to put it on the
+  selected layer; for the bottom layer the view jumps to the region the formula suggests.
 - **Center**: the **view**. It shows the image in the aspect ratio of the export size and
   refines while you look: the first pass appears at once, further passes smooth the edges.
 - **Right**: the **inspector** with the settings of the layer: formula parameters, iterations,

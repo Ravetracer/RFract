@@ -16,6 +16,7 @@ use crate::doc::Doc;
 use crate::export::Export;
 use crate::help::{Help, Tab};
 use crate::inspector::{self, Action as InspectorAction};
+use crate::layers::{self, Selection};
 use crate::prefs::Prefs;
 use crate::viewport::Viewport;
 use crate::{icons, theme, widgets};
@@ -49,6 +50,8 @@ pub struct App {
     show_timeline: bool,
     show_explore: bool,
     doc: Doc,
+    /// The layer (or mask) the browser and the inspector edit.
+    selection: Selection,
     viewport: Viewport,
     browser: Browser,
     export: Export,
@@ -84,6 +87,7 @@ impl App {
             show_timeline: false,
             show_explore: false,
             doc: Doc::new(Document::for_formula("rfract:Mandelbrot")),
+            selection: Selection::layer(vec![0]),
             viewport: Viewport::new(cc),
             browser: Browser::default(),
             export: Export::default(),
@@ -229,9 +233,10 @@ impl App {
                 }
             }
             Action::ToggleJulia => {
-                let on = self.doc.doc.active_layer().is_some_and(|l| l.julia);
-                let seed = if on { None } else { self.viewport.hover.or_else(|| self.doc.doc.active_layer().map(|l| l.seed)) };
-                if let Some(m) = self.viewport.set_julia(&mut self.doc.doc, seed) {
+                let layer = layers::target(&self.doc.doc, &self.selection);
+                let on = layer.is_some_and(|l| l.julia);
+                let seed = if on { None } else { self.viewport.hover.or_else(|| layer.map(|l| l.seed)) };
+                if let Some(m) = self.viewport.set_julia(&mut self.doc.doc, &self.selection, seed) {
                     self.notify(m);
                 }
             }
@@ -372,6 +377,11 @@ impl App {
                     action = Some(Action::ToggleJulia);
                 }
                 ui.separator();
+                ui.checkbox(&mut self.viewport.cycling, "Cycle colors")
+                    .on_hover_text("Turn the gradients in the view (the document keeps its colors)");
+                ui.add(egui::Slider::new(&mut self.viewport.cycle_speed, -2.0..=2.0).text("turns per second"))
+                    .on_hover_text("Speed and direction of the color cycling");
+                ui.separator();
                 ui.checkbox(&mut self.show_timeline, "Timeline").on_hover_text("Show the animation timeline below the view (later stage)");
                 ui.checkbox(&mut self.show_explore, "Explore lane").on_hover_text("Show the explore lane below the view (later stage)");
             });
@@ -405,6 +415,11 @@ impl App {
             }
             if widgets::icon_button(ui, icons::EXPORT, "Export image (Ctrl+E)").clicked() {
                 action = Some(Action::Export);
+            }
+            let cyc =
+                egui::Button::new(RichText::new(icons::PLAY).size(theme::fs(15.0))).frame(self.viewport.cycling).min_size(egui::vec2(26.0, 26.0));
+            if ui.add(cyc).on_hover_text("Cycle colors: the gradients turn in the view (speed in the View menu)").clicked() {
+                self.viewport.cycling = !self.viewport.cycling;
             }
         });
         action
@@ -528,7 +543,7 @@ impl App {
         egui::Window::new(title).id(egui::Id::new("gradient-editor")).open(&mut open).default_width(440.0).resizable(true).collapsible(false).show(
             ctx,
             |ui| {
-                if let Some(l) = self.doc.doc.layers.iter_mut().find(|l| l.visible) {
+                if let Some(l) = layers::target_mut(&mut self.doc.doc, &self.selection) {
                     let g = if inside { &mut l.inside.gradient } else { &mut l.outside.gradient };
                     egui::ScrollArea::vertical().max_height(ctx.content_rect().height() - 160.0).show(ui, |ui| {
                         crate::palette_editor::gradient_editor(ui, g);
@@ -628,19 +643,29 @@ impl eframe::App for App {
             },
         );
         let mut picked = None;
+        let mut layer_msg = None;
         egui::Panel::left("browser")
             .resizable(true)
             .default_size(280.0)
             .size_range(220.0..=480.0)
             .frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(10, 8)))
             .show(ui, |ui| {
-                picked = self.browser.show(ui, &self.doc.doc);
+                layer_msg = layers::show(ui, &mut self.doc.doc, &mut self.selection);
+                ui.add_space(8.0);
+                picked = self.browser.show(ui, &self.doc.doc, &self.selection);
             });
+        if let Some(m) = layer_msg {
+            self.notify(m);
+        }
         if let Some(id) = picked {
-            let d = with_formula(&self.doc.doc, &id);
-            self.doc.replace(d);
-            let title = rfr_core::formula::library::library().get(&id).map(|e| e.title.clone()).unwrap_or(id);
-            self.notify(format!("Formula: {title} (Ctrl+Z goes back)"));
+            match with_formula(&self.doc.doc, &self.selection, &id) {
+                Ok(d) => {
+                    self.doc.replace(d);
+                    let title = rfr_core::formula::library::library().get(&id).map(|e| e.title.clone()).unwrap_or(id);
+                    self.notify(format!("Formula: {title} (Ctrl+Z goes back)"));
+                }
+                Err(e) => self.warn(e),
+            }
         }
         let mut actions = Vec::new();
         egui::Panel::right("inspector")
@@ -649,7 +674,7 @@ impl eframe::App for App {
             .size_range(300.0..=540.0)
             .frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(12, 10)))
             .show(ui, |ui| {
-                actions = inspector::show(ui, &mut self.doc.doc);
+                actions = inspector::show(ui, &mut self.doc.doc, &self.selection);
             });
         for a in actions {
             match a {
@@ -659,12 +684,13 @@ impl eframe::App for App {
                     self.notify("Click a point in the view to see its Julia set");
                 }
                 InspectorAction::Julia(on) => {
-                    let seed = if on { self.doc.doc.active_layer().map(|l| l.seed) } else { None };
-                    if let Some(m) = self.viewport.set_julia(&mut self.doc.doc, seed) {
+                    let seed = if on { layers::target(&self.doc.doc, &self.selection).map(|l| l.seed) } else { None };
+                    if let Some(m) = self.viewport.set_julia(&mut self.doc.doc, &self.selection, seed) {
                         self.notify(m);
                     }
                 }
                 InspectorAction::EditGradient(inside) => self.gradient_window = Some(inside),
+                InspectorAction::Select(s) => self.selection = s,
             }
         }
         if self.show_explore {
@@ -689,7 +715,7 @@ impl eframe::App for App {
         self.viewport.paused = self.export.busy();
         let mut msg = None;
         egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::CANVAS)).show(ui, |ui| {
-            msg = self.viewport.show(ui, frame, &mut self.doc.doc, &self.prefs);
+            msg = self.viewport.show(ui, frame, &mut self.doc.doc, &self.selection, &self.prefs);
         });
         if let Some(m) = msg {
             self.notify(m);
@@ -707,6 +733,8 @@ impl eframe::App for App {
         if !ctx.input(|i| i.pointer.any_down()) {
             self.doc.commit();
         }
+        // Undo, open and delete can leave the selection pointing nowhere.
+        layers::fix(&self.doc.doc, &mut self.selection);
         let title = self.doc.title();
         if title != self.title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));

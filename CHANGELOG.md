@@ -4,6 +4,31 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
 
 ## [Unreleased]
 
+Stage 2: layers, coloring, transformations, gradients.
+
+### Added
+
+- Layers: any number of fractal layers and groups with 18 merge modes (Normal, Multiply,
+  Screen, Overlay, Soft/Hard light, Color dodge/burn, Darken, Lighten, Difference, Exclusion,
+  Add, Subtract, Hue, Saturation, Color, Luminosity), opacity and visibility; fractal masks
+  (brightness or alpha, invertible) for layers and groups; layer list with add, duplicate,
+  delete, move, group and ungroup.
+- 13 coloring algorithms as formulas: orbit traps (point, line, circle, cross, square, spiral,
+  astroid, heart), triangle inequality average, curvature and stripe averages, exponential
+  smoothing, binary decomposition, field lines, decomposition, Gaussian integer, Pickover
+  stalks, epsilon cross, closest approach and its iteration.
+- 11 transformations: affine, mirror, kaleidoscope, polar coordinates, circle inversion,
+  Möbius, Riemann sphere, tiling, twirl, ripple, Droste spiral; several per layer, in order.
+- Gradients with an opacity curve; solid colors with opacity; background color with opacity
+  (transparent PNG export, checkerboard in the view).
+- Gradient import (.ugr, .map, .ggr, .gpl, .cpt) and export (.ugr, .map, .ggr).
+- Color cycling in the view (View › Cycle colors, play button).
+- rfr-cli formulas --check also checks coloring (.ucl) and transformation (.uxf) files.
+
+### Changed
+
+- Documents are version 2 (version 1 files open unchanged).
+
 ## [0.2.0] - 2026-11-25
 
 Stage 1: escape-time core and viewer.

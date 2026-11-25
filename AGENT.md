@@ -40,9 +40,9 @@ next concrete steps are in `TODO.md`. Siblings with code to reuse: `../RWildFire
 
 | Path | Content |
 |------|---------|
-| `crates/rfr-core` | `formula/` (`parse.rs` lexer and parsers for UFM syntax and FRM-like v1, `ast.rs`, `check.rs` names/types → `ir.rs`, `cpu.rs` closures generic over the scalar, `library.rs` bundled sets), `formulas/` (`rfract/rfract.ufm` built-ins, `fractalpark/` bundled set, `tools/import_fractalpark.py`), `math/` (`scalar.rs` f64 and dual numbers, `complex.rs` stdlib), `doc.rs` (.rfr model), `gradient.rs` (OKLab gradients, LUT), `palette.rs` (generator, from RMandelbulb3D), `render/` (`mod.rs` plan, sample positions, coloring math, precision; `cpu.rs` reference renderer; `oidn.rs`), `io/` (.rfr, PNG with document), `paths.rs` |
-| `crates/rfr-gpu` | `codegen.rs` (IR → WGSL), `wgsl/` (`scalar_f32`, `scalar_dual`, `scalar_df64` layers, `cstd.wgsl` complex stdlib, `kernel.wgsl`, `display.wgsl`), `renderer.rs` (progressive bands, async compile, readback); `tests/shaders.rs` (all formulas validate, GPU/CPU parity) |
-| `crates/rfr-app` | egui app: `app.rs` (layout, menus, files, shortcuts), `viewport.rs` (preview, navigation, Julia pick), `inspector.rs`, `browser.rs` (formula list), `palette_editor.rs` (from RMandelbulb3D), `export.rs`, `doc.rs` (undo), `help.rs`/`manual.rs`, `theme.rs`, `widgets.rs`, `icons.rs`, `prefs.rs` |
+| `crates/rfr-core` | `formula/` (`parse.rs` lexer and parsers for UFM syntax and FRM-like v1, `ast.rs` (program kinds), `check.rs` names/types → `ir.rs`, `cpu.rs` closures generic over the scalar with coloring hooks and transformations, `library.rs` bundled sets), `formulas/` (`rfract/rfract.ufm` fractals, `rfract.ucl` colorings, `rfract.uxf` transformations, `fractalpark/` bundled set, `tools/import_fractalpark.py`), `math/` (`scalar.rs` f64 and dual numbers, `complex.rs` stdlib), `doc.rs` (.rfr model v2: layer tree, merge modes, masks), `gradient.rs` (OKLab gradients, opacity, LUT), `gradient_io.rs` (.ugr/.map/.ggr/.gpl/.cpt), `palette.rs` (generator, from RMandelbulb3D), `render/` (`mod.rs` plan tree, sample positions, coloring math, precision; `composite.rs` merge modes; `cpu.rs` reference renderer; `oidn.rs`), `io/` (.rfr, PNG with document), `paths.rs` |
+| `crates/rfr-gpu` | `codegen.rs` (layer plan → WGSL: fractal, transformations, colorings with local prefixes and parameter bases), `wgsl/` (`scalar_f32`, `scalar_dual`, `scalar_df64` layers, `cstd.wgsl` complex stdlib, `blend.wgsl` merge modes, `kernel.wgsl` layer kernel, `composite.wgsl` fill/merge/accumulate, `display.wgsl`), `renderer.rs` (op schedule with scratch slots, per-layer pipelines and buffers, progressive bands, readback); `tests/shaders.rs` (all programs validate, GPU/CPU parity incl. layers) |
+| `crates/rfr-app` | egui app: `app.rs` (layout, menus, files, shortcuts), `layers.rs` (layer tree, selection), `viewport.rs` (preview, navigation, Julia pick, color cycling), `inspector.rs` (layer/mask/fractal/transformation/coloring settings), `browser.rs` (formula list), `palette_editor.rs` (from RMandelbulb3D; opacity, import/export), `export.rs`, `doc.rs` (undo), `help.rs`/`manual.rs`, `theme.rs`, `widgets.rs`, `icons.rs`, `prefs.rs` |
 | `crates/rfr-cli` | Command line (`render`, `formulas`, `formulas --check`, `info`) |
 | `docs/manual` | User manual: `NN-*.md` chapters, `images/`, `manual.css` |
 | `tools/` | `release.py`, `package.py`, `fetch_oidn.py`, `build_manual.py`, `make_icon.py`, `import_fractalpark.py` |
@@ -75,6 +75,15 @@ cargo fmt --all --check
 - The shader signature is the program, the chosen functions and the mode; parameter values,
   view and coloring are buffers (no recompiles while editing).
 - `rfr-cli formulas --check _dev/<UFM folder>` reports how much of the UFM database compiles.
+- Colorings and transformations are programs of the same IR (`ProgramKind`): colorings run
+  `init` after the fractal's init, `loop` after every iteration that continues, `final` at the
+  end, and write `#index`/`#solid`; transformations change `#pixel` (local slot 0) before the
+  fractal. The CPU (`render/cpu.rs` `LayerK::eval`) and the GPU kernel (`codegen::kernel`) run
+  them in the same order.
+- Layers: `Plan` is a tree (`Node::Layer`/`Group`, masks); `Plan::layers()` is the render order
+  (mask before its layer) that `rfr_gpu::renderer::schedule` and `CpuRenderer` share.
+  Compositing (`render/composite.rs`, `wgsl/blend.wgsl`) works on sRGB-encoded colors with
+  straight alpha; the image accumulates premultiplied linear RGBA.
 
 ## Design rules (from PLAN.md)
 

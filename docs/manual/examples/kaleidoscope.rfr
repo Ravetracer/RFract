@@ -1,0 +1,5 @@
+{"version":2,"image":{"width":960,"height":540,"samples":64,"background":[0,0,0,1]},"view":{"center":["0","0"],"radius":1.2,"rotation":0},
+ "layers":[{"name":"Julia","formula":"rfract:Mandelbrot","max_iter":600,"julia":true,"seed":[-0.7269,0.1889],
+  "transforms":[{"formula":"rfract-transform:Kaleidoscope","params":{"n":8,"mirror":true},"enabled":true}],
+  "outside_method":"formula","outside":{"formula":"rfract-coloring:StripeAverage","params":{"stripes":6},"transfer":"linear","density":1.0,"offset":0.2},
+  "inside_method":"formula","inside":{"formula":"rfract-coloring:Bof60","params":{"scale":2},"transfer":"linear","density":1.0,"gradient":{"stops":[{"pos":0,"color":[0.0,0.0,0.0]},{"pos":0.5,"color":[0.2,0.6,1.0]},{"pos":1,"color":[0.0,0.0,0.0]}],"blend":"smooth"}}}]}

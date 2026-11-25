@@ -3,13 +3,21 @@
 The stages and their scope are in PLAN.md. This file holds the next concrete steps and wishes
 that come up along the way.
 
-## Next: stage 2 – layers, coloring, transformations, gradients
+## Next: stage 3 – formula language compatibility (UFM and FractInt)
 
-- [ ] Layer stack: groups, masks, merge modes, opacity, per-layer passes in the GPU renderer
-- [ ] Coloring library (orbit traps, TIA, curvature, stripes, …)
-- [ ] Transformations (pre/post)
-- [ ] Gradient import/export (.map, .ugr, .ggr, .gpl, .cpt), separate alpha curve
-- [ ] Live palette rotation in the viewer
+- [ ] UFM language: string comparisons of enum parameters, classes (UFM 5), more `#` symbols,
+      color type and direct coloring (`#color`)
+- [ ] `.upr` parameter files (layers, gradients, mappings)
+- [ ] FractInt `.frm` front end, built-in types, `.par`, `.map`
+- [ ] Formula editor and a browser for the user's formula folders
+- Baseline (local UFM database): 18.2 % of the fractal formulas, 16.4 % of the colorings and
+  34.7 % of the transformations compile.
+
+## Open points from stage 2
+
+- Coloring formulas cannot set colors directly yet (`#color`, needs the color type); histogram
+  and Lyapunov colorings are missing (histogram needs a pass over the whole image).
+- Post-transformations (on z after the iteration) are not there yet.
 
 ## Open points from stage 1
 

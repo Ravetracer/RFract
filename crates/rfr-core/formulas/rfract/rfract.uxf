@@ -355,13 +355,15 @@ Droste {
 ; Logarithmic spiral: zoom steps wind into a spiral (Escher's Droste effect).
 global:
   float lr = log(@ratio)
-  complex f = (1, lr / (2 * #pi) * @strands)
+  ; One turn around the center must equal one zoom step: log(z) times (1 - i ln(r) / 2pi)
+  ; moves a full turn (2 pi i) to 2 pi i + ln(r), which the tiling below makes seamless.
+  complex f = (1, -lr / (2 * #pi) * @strands)
 transform:
   complex p = #pixel - @center
   if |p| < 1e-60
     #solid = true
   else
-    complex w = log(p) / f
+    complex w = log(p) * f
     w = (real(w) - lr * floor(real(w) / lr), imag(w))
     #pixel = @center + exp(w) * @scale
   endif

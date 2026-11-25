@@ -7,6 +7,7 @@
 pub mod doc;
 pub mod formula;
 pub mod gradient;
+pub mod gradient_io;
 pub mod io;
 pub mod math;
 pub mod palette;

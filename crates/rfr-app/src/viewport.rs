@@ -13,6 +13,7 @@ use rfr_core::render::{Plan, Precision};
 use rfr_gpu::codegen::Mode;
 use rfr_gpu::{GpuContext, GpuRenderer};
 
+use crate::layers::{Selection, target, target_mut};
 use crate::prefs::Prefs;
 use crate::theme;
 
@@ -42,6 +43,12 @@ pub struct Viewport {
     /// The view before switching to Julia mode (restored when switching back).
     mandel_view: Option<View>,
     precision: Option<Precision>,
+    /// Color cycling: the gradients turn in the view (the document keeps its offsets).
+    pub cycling: bool,
+    /// Gradient turns per second.
+    pub cycle_speed: f64,
+    phase: f64,
+    last_tick: Instant,
 }
 
 /// The largest rectangle with aspect `aspect` (width / height) centered in `avail`.
@@ -88,6 +95,10 @@ impl Viewport {
             picking_julia: false,
             mandel_view: None,
             precision: None,
+            cycling: false,
+            cycle_speed: 0.1,
+            phase: 0.0,
+            last_tick: Instant::now(),
         }
     }
 
@@ -123,12 +134,13 @@ impl Viewport {
     }
 
     fn navigating(&self) -> bool {
-        self.navigating_until.is_some_and(|t| Instant::now() < t)
+        self.cycling || self.navigating_until.is_some_and(|t| Instant::now() < t)
     }
 
     /// Switches the active layer to Julia mode with `seed` (remembering the view) or back.
-    pub fn set_julia(&mut self, doc: &mut Document, seed: Option<[f64; 2]>) -> Option<String> {
-        let layer = doc.layers.iter_mut().find(|l| l.visible)?;
+    pub fn set_julia(&mut self, doc: &mut Document, sel: &Selection, seed: Option<[f64; 2]>) -> Option<String> {
+        let view = doc.view.clone();
+        let layer = target_mut(doc, sel)?;
         let has_julia = rfr_core::formula::library::library().get(&layer.formula).and_then(|e| e.program.as_ref().ok()).is_some_and(|p| p.has_julia);
         if !has_julia {
             return Some("This formula has no Julia mode".into());
@@ -136,7 +148,7 @@ impl Viewport {
         match seed {
             Some(s) => {
                 if !layer.julia {
-                    self.mandel_view = Some(doc.view.clone());
+                    self.mandel_view = Some(view);
                 }
                 layer.julia = true;
                 layer.seed = s;
@@ -153,7 +165,7 @@ impl Viewport {
         }
     }
 
-    pub fn show(&mut self, ui: &mut Ui, frame: &eframe::Frame, doc: &mut Document, prefs: &Prefs) -> Option<String> {
+    pub fn show(&mut self, ui: &mut Ui, frame: &eframe::Frame, doc: &mut Document, sel: &Selection, prefs: &Prefs) -> Option<String> {
         let mut message = None;
         let avail = ui.available_rect_before_wrap();
         let aspect = doc.image.width.max(1) as f32 / doc.image.height.max(1) as f32;
@@ -227,9 +239,9 @@ impl Viewport {
             let at = plane_at(&doc.view, rect, p);
             if resp.clicked() && (mods.alt || self.picking_julia) {
                 let picking = std::mem::replace(&mut self.picking_julia, false);
-                let julia_on = doc.layers.iter().find(|l| l.visible).is_some_and(|l| l.julia);
+                let julia_on = target(doc, sel).is_some_and(|l| l.julia);
                 // Alt-click in Julia mode goes back; the pick mode always picks a new seed.
-                message = if julia_on && !picking { self.set_julia(doc, None) } else { self.set_julia(doc, Some(at)) };
+                message = if julia_on && !picking { self.set_julia(doc, sel, None) } else { self.set_julia(doc, sel, Some(at)) };
                 touched = true;
             } else if resp.double_clicked() {
                 doc.view.radius *= 0.5;
@@ -283,11 +295,20 @@ impl Viewport {
     }
 
     fn update_gpu(&mut self, frame: &eframe::Frame, doc: &Document, size: (u32, u32), fast: bool, prefs: &Prefs) -> Option<egui::TextureId> {
+        let now = Instant::now();
+        let dt = now.duration_since(self.last_tick).as_secs_f64().min(0.1);
+        self.last_tick = now;
+        if self.cycling {
+            self.phase = (self.phase + dt * self.cycle_speed).rem_euclid(1.0);
+        }
         let gpu = self.gpu.as_mut()?;
-        let changed = self.last.as_ref().is_none_or(|(d, s, f)| d != doc || *s != size || *f != fast);
+        let changed = self.cycling || self.last.as_ref().is_none_or(|(d, s, f)| d != doc || *s != size || *f != fast);
         if changed {
             match Plan::sized(doc, size.0, size.1) {
-                Ok(plan) => {
+                Ok(mut plan) => {
+                    if self.cycling {
+                        plan.shift_colors(self.phase);
+                    }
                     self.precision = Some(plan.precision());
                     gpu.set_plan(&plan);
                     self.plan_error = None;

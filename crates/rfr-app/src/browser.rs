@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
-//! The left panel: the layer (one in this version) and the formula browser with a search.
+//! The formula browser in the left panel (below the layer tree), with a search. A click puts
+//! the formula on the selected layer or mask.
 
 use egui::{RichText, Ui};
-use rfr_core::doc::Document;
+use rfr_core::doc::{Document, LayerKind};
 use rfr_core::formula::library::{Entry, Set, library};
 
+use crate::layers::{Selection, target, target_mut};
 use crate::{icons, theme};
 
 #[derive(Default)]
@@ -31,21 +33,9 @@ fn item(ui: &mut Ui, e: &Entry, current: &str) -> bool {
 
 impl Browser {
     /// Draws the panel; returns the formula id the user picked.
-    pub fn show(&mut self, ui: &mut Ui, doc: &Document) -> Option<String> {
+    pub fn show(&mut self, ui: &mut Ui, doc: &Document, sel: &Selection) -> Option<String> {
         let mut picked = None;
-        let current = doc.active_layer().map(|l| l.formula.clone()).unwrap_or_default();
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(icons::LAYERS).color(theme::ACCENT).size(theme::fs(15.0)));
-            ui.label(RichText::new("Layer").strong());
-        });
-        if let Some(l) = doc.active_layer() {
-            let title = library().get(&l.formula).map(|e| e.title.clone()).unwrap_or_else(|| l.formula.clone());
-            egui::Frame::new().fill(theme::SURFACE).corner_radius(6).inner_margin(6).show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.label(RichText::new(&title).strong()).on_hover_text("The active layer's formula; more layers come with the layer stack");
-                ui.label(RichText::new(if l.julia { "Julia mode" } else { "Mandelbrot mode" }).size(theme::fs(11.0)).color(theme::TEXT_MUTED));
-            });
-        }
+        let current = target(doc, sel).map(|l| l.formula.clone()).unwrap_or_default();
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             ui.label(RichText::new(icons::FUNCTION).color(theme::ACCENT).size(theme::fs(15.0)));
@@ -111,19 +101,30 @@ impl Browser {
     }
 }
 
-/// The document with formula `id` on the active layer: its parameters reset, its suggested view
-/// and iterations; colors and image settings stay.
-pub fn with_formula(doc: &Document, id: &str) -> Document {
+/// The document with formula `id` on the selected layer (or mask): its parameters reset, its
+/// suggested iterations; colors, transformations and image settings stay. A top-level layer
+/// also takes the formula's suggested view.
+pub fn with_formula(doc: &Document, sel: &Selection, id: &str) -> Result<Document, String> {
     let mut d = doc.clone();
     let fresh = Document::for_formula(id);
-    d.view = fresh.view;
-    if let (Some(l), Some(f)) = (d.layers.iter_mut().find(|l| l.visible), fresh.layers.first()) {
-        l.formula = f.formula.clone();
-        l.params.clear();
-        l.max_iter = f.max_iter;
-        l.julia = f.julia;
-        l.seed = if f.julia { f.seed } else { l.seed };
+    let f = fresh.layers.first().ok_or("unknown formula")?;
+    let is_bottom = sel.path == [0] && !sel.mask;
+    let l = target_mut(&mut d, sel).ok_or("select a layer first")?;
+    if l.kind == LayerKind::Group {
+        return Err("Select a fractal layer to give it a formula".into());
+    }
+    l.formula = f.formula.clone();
+    l.params.clear();
+    l.max_iter = f.max_iter;
+    l.julia = f.julia;
+    if f.julia {
+        l.seed = f.seed;
+    }
+    if !sel.mask && l.name.starts_with("Layer") || l.name == "Mandelbrot" {
         l.name = f.name.clone();
     }
-    d
+    if is_bottom || doc.layers.len() == 1 {
+        d.view = fresh.view;
+    }
+    Ok(d)
 }

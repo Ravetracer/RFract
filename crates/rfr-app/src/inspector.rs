@@ -1,16 +1,20 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
-//! The right panel: settings of the active layer (formula parameters, iterations, Julia mode,
-//! outside and inside coloring), the view and the image.
+//! The right panel: settings of the selected layer, group or mask (merge mode, opacity, mask;
+//! formula parameters, iterations, Julia mode, transformations, outside and inside coloring),
+//! the view and the image.
+
+use std::collections::BTreeMap;
 
 use egui::{RichText, Ui};
-use rfr_core::doc::{Coloring, Document, InsideMethod, OutsideMethod, Transfer};
-use rfr_core::formula::ir::{Func, Param};
+use rfr_core::doc::{Coloring, Document, InsideMethod, Layer, LayerKind, MaskSource, MergeMode, OutsideMethod, Transfer, TransformRef};
+use rfr_core::formula::ir::{Func, Param, Program};
 use rfr_core::formula::library::library;
 use rfr_core::formula::{ParamKind, ParamValue};
 use rfr_core::render::resolve_value;
 
-use crate::{theme, widgets};
+use crate::layers::{Selection, target_mut};
+use crate::{icons, theme, widgets};
 
 /// What the inspector asks the app to do.
 pub enum Action {
@@ -21,6 +25,8 @@ pub enum Action {
     Julia(bool),
     /// Open the gradient editor of the outside (false) or inside (true) coloring.
     EditGradient(bool),
+    /// Select this item in the layer tree.
+    Select(Selection),
 }
 
 /// Function names offered for function parameters.
@@ -28,7 +34,7 @@ fn func_names() -> impl Iterator<Item = &'static str> {
     Func::UNARY.iter().map(|(n, _)| *n).filter(|n| *n != "identity")
 }
 
-fn param_widget(ui: &mut Ui, p: &Param, value: &mut ParamValue) -> bool {
+fn param_widget(ui: &mut Ui, salt: &str, p: &Param, value: &mut ParamValue) -> bool {
     let tip = if p.hint.is_empty() { p.caption.clone() } else { p.hint.clone() };
     widgets::label(ui, &p.caption, &tip);
     let before = value.clone();
@@ -49,7 +55,7 @@ fn param_widget(ui: &mut Ui, p: &Param, value: &mut ParamValue) -> bool {
         }
         (ParamKind::Int, ParamValue::Int(v)) if !p.items.is_empty() => {
             let i = (*v).clamp(0, p.items.len() as i64 - 1) as usize;
-            egui::ComboBox::from_id_salt(("param-enum", &p.name)).selected_text(&p.items[i]).show_ui(ui, |ui| {
+            egui::ComboBox::from_id_salt((salt, "param-enum", &p.name)).selected_text(&p.items[i]).show_ui(ui, |ui| {
                 for (k, item) in p.items.iter().enumerate() {
                     ui.selectable_value(v, k as i64, item);
                 }
@@ -71,7 +77,7 @@ fn param_widget(ui: &mut Ui, p: &Param, value: &mut ParamValue) -> bool {
             ui.checkbox(b, "").on_hover_text(&tip);
         }
         (ParamKind::Func, ParamValue::Func(f)) => {
-            egui::ComboBox::from_id_salt(("param-func", &p.name)).selected_text(f.as_str()).height(400.0).show_ui(ui, |ui| {
+            egui::ComboBox::from_id_salt((salt, "param-func", &p.name)).selected_text(f.as_str()).height(400.0).show_ui(ui, |ui| {
                 for n in func_names() {
                     ui.selectable_value(f, n.to_string(), n);
                 }
@@ -83,6 +89,26 @@ fn param_widget(ui: &mut Ui, p: &Param, value: &mut ParamValue) -> bool {
     }
     ui.end_row();
     *value != before
+}
+
+/// Controls for every parameter of `prog`, storing changed values in `map`.
+fn params_ui(ui: &mut Ui, salt: &str, prog: &Program, map: &mut BTreeMap<String, ParamValue>) {
+    widgets::grid(ui, &format!("{salt}-params"), |ui| {
+        for param in &prog.params {
+            let mut v = resolve_value(param.kind, &param.default, map.get(&param.name));
+            if param_widget(ui, salt, param, &mut v) {
+                map.insert(param.name.clone(), v);
+            }
+        }
+    });
+}
+
+fn solid_color(ui: &mut Ui, tip: &str, c: &mut Coloring) {
+    widgets::color(ui, "Color", tip, &mut c.solid);
+    let mut a = c.solid_alpha as f64;
+    if widgets::slider(ui, "Opacity", "Opacity of the solid color (0 leaves these points transparent)", &mut a, 0.0..=1.0, 1.0).changed() {
+        c.solid_alpha = a as f32;
+    }
 }
 
 fn coloring(ui: &mut Ui, id: &str, c: &mut Coloring, inside: bool, actions: &mut Vec<Action>) {
@@ -115,214 +141,397 @@ fn coloring(ui: &mut Ui, id: &str, c: &mut Coloring, inside: bool, actions: &mut
     widgets::slider(ui, "Offset", "Shifts the colors along the gradient (1 is a full turn)", &mut c.offset, 0.0..=1.0, 0.0);
 }
 
-/// Draws the inspector; returns requests for the app.
-pub fn show(ui: &mut Ui, doc: &mut Document) -> Vec<Action> {
-    let mut actions = Vec::new();
-    let Some(li) = doc.layers.iter().position(|l| l.visible) else {
-        ui.label("No visible layer.");
-        return actions;
-    };
-    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-        let layer = &mut doc.layers[li];
-        let entry = library().get(&layer.formula);
-        // ---- formula ----
-        let sec = widgets::section(ui, "Formula", true);
-        if sec.reset {
-            layer.params.clear();
-            actions.push(Action::Message("Formula parameters reset to their defaults".into()));
-        }
-        if sec.open {
-            match entry {
-                Some(e) => {
-                    ui.label(RichText::new(&e.title).strong().size(theme::fs(14.5)));
-                    ui.label(RichText::new(format!("{} · {}", e.set.label(), e.family)).size(theme::fs(11.0)).color(theme::TEXT_MUTED))
-                        .on_hover_text(&e.id);
-                }
-                None => {
-                    ui.label(RichText::new(format!("Unknown formula '{}'", layer.formula)).color(theme::WARN));
+/// The coloring formula picker and its parameters (Formula method).
+fn coloring_formula(ui: &mut Ui, id: &str, c: &mut Coloring) {
+    let current = library().get(&c.formula).map(|e| e.title.clone()).unwrap_or_else(|| c.formula.clone());
+    widgets::grid(ui, &format!("{id}-formula"), |ui| {
+        widgets::label(ui, "Algorithm", "The coloring formula; it runs along every orbit and picks the gradient position");
+        egui::ComboBox::from_id_salt((id, "coloring-formula")).selected_text(current).height(400.0).width(200.0).show_ui(ui, |ui| {
+            for e in library().colorings() {
+                if ui.selectable_label(c.formula == e.id, &e.title).clicked() && c.formula != e.id {
+                    c.formula = e.id.clone();
+                    c.params.clear();
+                    // Coloring formulas give positions of about 0..1.
+                    c.transfer = Transfer::Linear;
+                    c.density = 1.0;
                 }
             }
-            let program = entry.and_then(|e| e.program.as_ref().ok()).cloned();
-            widgets::grid(ui, "formula-params", |ui| {
-                if let Some(p) = &program {
-                    for param in &p.params {
-                        let mut v = resolve_value(param.kind, &param.default, layer.params.get(&param.name));
-                        if param_widget(ui, param, &mut v) {
-                            layer.params.insert(param.name.clone(), v);
-                        }
-                    }
+        });
+        ui.end_row();
+    });
+    if let Some(p) = library().get(&c.formula).and_then(|e| e.program.as_ref().ok()) {
+        params_ui(ui, &format!("{id}-coloring"), p, &mut c.params);
+    }
+}
+
+fn layer_settings(ui: &mut Ui, l: &mut Layer, sel: &Selection, actions: &mut Vec<Action>) {
+    let sec = widgets::section(ui, if l.kind == LayerKind::Group { "Group" } else { "Layer" }, false);
+    if !sec.open {
+        return;
+    }
+    widgets::grid(ui, "layer-grid", |ui| {
+        widgets::label(ui, "Name", "Name of the layer in the layer list");
+        ui.add(egui::TextEdit::singleline(&mut l.name).desired_width(f32::INFINITY)).on_hover_text("Name of the layer");
+        ui.end_row();
+        widgets::label(ui, "Merge", "How the layer combines with the layers below it");
+        egui::ComboBox::from_id_salt("merge-mode")
+            .selected_text(l.merge.label())
+            .height(500.0)
+            .show_ui(ui, |ui| {
+                for m in MergeMode::ALL {
+                    ui.selectable_value(&mut l.merge, m, m.label()).on_hover_text(m.tip());
                 }
-                widgets::label(ui, "Iterations", "Most iterations per point. Deep views and thin structures need more; more iterations take longer");
-                let r = ui.add(egui::Slider::new(&mut layer.max_iter, 10..=100_000).logarithmic(true).clamping(egui::SliderClamping::Never));
-                r.on_hover_text("Most iterations per point (double-click: 500)");
-                ui.end_row();
+            })
+            .response
+            .on_hover_text(l.merge.tip());
+        ui.end_row();
+        widgets::slider(ui, "Opacity", "How strongly the layer covers what is below (0 hides it)", &mut l.opacity, 0.0..=1.0, 1.0);
+    });
+    match &mut l.mask {
+        Some(m) => {
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut m.enabled, "Mask").on_hover_text("Use the mask: its fractal's brightness (or alpha) limits where the layer shows");
+                ui.checkbox(&mut m.invert, "Invert").on_hover_text("Show the layer where the mask is dark instead of bright");
+                egui::ComboBox::from_id_salt("mask-source")
+                    .selected_text(if m.source == MaskSource::Luminance { "Brightness" } else { "Alpha" })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut m.source, MaskSource::Luminance, "Brightness")
+                            .on_hover_text("The mask's brightness (times its alpha) decides");
+                        ui.selectable_value(&mut m.source, MaskSource::Alpha, "Alpha")
+                            .on_hover_text("The mask's alpha decides (transparent gradient parts)");
+                    });
             });
-            if let Some(p) = &program
-                && p.has_julia
+            if ui
+                .button(format!("{}  Edit the mask", icons::MASK))
+                .on_hover_text("Select the mask's fractal to change its formula and colors")
+                .clicked()
             {
-                widgets::grid(ui, "formula-julia", |ui| {
-                    widgets::label(
-                        ui,
-                        "Julia mode",
-                        "Iterate every point with the fixed seed below instead of the point itself (the Julia set of the seed)",
-                    );
-                    let mut on = layer.julia;
-                    if ui.checkbox(&mut on, "").on_hover_text("Julia set of the seed (J in the view switches)").changed() {
-                        actions.push(Action::Julia(on));
-                    }
-                    ui.end_row();
-                    if layer.julia {
-                        widgets::label(ui, "Seed", "The constant of the Julia set");
-                        ui.horizontal(|ui| {
-                            ui.add(egui::DragValue::new(&mut layer.seed[0]).speed(0.001).max_decimals(12).prefix("re "))
-                                .on_hover_text("Real part of the seed");
-                            ui.add(egui::DragValue::new(&mut layer.seed[1]).speed(0.001).max_decimals(12).prefix("im "))
-                                .on_hover_text("Imaginary part of the seed");
-                        });
-                        ui.end_row();
-                    }
-                });
-                if ui
-                    .button("Pick a Julia seed in the view")
-                    .on_hover_text("The next click in the view shows the Julia set of that point (Alt-click does it directly)")
-                    .clicked()
-                {
-                    actions.push(Action::PickJulia);
-                }
+                actions.push(Action::Select(Selection { path: sel.path.clone(), mask: true }));
             }
         }
-        // ---- outside ----
-        let sec = widgets::section(ui, "Outside", true);
-        if sec.reset {
-            let d = rfr_core::doc::Layer::default();
-            layer.outside_method = d.outside_method;
-            layer.outside = d.outside;
+        None => {
+            if ui.button(format!("{}  Add a mask", icons::MASK)).on_hover_text("A fractal whose brightness limits where this layer shows").clicked() {
+                l.mask = Some(rfr_core::doc::Mask::default());
+                actions.push(Action::Select(Selection { path: sel.path.clone(), mask: true }));
+            }
         }
-        if sec.open {
-            widgets::segmented(
-                ui,
-                &mut layer.outside_method,
-                &[
-                    (OutsideMethod::Smooth, "Smooth", "Continuous iteration count: smooth color bands"),
-                    (OutsideMethod::Iterations, "Bands", "Iteration count: one band per iteration"),
-                    (
-                        OutsideMethod::Distance,
-                        "Distance",
-                        "Estimated distance to the set (relative to the pixel size): bright thin filaments; deep views fall back to Smooth",
-                    ),
-                    (OutsideMethod::Solid, "Solid", "One color"),
-                ],
-            );
-            widgets::grid(ui, "outside-grid", |ui| {
-                if layer.outside_method == OutsideMethod::Solid {
-                    widgets::color(ui, "Color", "Color of every point that escapes", &mut layer.outside.solid);
-                } else {
-                    coloring(ui, "outside", &mut layer.outside, false, &mut actions);
+    }
+}
+
+fn transforms_ui(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
+    let sec = widgets::section(ui, "Transformations", false);
+    if !sec.open {
+        return;
+    }
+    if l.transforms.is_empty() {
+        ui.label(RichText::new("None: the points go to the formula unchanged.").size(theme::fs(11.5)).color(theme::TEXT_MUTED));
+    }
+    let mut remove = None;
+    let mut swap = None;
+    let n = l.transforms.len();
+    for (k, t) in l.transforms.iter_mut().enumerate() {
+        let title = library().get(&t.formula).map(|e| e.title.clone()).unwrap_or_else(|| t.formula.clone());
+        egui::Frame::new().fill(theme::SURFACE).corner_radius(6).inner_margin(6).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut t.enabled, RichText::new(&title).strong()).on_hover_text("Apply this transformation");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if widgets::icon_button(ui, icons::X, "Remove this transformation").clicked() {
+                        remove = Some(k);
+                    }
+                    if k + 1 < n && widgets::icon_button(ui, icons::ARROW_DOWN, "Apply later").clicked() {
+                        swap = Some((k, k + 1));
+                    }
+                    if k > 0 && widgets::icon_button(ui, icons::ARROW_UP, "Apply earlier").clicked() {
+                        swap = Some((k, k - 1));
+                    }
+                });
+            });
+            if let Some(p) = library().get(&t.formula).and_then(|e| e.program.as_ref().ok()) {
+                params_ui(ui, &format!("transform-{k}"), p, &mut t.params);
+            }
+        });
+    }
+    if let Some(k) = remove {
+        l.transforms.remove(k);
+    }
+    if let Some((a, b)) = swap {
+        l.transforms.swap(a, b);
+    }
+    ui.menu_button(format!("{}  Add a transformation", icons::PLUS), |ui| {
+        for e in library().transforms() {
+            if ui.button(&e.title).on_hover_text("Changes the points before the formula runs; transformations apply in order").clicked() {
+                l.transforms.push(TransformRef { formula: e.id.clone(), ..TransformRef::default() });
+                actions.push(Action::Message(format!("Added the transformation {}", e.title)));
+                ui.close();
+            }
+        }
+    })
+    .response
+    .on_hover_text("Bend, mirror or repeat the plane before the fractal is computed");
+}
+
+fn fractal_sections(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
+    let entry = library().get(&l.formula);
+    let sec = widgets::section(ui, "Formula", true);
+    if sec.reset {
+        l.params.clear();
+        actions.push(Action::Message("Formula parameters reset to their defaults".into()));
+    }
+    if sec.open {
+        match entry {
+            Some(e) => {
+                ui.label(RichText::new(&e.title).strong().size(theme::fs(14.5)));
+                ui.label(RichText::new(format!("{} · {}", e.set.label(), e.family)).size(theme::fs(11.0)).color(theme::TEXT_MUTED))
+                    .on_hover_text(&e.id);
+            }
+            None => {
+                ui.label(RichText::new(format!("Unknown formula '{}'", l.formula)).color(theme::WARN));
+            }
+        }
+        let program = entry.and_then(|e| e.program.as_ref().ok()).cloned();
+        if let Some(p) = &program {
+            params_ui(ui, "formula", p, &mut l.params);
+        }
+        widgets::grid(ui, "formula-iter", |ui| {
+            widgets::label(ui, "Iterations", "Most iterations per point. Deep views and thin structures need more; more iterations take longer");
+            ui.add(egui::Slider::new(&mut l.max_iter, 10..=100_000).logarithmic(true).clamping(egui::SliderClamping::Never))
+                .on_hover_text("Most iterations per point");
+            ui.end_row();
+        });
+        if program.as_ref().is_some_and(|p| p.has_julia) {
+            widgets::grid(ui, "formula-julia", |ui| {
+                widgets::label(
+                    ui,
+                    "Julia mode",
+                    "Iterate every point with the fixed seed below instead of the point itself (the Julia set of the seed)",
+                );
+                let mut on = l.julia;
+                if ui.checkbox(&mut on, "").on_hover_text("Julia set of the seed (J in the view switches)").changed() {
+                    actions.push(Action::Julia(on));
+                }
+                ui.end_row();
+                if l.julia {
+                    widgets::label(ui, "Seed", "The constant of the Julia set");
+                    ui.horizontal(|ui| {
+                        ui.add(egui::DragValue::new(&mut l.seed[0]).speed(0.001).max_decimals(12).prefix("re "))
+                            .on_hover_text("Real part of the seed");
+                        ui.add(egui::DragValue::new(&mut l.seed[1]).speed(0.001).max_decimals(12).prefix("im "))
+                            .on_hover_text("Imaginary part of the seed");
+                    });
+                    ui.end_row();
                 }
             });
+            if ui
+                .button("Pick a Julia seed in the view")
+                .on_hover_text("The next click in the view shows the Julia set of that point (Alt-click does it directly)")
+                .clicked()
+            {
+                actions.push(Action::PickJulia);
+            }
         }
-        // ---- inside ----
-        let sec = widgets::section(ui, "Inside", true);
-        if sec.reset {
-            let d = rfr_core::doc::Layer::default();
-            layer.inside_method = d.inside_method;
-            layer.inside = d.inside;
+    }
+    transforms_ui(ui, l, actions);
+    let sec = widgets::section(ui, "Outside", true);
+    if sec.reset {
+        let d = Layer::default();
+        l.outside_method = d.outside_method;
+        l.outside = d.outside;
+    }
+    if sec.open {
+        widgets::segmented(
+            ui,
+            &mut l.outside_method,
+            &[
+                (OutsideMethod::Smooth, "Smooth", "Continuous iteration count: smooth color bands"),
+                (OutsideMethod::Iterations, "Bands", "Iteration count: one band per iteration"),
+                (
+                    OutsideMethod::Distance,
+                    "Distance",
+                    "Estimated distance to the set (relative to the pixel size): bright thin filaments; deep views fall back to Smooth",
+                ),
+                (OutsideMethod::Formula, "Formula", "A coloring algorithm (orbit traps, averages, decompositions, …)"),
+                (OutsideMethod::Solid, "Solid", "One color"),
+            ],
+        );
+        if l.outside_method == OutsideMethod::Formula {
+            coloring_formula(ui, "outside", &mut l.outside);
         }
-        if sec.open {
-            widgets::segmented(
-                ui,
-                &mut layer.inside_method,
-                &[
-                    (InsideMethod::Solid, "Solid", "One color for the set"),
-                    (InsideMethod::Magnitude, "Magnitude", "|z| after the last iteration"),
-                    (InsideMethod::Angle, "Angle", "Direction of z after the last iteration"),
-                ],
-            );
-            widgets::grid(ui, "inside-grid", |ui| {
-                if layer.inside_method == InsideMethod::Solid {
-                    widgets::color(ui, "Color", "Color of the points that never escape", &mut layer.inside.solid);
-                } else {
-                    coloring(ui, "inside", &mut layer.inside, true, &mut actions);
+        widgets::grid(ui, "outside-grid", |ui| {
+            if l.outside_method == OutsideMethod::Solid {
+                solid_color(ui, "Color of every point that escapes", &mut l.outside);
+            } else {
+                coloring(ui, "outside", &mut l.outside, false, actions);
+                if l.outside_method == OutsideMethod::Formula {
+                    solid_color(ui, "Color where the coloring formula marks points as solid", &mut l.outside);
                 }
-            });
+            }
+        });
+    }
+    let sec = widgets::section(ui, "Inside", true);
+    if sec.reset {
+        let d = Layer::default();
+        l.inside_method = d.inside_method;
+        l.inside = d.inside;
+    }
+    if sec.open {
+        widgets::segmented(
+            ui,
+            &mut l.inside_method,
+            &[
+                (InsideMethod::Solid, "Solid", "One color for the set"),
+                (InsideMethod::Magnitude, "Magnitude", "|z| after the last iteration"),
+                (InsideMethod::Angle, "Angle", "Direction of z after the last iteration"),
+                (InsideMethod::Formula, "Formula", "A coloring algorithm for the inside (orbit traps, closest approach, …)"),
+            ],
+        );
+        if l.inside_method == InsideMethod::Formula {
+            coloring_formula(ui, "inside", &mut l.inside);
         }
-        // ---- view ----
-        let sec = widgets::section(ui, "View", true);
-        if sec.reset
-            && let Some(e) = library().get(&doc.layers[li].formula)
+        widgets::grid(ui, "inside-grid", |ui| {
+            if l.inside_method == InsideMethod::Solid {
+                solid_color(ui, "Color of the points that never escape", &mut l.inside);
+            } else {
+                coloring(ui, "inside", &mut l.inside, true, actions);
+                if l.inside_method == InsideMethod::Formula {
+                    solid_color(ui, "Color where the coloring formula marks points as solid", &mut l.inside);
+                }
+            }
+        });
+    }
+}
+
+fn view_and_image(ui: &mut Ui, doc: &mut Document, sel: &Selection) {
+    let sec = widgets::section(ui, "View", true);
+    if sec.reset {
+        let formula = crate::layers::target(doc, sel).map(|l| (l.formula.clone(), l.julia));
+        if let Some((f, julia)) = formula
+            && let Some(e) = library().get(&f)
         {
-            doc.view.radius = e.view.radius;
-            doc.view.set_center(e.view.center);
+            doc.view.radius = if julia { 1.6 } else { e.view.radius };
+            doc.view.set_center(if julia { [0.0, 0.0] } else { e.view.center });
             doc.view.rotation = 0.0;
-            if doc.layers[li].julia {
-                doc.view.set_center([0.0, 0.0]);
-                doc.view.radius = 1.6;
+        }
+    }
+    if sec.open {
+        widgets::grid(ui, "view-grid", |ui| {
+            for (k, axis) in ["Center x", "Center y"].iter().enumerate() {
+                widgets::label(ui, axis, "Center of the view (any number of digits)");
+                let mut s = doc.view.center[k].clone();
+                let r = ui.add(egui::TextEdit::singleline(&mut s).desired_width(f32::INFINITY).font(egui::TextStyle::Monospace));
+                if r.changed() && s.trim().parse::<f64>().is_ok() {
+                    doc.view.center[k] = s.trim().to_string();
+                }
+                r.on_hover_text("Center of the view; type a number");
+                ui.end_row();
             }
-        }
-        if sec.open {
-            widgets::grid(ui, "view-grid", |ui| {
-                for (k, axis) in ["Center x", "Center y"].iter().enumerate() {
-                    widgets::label(ui, axis, "Center of the view (any number of digits)");
-                    let mut s = doc.view.center[k].clone();
-                    let r = ui.add(egui::TextEdit::singleline(&mut s).desired_width(f32::INFINITY).font(egui::TextStyle::Monospace));
-                    if r.changed() && s.trim().parse::<f64>().is_ok() {
-                        doc.view.center[k] = s.trim().to_string();
-                    }
-                    r.on_hover_text("Center of the view; type a number");
-                    ui.end_row();
-                }
-                widgets::label(ui, "Zoom", "Magnification: 1 shows about ±1.5 vertically");
-                let mut zoom = 1.5 / doc.view.radius;
-                let speed = zoom * 0.01;
-                let r = ui.add(egui::DragValue::new(&mut zoom).speed(speed).range(1e-6..=1e300).custom_formatter(|v, _| format!("{v:.4e}×")));
-                if r.changed() && zoom > 0.0 {
-                    doc.view.radius = 1.5 / zoom;
-                }
-                r.on_hover_text("Magnification (drag to change; the wheel in the view zooms at the cursor)");
-                ui.end_row();
-                let mut rot = if doc.view.rotation > 180.0 { doc.view.rotation - 360.0 } else { doc.view.rotation };
-                if widgets::slider(ui, "Rotation", "Rotation of the view in degrees (Ctrl-drag in the view)", &mut rot, -180.0..=180.0, 0.0).changed()
-                {
-                    doc.view.rotation = rot.rem_euclid(360.0);
-                }
-            });
-        }
-        // ---- image ----
-        let sec = widgets::section(ui, "Image", false);
-        if sec.open {
-            widgets::grid(ui, "image-grid", |ui| {
-                widgets::label(ui, "Size", "Size of exported images in pixels; the view shows this aspect ratio");
-                ui.horizontal(|ui| {
-                    ui.add(egui::DragValue::new(&mut doc.image.width).range(16..=32768).speed(4)).on_hover_text("Width in pixels");
-                    ui.label("×");
-                    ui.add(egui::DragValue::new(&mut doc.image.height).range(16..=32768).speed(4)).on_hover_text("Height in pixels");
-                    ui.menu_button("…", |ui| {
-                        for (w, h, name) in [
-                            (1280, 720, "HD 720p"),
-                            (1920, 1080, "Full HD"),
-                            (2560, 1440, "QHD"),
-                            (3840, 2160, "4K UHD"),
-                            (7680, 4320, "8K"),
-                            (1080, 1080, "Square 1080"),
-                            (2160, 3840, "4K portrait"),
-                            (2480, 3508, "A4 300 dpi"),
-                        ] {
-                            if ui.button(format!("{name}  {w} × {h}")).clicked() {
-                                doc.image.width = w;
-                                doc.image.height = h;
-                                ui.close();
-                            }
+            widgets::label(ui, "Zoom", "Magnification: 1 shows about ±1.5 vertically");
+            let mut zoom = 1.5 / doc.view.radius;
+            let speed = zoom * 0.01;
+            let r = ui.add(egui::DragValue::new(&mut zoom).speed(speed).range(1e-6..=1e300).custom_formatter(|v, _| format!("{v:.4e}×")));
+            if r.changed() && zoom > 0.0 {
+                doc.view.radius = 1.5 / zoom;
+            }
+            r.on_hover_text("Magnification (drag to change; the wheel in the view zooms at the cursor)");
+            ui.end_row();
+            let mut rot = if doc.view.rotation > 180.0 { doc.view.rotation - 360.0 } else { doc.view.rotation };
+            if widgets::slider(ui, "Rotation", "Rotation of the view in degrees (Ctrl-drag in the view)", &mut rot, -180.0..=180.0, 0.0).changed() {
+                doc.view.rotation = rot.rem_euclid(360.0);
+            }
+        });
+    }
+    let sec = widgets::section(ui, "Image", false);
+    if sec.open {
+        widgets::grid(ui, "image-grid", |ui| {
+            widgets::label(ui, "Size", "Size of exported images in pixels; the view shows this aspect ratio");
+            ui.horizontal(|ui| {
+                ui.add(egui::DragValue::new(&mut doc.image.width).range(16..=32768).speed(4)).on_hover_text("Width in pixels");
+                ui.label("×");
+                ui.add(egui::DragValue::new(&mut doc.image.height).range(16..=32768).speed(4)).on_hover_text("Height in pixels");
+                ui.menu_button("…", |ui| {
+                    for (w, h, name) in [
+                        (1280, 720, "HD 720p"),
+                        (1920, 1080, "Full HD"),
+                        (2560, 1440, "QHD"),
+                        (3840, 2160, "4K UHD"),
+                        (7680, 4320, "8K"),
+                        (1080, 1080, "Square 1080"),
+                        (2160, 3840, "4K portrait"),
+                        (2480, 3508, "A4 300 dpi"),
+                    ] {
+                        if ui.button(format!("{name}  {w} × {h}")).clicked() {
+                            doc.image.width = w;
+                            doc.image.height = h;
+                            ui.close();
                         }
-                    })
-                    .response
-                    .on_hover_text("Common sizes");
-                });
-                ui.end_row();
-                widgets::label(ui, "Samples", "Samples per pixel of exported images: more samples give smoother edges (anti-aliasing)");
-                ui.add(egui::Slider::new(&mut doc.image.samples, 1..=4096).logarithmic(true)).on_hover_text("Samples per pixel for exports");
-                ui.end_row();
+                    }
+                })
+                .response
+                .on_hover_text("Common sizes");
             });
+            ui.end_row();
+            widgets::label(ui, "Samples", "Samples per pixel of exported images: more samples give smoother edges (anti-aliasing)");
+            ui.add(egui::Slider::new(&mut doc.image.samples, 1..=4096).logarithmic(true)).on_hover_text("Samples per pixel for exports");
+            ui.end_row();
+            let mut bg = [doc.image.background[0], doc.image.background[1], doc.image.background[2]];
+            if widgets::color(ui, "Background", "Color below all layers", &mut bg).changed() {
+                doc.image.background[0] = bg[0];
+                doc.image.background[1] = bg[1];
+                doc.image.background[2] = bg[2];
+            }
+            let mut a = doc.image.background[3] as f64;
+            if widgets::slider(
+                ui,
+                "Background opacity",
+                "0 makes the background transparent: exported PNGs keep the transparency",
+                &mut a,
+                0.0..=1.0,
+                1.0,
+            )
+            .changed()
+            {
+                doc.image.background[3] = a as f32;
+            }
+        });
+    }
+}
+
+/// Draws the inspector for the selection; returns requests for the app.
+pub fn show(ui: &mut Ui, doc: &mut Document, sel: &Selection) -> Vec<Action> {
+    let mut actions = Vec::new();
+    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        if sel.mask {
+            if let Some(l) = doc.layer_mut(&sel.path)
+                && let Some(m) = &mut l.mask
+            {
+                let sec = widgets::section(ui, "Mask", false);
+                if sec.open {
+                    ui.label(RichText::new(format!("Mask of {}", l.name)).strong());
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut m.enabled, "Enabled").on_hover_text("Use the mask");
+                        ui.checkbox(&mut m.invert, "Invert").on_hover_text("Show the layer where the mask is dark instead of bright");
+                    });
+                    widgets::segmented(
+                        ui,
+                        &mut m.source,
+                        &[
+                            (MaskSource::Luminance, "Brightness", "The mask's brightness (times its alpha) decides where the layer shows"),
+                            (MaskSource::Alpha, "Alpha", "The mask's alpha decides"),
+                        ],
+                    );
+                    if ui.button("Back to the layer").on_hover_text("Select the layer this mask belongs to").clicked() {
+                        actions.push(Action::Select(Selection::layer(sel.path.clone())));
+                    }
+                }
+            }
+        } else if let Some(l) = doc.layer_mut(&sel.path) {
+            layer_settings(ui, l, sel, &mut actions);
         }
+        if let Some(l) = target_mut(doc, sel)
+            && l.kind == LayerKind::Fractal
+        {
+            fractal_sections(ui, l, &mut actions);
+        }
+        view_and_image(ui, doc, sel);
     });
     actions
 }

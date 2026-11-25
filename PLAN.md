@@ -4,7 +4,7 @@ RFract is a 2D fractal generator in Rust: layered escape-time fractals, plus den
 post effects. It is the third sibling of RWildFire (flames) and RMandelbulb3D (3D) and shares
 their stack, UI conventions and release tooling.
 
-Status: stages 0 and 1 done (v0.2.0); stage 2 next.
+Status: stages 0–2 done (v0.3.0); stage 3 next.
 
 ---
 
@@ -266,6 +266,10 @@ GitHub release. The first public release is **1.0.0**, after all stages. Sizes a
   export `.ugr`/`.map`/`.ggr`.
 - Live palette rotation (color cycling) in the viewer.
 - **Exit**: rich multi-layer images can be built from built-ins only.
+- **Done (v0.3.0)**: colorings and transformations are formula programs of the same language
+  (one source, GPU and CPU from the same IR); the GPU runs one kernel per layer into band-sized
+  scratch slots plus compositing passes. Not done: direct coloring (`#color`), histogram and
+  Lyapunov colorings, post-transformations, per-channel color curves (see TODO.md).
 
 ### Stage 3 – Formula language compatibility: UFM and FractInt (XL)
 
