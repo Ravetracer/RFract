@@ -41,7 +41,7 @@ fn sample(kernel: &Kernel, frames: &mut (Frame<f64>, Frame<Dual>), plan: &Plan, 
     let o = match kernel {
         Kernel::Plain(k) => {
             let o = run_sample(k, &mut frames.0, plan, p);
-            OrbitResult { z: o.z, zprev: o.zprev, iter: o.iter, escaped: o.escaped, dz: 0.0 }
+            OrbitResult { z: o.z, zprev: o.zprev, zprev2: o.zprev2, iter: o.iter, escaped: o.escaped, dz: 0.0 }
         }
         Kernel::Dual(k) => {
             // Derivative along a direction that turns from sample to sample (non-analytic
@@ -50,7 +50,7 @@ fn sample(kernel: &Kernel, frames: &mut (Frame<f64>, Frame<Dual>), plan: &Plan, 
             let pixel = Cx::new(Dual::new(p.re, c), Dual::new(p.im, s));
             let o = run_sample(k, &mut frames.1, plan, pixel);
             let dz = (o.z.re.d * o.z.re.d + o.z.im.d * o.z.im.d).sqrt();
-            OrbitResult { z: o.z.v(), zprev: o.zprev.v(), iter: o.iter, escaped: o.escaped, dz }
+            OrbitResult { z: o.z.v(), zprev: o.zprev.v(), zprev2: o.zprev2.v(), iter: o.iter, escaped: o.escaped, dz }
         }
     };
     shade(plan, &o)
@@ -122,11 +122,18 @@ impl CpuRenderer {
         match &self.kernel {
             Kernel::Plain(k) => {
                 let o = run_sample(k, &mut frames.0, &self.plan, p);
-                OrbitResult { z: o.z, zprev: o.zprev, iter: o.iter, escaped: o.escaped, dz: 0.0 }
+                OrbitResult { z: o.z, zprev: o.zprev, zprev2: o.zprev2, iter: o.iter, escaped: o.escaped, dz: 0.0 }
             }
             Kernel::Dual(k) => {
                 let o = run_sample(k, &mut frames.1, &self.plan, Cx::new(Dual::new(p.re, 1.0), Dual::new(p.im, 0.0)));
-                OrbitResult { z: o.z.v(), zprev: o.zprev.v(), iter: o.iter, escaped: o.escaped, dz: (o.z.re.d.powi(2) + o.z.im.d.powi(2)).sqrt() }
+                OrbitResult {
+                    z: o.z.v(),
+                    zprev: o.zprev.v(),
+                    zprev2: o.zprev2.v(),
+                    iter: o.iter,
+                    escaped: o.escaped,
+                    dz: (o.z.re.d.powi(2) + o.z.im.d.powi(2)).sqrt(),
+                }
             }
         }
     }

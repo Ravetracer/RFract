@@ -1,24 +1,12 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
-//! RFract GPU renderer (wgpu compute shaders). Stage 0: device limits and adapter detection;
-//! the per-layer shader generation and the progressive renderer follow in stage 1.
+//! RFract GPU renderer: WGSL generated per formula (`codegen.rs`) and a progressive compute
+//! renderer (`renderer.rs`) that mirrors the CPU reference renderer of rfr-core.
 
-/// GPU device setup shared by the application (through eframe) and the command line tool.
-pub struct GpuContext;
+pub mod codegen;
+pub mod renderer;
 
-impl GpuContext {
-    /// Limits requested from the device: the adapter's buffer sizes (large accumulation buffers
-    /// for poster renders), the defaults for everything else.
-    pub fn required_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
-        let al = adapter.limits();
-        wgpu::Limits {
-            max_storage_buffer_binding_size: al.max_storage_buffer_binding_size,
-            max_buffer_size: al.max_buffer_size,
-            max_texture_dimension_2d: al.max_texture_dimension_2d.min(16384),
-            ..wgpu::Limits::default()
-        }
-    }
-}
+pub use renderer::{GpuContext, GpuRenderer, render_blocking};
 
 /// What the GPU detection found.
 #[derive(Clone, Debug)]

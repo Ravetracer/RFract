@@ -6,6 +6,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+bytemuck = { version = "1.25.2", features = ["derive"] }
+naga = { version = "30.0.1", features = ["wgsl-in"] }
 pollster = "1.0.1"
 rfr-core = { path = "../rfr-core" }
 wgpu = "30.0.1"

@@ -117,10 +117,43 @@ impl Plan {
         self.outside_method == OutsideMethod::Distance
     }
 
+    /// Arithmetic the view needs: pixels must stay well above the rounding step of the
+    /// coordinates (their magnitude, at least 1).
+    pub fn precision(&self) -> Precision {
+        let f = &self.frame;
+        let scale = f.center[0].abs().max(f.center[1].abs()).max(1.0);
+        let ratio = f.pixel_size() / scale;
+        if ratio > SINGLE_LIMIT {
+            Precision::Single
+        } else if ratio > DOUBLE_LIMIT {
+            Precision::Double
+        } else {
+            Precision::Beyond
+        }
+    }
+
     /// Magnification for `#magn` (1.5 / radius).
     pub fn magn(&self) -> f64 {
         1.5 / self.frame.radius
     }
+}
+
+/// Pixel size relative to the coordinates below which f32 (24-bit mantissa, about 1.2e-7)
+/// shows rounding steps: 32 rounding steps per pixel.
+pub const SINGLE_LIMIT: f64 = 4e-6;
+/// The same for double-float and f64 (about 48 and 53 bits).
+pub const DOUBLE_LIMIT: f64 = 2e-13;
+
+/// Precision a view needs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Precision {
+    /// f32 is enough.
+    Single,
+    /// Double precision (GPU double-float, CPU f64).
+    Double,
+    /// Deeper than double precision reaches (perturbation, a later stage): rendered with
+    /// double precision, which shows rounding steps.
+    Beyond,
 }
 
 /// A stored value of the right kind for a parameter, else the default.
@@ -171,6 +204,8 @@ pub fn sample_offset(x: u32, y: u32, s: u32) -> (f64, f64, f64) {
 pub struct OrbitResult {
     pub z: C64,
     pub zprev: C64,
+    /// `z` two iterations before the end.
+    pub zprev2: C64,
     pub iter: u32,
     pub escaped: bool,
     /// |dz/dpixel| along the sample's direction (0 without derivatives).
@@ -210,9 +245,15 @@ pub fn smooth_iter(o: &OrbitResult) -> f64 {
         // powers, and an exact power keeps neighboring bands seamless.
         let p = if (p - p.round()).abs() < 0.1 { p.round() } else { p };
         n - lz.max(1e-300).ln() / p.ln()
+    } else if o.iter >= 2 {
+        // Convergent: the step before the last one. The last step is about its square and
+        // often below the floating-point resolution; this one is above the threshold.
+        let d2 = (o.zprev - o.zprev2).norm().max(1e-30);
+        let l = (-0.5 * d2.ln()).max(1e-30);
+        n - 1.0 - l.log2()
     } else {
-        let d2 = (o.z - o.zprev).norm().max(1e-300);
-        let l = (-0.5 * d2.ln()).max(1e-300);
+        let d2 = (o.z - o.zprev).norm().max(1e-30);
+        let l = (-0.5 * d2.ln()).max(1e-30);
         n - l.log2()
     };
     if v.is_finite() { (v + 2.0).max(0.0) } else { n }
@@ -259,7 +300,7 @@ mod tests {
                 z = z.sqr() + c;
                 n += 1;
             }
-            (n, smooth_iter(&OrbitResult { z, zprev: zp, iter: n, escaped: true, dz: 0.0 }))
+            (n, smooth_iter(&OrbitResult { z, zprev: zp, zprev2: zp, iter: n, escaped: true, dz: 0.0 }))
         };
         let mut edges = 0;
         for k in 0..400 {

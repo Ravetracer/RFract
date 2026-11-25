@@ -53,6 +53,8 @@ struct Layout {
 pub struct Orbit<S> {
     pub z: Cx<S>,
     pub zprev: Cx<S>,
+    /// `z` two iterations before the end (convergent smoothing).
+    pub zprev2: Cx<S>,
     /// Completed iterations.
     pub iter: u32,
     /// The bailout condition ended the orbit (or a value stopped being finite).
@@ -610,7 +612,9 @@ impl<S: Scalar + Send + Sync + 'static> Compiled<S> {
         self.init.iter().for_each(|s| s(f));
         let mut escaped = false;
         let mut iter = 0;
+        let mut zprev2 = Cx::zero();
         while iter < maxit {
+            zprev2 = f.zprev;
             f.zprev = f.cx[z];
             self.body.iter().for_each(|s| s(f));
             iter += 1;
@@ -622,7 +626,7 @@ impl<S: Scalar + Send + Sync + 'static> Compiled<S> {
             }
         }
         self.fin.iter().for_each(|s| s(f));
-        Orbit { z: f.cx[z], zprev: f.zprev, iter, escaped }
+        Orbit { z: f.cx[z], zprev: f.zprev, zprev2, iter, escaped }
     }
 }
 

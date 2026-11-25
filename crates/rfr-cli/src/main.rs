@@ -56,6 +56,7 @@ fn number<T: std::str::FromStr>(s: &str, name: &str) -> Result<T, String> {
 fn render(args: &[String]) -> Result<(), String> {
     let mut input = None;
     let mut output = None;
+    let mut cpu = false;
     let (mut width, mut height, mut samples) = (None, None, None);
     let mut i = 0;
     while i < args.len() {
@@ -64,7 +65,7 @@ fn render(args: &[String]) -> Result<(), String> {
             "-W" | "--width" => width = Some(number::<u32>(value(args, &mut i, "--width")?, "--width")?),
             "-H" | "--height" => height = Some(number::<u32>(value(args, &mut i, "--height")?, "--height")?),
             "-s" | "--samples" => samples = Some(number::<u32>(value(args, &mut i, "--samples")?, "--samples")?),
-            "--cpu" => {}
+            "--cpu" => cpu = true,
             a if a.starts_with('-') => return Err(format!("unknown option '{a}'")),
             a => input = Some(a.to_string()),
         }
@@ -94,14 +95,43 @@ fn render(args: &[String]) -> Result<(), String> {
         return Err(format!("refusing to overwrite the input {}", output.display()));
     }
     let t = Instant::now();
-    let r = rfr_core::render::cpu::render(&doc, w, h, s)?;
+    let plan = rfr_core::render::Plan::sized(&doc, w, h)?;
+    if plan.precision() == rfr_core::render::Precision::Beyond {
+        eprintln!("note: the view is deeper than double precision reaches; expect rounding steps");
+    }
+    let mut how = "on the CPU".to_string();
+    let mut rgba = None;
+    if !cpu {
+        match rfr_gpu::GpuContext::new_headless() {
+            Ok(ctx) => {
+                let name = ctx.adapter_name.clone();
+                let mode = rfr_gpu::renderer::renderer_mode(&plan);
+                match rfr_gpu::render_blocking(ctx, &plan, s, |_| true) {
+                    Ok(lin) => {
+                        rgba = Some(lin.iter().flat_map(|c| [srgb(c[0]), srgb(c[1]), srgb(c[2]), 255]).collect::<Vec<u8>>());
+                        how = format!("on {name} ({mode:?})");
+                    }
+                    Err(e) => eprintln!("GPU render failed ({e}); rendering on the CPU"),
+                }
+            }
+            Err(e) => eprintln!("{e}; rendering on the CPU"),
+        }
+    }
+    let rgba = match rgba {
+        Some(v) => v,
+        None => rfr_core::render::cpu::render(&doc, w, h, s)?.rgba8(),
+    };
     let mut saved = doc.clone();
     saved.image.width = w;
     saved.image.height = h;
     saved.image.samples = s;
-    rfr_core::io::png::write_rgba8(&output, w, h, &r.rgba8(), Some(&saved))?;
-    println!("rendered {w} × {h}, {s} samples per pixel on the CPU in {:.2} s → {}", t.elapsed().as_secs_f64(), output.display());
+    rfr_core::io::png::write_rgba8(&output, w, h, &rgba, Some(&saved))?;
+    println!("rendered {w} × {h}, {s} samples per pixel {how} in {:.2} s → {}", t.elapsed().as_secs_f64(), output.display());
     Ok(())
+}
+
+fn srgb(v: f32) -> u8 {
+    rfr_core::gradient::linear_to_srgb(v)
 }
 
 fn list_formulas() {

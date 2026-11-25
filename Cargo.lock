@@ -2056,6 +2056,8 @@ dependencies = [
 name = "rfr-gpu"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
+ "naga",
  "pollster 1.0.3",
  "rfr-core",
  "wgpu",
