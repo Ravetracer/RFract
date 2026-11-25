@@ -4,7 +4,8 @@
 //! assignment (or declaration); when a later assignment needs a wider type (int → real →
 //! complex), the formula is checked again with the wider type from the start.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
 
 use super::ast::{self, BinOp, DeclTy, Dialect, FormulaAst, ParamKind, ProgramKind, Target, UnOp};
 use super::ir::*;
@@ -33,7 +34,52 @@ struct Ck<'a> {
     transcendental: bool,
     /// Arrays: element slot and the slots of their dimension sizes.
     arrays: HashMap<String, (usize, Vec<usize>)>,
+    /// Classes for formulas that use objects.
+    classes: Option<&'a ClassCtx<'a>>,
+    /// Objects made so far (each `new` is one object; its fields are locals `o<n>.<field>`).
+    instances: Vec<Inst>,
+    /// Inlined method calls, innermost last.
+    scopes: Vec<Scope>,
+    /// Object variables (by key) and the object each one refers to (`None`: null).
+    objects: HashMap<String, Option<usize>>,
+    obj_vars: HashSet<String>,
+    /// Statements an expression needs before it (inlined method bodies).
+    pending: Vec<Stmt>,
+    /// Counter of inlined calls (unique local names).
+    site: usize,
 }
+
+/// Classes for checking formulas that use objects: the class lookup (case-insensitive name)
+/// and the classes chosen for object parameters (`<param path>` → `ParamValue::Class`).
+pub struct ClassCtx<'a> {
+    pub lookup: &'a dyn Fn(&str) -> Option<Arc<ast::ClassAst>>,
+    pub choices: &'a BTreeMap<String, ast::ParamValue>,
+}
+
+/// An object: its class and the prefix of its parameters (`formulaClass.`).
+struct Inst {
+    class: Arc<ast::ClassAst>,
+    prefix: String,
+    /// Made from an object parameter: its parameters are user parameters; otherwise they keep
+    /// their defaults.
+    plugin: bool,
+}
+
+/// An inlined method call.
+struct Scope {
+    /// Lowercase names of parameters, locals and fields → keys.
+    names: HashMap<String, String>,
+    this: Option<usize>,
+    /// The class whose method runs (for `Parent.Method` calls) and the object's parameters.
+    class: Option<Arc<ast::ClassAst>>,
+    prefix: String,
+    plugin: bool,
+    ret: Option<(usize, Ty)>,
+    ret_obj: Option<Option<usize>>,
+    done: Option<usize>,
+}
+
+const MAX_INLINE_DEPTH: usize = 40;
 
 fn conv(e: Expr, ty: Ty) -> Expr {
     if e.ty == ty {
@@ -68,7 +114,11 @@ fn const_int(e: &ast::Expr) -> Option<i32> {
 
 impl<'a> Ck<'a> {
     fn norm(&self, name: &str) -> String {
-        if self.dialect == Dialect::Ufm { name.to_ascii_lowercase() } else { name.to_string() }
+        let n = if self.dialect == Dialect::Ufm { name.to_ascii_lowercase() } else { name.to_string() };
+        match self.scopes.last().and_then(|s| s.names.get(&n)) {
+            Some(k) => k.clone(),
+            None => n,
+        }
     }
 
     fn param_index(&self, name: &str) -> Option<usize> {
@@ -100,6 +150,7 @@ impl<'a> Ck<'a> {
             min: None,
             max: None,
             items: Vec::new(),
+            base: None,
         });
         self.params.len() - 1
     }
@@ -198,6 +249,11 @@ impl<'a> Ck<'a> {
     /// Flat element index of `name[idx…]` and the array's slot.
     fn array_index(&mut self, name: &str, idx: &[ast::Expr], line: usize) -> Result<(usize, Expr), Error> {
         let key = self.norm(name);
+        self.array_index_key(&key, name, idx, line)
+    }
+
+    fn array_index_key(&mut self, key: &str, name: &str, idx: &[ast::Expr], line: usize) -> Result<(usize, Expr), Error> {
+        let key = key.to_string();
         let Some((slot, dims)) = self.arrays.get(&key).cloned() else { return err(line, format!("'{name}' is not an array")) };
         if idx.is_empty() || idx.len() > dims.len() {
             return err(line, format!("'{name}' needs {} index(es)", dims.len()));
@@ -251,6 +307,14 @@ impl<'a> Ck<'a> {
             return Ok(Expr { ty: Ty::Complex, kind: Kind::Local(Z) });
         }
         if let Some(&i) = self.slots.get(&key) {
+            return Ok(Expr { ty: self.locals[i].ty, kind: Kind::Local(i) });
+        }
+        // Fields and method locals read before they are set start at zero.
+        if self.scopes.last().is_some_and(|s| s.names.values().any(|v| *v == key)) {
+            if self.obj_vars.contains(&key) {
+                return err(line, format!("the object '{name}' cannot be used as a value"));
+            }
+            let i = self.key_local(&key, Ty::Complex);
             return Ok(Expr { ty: self.locals[i].ty, kind: Kind::Local(i) });
         }
         if self.dialect == Dialect::Frm {
@@ -393,6 +457,416 @@ impl<'a> Ck<'a> {
         [&a.global, &a.init, &a.body, &a.fin, &a.transform].iter().any(|b| walk(b, key, ufm))
     }
 
+    // ---- objects ----
+
+    fn class(&self, name: &str, line: usize) -> Result<Arc<ast::ClassAst>, Error> {
+        let Some(ctx) = self.classes else { return err(line, format!("the class '{name}' is not available (no class libraries)")) };
+        (ctx.lookup)(name).ok_or_else(|| Error { line, msg: format!("unknown class '{name}' (is its .ulb file in a formula folder?)") })
+    }
+
+    /// The class and its ancestors, the root first.
+    fn chain(&self, c: &Arc<ast::ClassAst>, line: usize) -> Result<Vec<Arc<ast::ClassAst>>, Error> {
+        let mut out = vec![c.clone()];
+        let mut cur = c.clone();
+        while let Some(p) = cur.parent.clone() {
+            if out.len() > 32 || out.iter().any(|x| x.name.eq_ignore_ascii_case(&p)) {
+                return err(line, format!("the classes above '{}' form a loop", c.name));
+            }
+            cur = self.class(&p, line)?;
+            out.push(cur.clone());
+        }
+        out.reverse();
+        Ok(out)
+    }
+
+    /// The implementation of method `name` for class `c` (searched upwards).
+    fn find_method(&self, c: &Arc<ast::ClassAst>, name: &str, line: usize) -> Result<Option<(Arc<ast::ClassAst>, ast::MethodAst)>, Error> {
+        for k in self.chain(c, line)?.into_iter().rev() {
+            if let Some(m) = k.methods.iter().find(|m| m.name.eq_ignore_ascii_case(name)) {
+                return Ok(Some((k.clone(), m.clone())));
+            }
+        }
+        Ok(None)
+    }
+
+    /// A local by key (bypassing name mapping).
+    fn key_local(&mut self, key: &str, ty: Ty) -> usize {
+        if let Some(&i) = self.slots.get(key) {
+            return i;
+        }
+        let ty = self.preset.get(key).copied().map_or(ty, |p| p.max(ty));
+        self.locals.push(Local { name: key.to_string(), ty, cap: None });
+        self.slots.insert(key.to_string(), self.locals.len() - 1);
+        self.locals.len() - 1
+    }
+
+    /// Makes an object of class `name` (or of the class chosen by object parameter `@name`)
+    /// and runs its constructor.
+    fn instantiate(&mut self, name: &str, param: bool, args: &[ast::Expr], line: usize) -> Result<Option<usize>, Error> {
+        let (prefix, plugin) = match self.scopes.last() {
+            Some(s) => (s.prefix.clone(), s.plugin),
+            None => (String::new(), true),
+        };
+        let (class, new_prefix, new_plugin) = if param {
+            let full = format!("{prefix}{name}");
+            let i = self.param_index(&full).ok_or_else(|| Error { line, msg: format!("unknown object parameter '@{name}'") })?;
+            let chosen = match self.classes.and_then(|c| c.choices.get(&full)) {
+                Some(ast::ParamValue::Class { class }) if !class.is_empty() && plugin => class.clone(),
+                _ => match &self.params[i].default {
+                    ast::ParamValue::Class { class } => class.clone(),
+                    _ => return err(line, format!("'@{name}' is not an object parameter")),
+                },
+            };
+            (self.class(&chosen, line)?, format!("{full}."), plugin)
+        } else {
+            let c = self.class(name, line)?;
+            let n = self.instances.len();
+            (c, format!("{prefix}~{n}."), false)
+        };
+        let id = self.instances.len();
+        self.instances.push(Inst { class: class.clone(), prefix: new_prefix.clone(), plugin: new_plugin });
+        let chain = self.chain(&class, line)?;
+        // Fields start at zero; object fields are null.
+        let mut array_fields = Vec::new();
+        for c in &chain {
+            for f in &c.fields {
+                let key = field_key(id, &f.name);
+                match &f.ty {
+                    ast::TypeRef::Class(_) => {
+                        if f.dims.is_some() {
+                            // Arrays of objects: usable only if never touched.
+                            continue;
+                        }
+                        self.obj_vars.insert(key.clone());
+                        self.objects.insert(key, None);
+                    }
+                    ast::TypeRef::Builtin(t) => {
+                        let ty = match t {
+                            DeclTy::Bool => Ty::Bool,
+                            DeclTy::Int => Ty::Int,
+                            DeclTy::Float => Ty::Real,
+                            DeclTy::Complex => Ty::Complex,
+                            DeclTy::Color => Ty::Color,
+                        };
+                        if let Some(d) = &f.dims {
+                            array_fields.push((*t, f.name.clone(), d.clone()));
+                        } else {
+                            self.preset.entry(key.clone()).or_insert(ty);
+                            self.declared.insert(key);
+                        }
+                    }
+                }
+            }
+        }
+        // Parameters of a plugin object are user parameters under its prefix.
+        if new_plugin {
+            for c in &chain {
+                for p in &c.params {
+                    let full = format!("{new_prefix}{}", p.name);
+                    if self.param_index(&full).is_some() {
+                        continue;
+                    }
+                    self.params.push(Param {
+                        name: full,
+                        kind: p.kind,
+                        ty: param_ty(p.kind),
+                        default: p.default.clone(),
+                        caption: p.caption.clone(),
+                        hint: p.hint.clone(),
+                        min: p.min,
+                        max: p.max,
+                        items: p.items.clone(),
+                        base: p.base.clone(),
+                    });
+                }
+            }
+        }
+        // Array fields, declared in the object's scope.
+        if !array_fields.is_empty() {
+            let names = array_fields.iter().map(|(_, n, _)| (n.to_ascii_lowercase(), field_key(id, n))).collect();
+            self.scopes.push(Scope {
+                names,
+                this: Some(id),
+                class: Some(class.clone()),
+                prefix: new_prefix.clone(),
+                plugin: new_plugin,
+                ret: None,
+                ret_obj: None,
+                done: None,
+            });
+            let mut out = Vec::new();
+            let r = array_fields.iter().try_for_each(|(t, n, d)| self.declare_array(*t, n, d, line, &mut out));
+            self.scopes.pop();
+            r?;
+            self.pending.extend(out);
+        }
+        // The constructor: the nearest class (upwards) with a method named like itself.
+        let ctor = chain.iter().rev().find_map(|c| c.methods.iter().find(|m| m.name.eq_ignore_ascii_case(&c.name)).map(|m| (c.clone(), m.clone())));
+        if let Some((c, m)) = ctor {
+            self.inline(Some(id), &c, &m, args, line)?;
+        }
+        Ok(Some(id))
+    }
+
+    /// The object an expression refers to (`None`: null).
+    fn object_of(&mut self, e: &ast::Expr, line: usize) -> Result<Option<usize>, Error> {
+        match e {
+            ast::Expr::Num { v, .. } if *v == 0.0 => Ok(None),
+            ast::Expr::Ident(n) if n.eq_ignore_ascii_case("this") => Ok(self.scopes.last().and_then(|s| s.this)),
+            ast::Expr::Ident(n) => {
+                let key = self.norm(n);
+                match self.objects.get(&key) {
+                    Some(o) => Ok(*o),
+                    None => err(line, format!("'{n}' is not an object")),
+                }
+            }
+            ast::Expr::Member(o, f) => {
+                let Some(inst) = self.object_of(o, line)? else { return err(line, format!("'.{f}' of a null object")) };
+                match self.objects.get(&field_key(inst, f)) {
+                    Some(o) => Ok(*o),
+                    None => err(line, format!("'{f}' is not an object field")),
+                }
+            }
+            ast::Expr::New { class, param, args } => self.instantiate(class, *param, args, line),
+            // A cast: Class(object) is the object itself.
+            ast::Expr::Call { name, param: false, args } if args.len() == 1 && self.classes.is_some_and(|c| (c.lookup)(name).is_some()) => {
+                self.object_of(&args[0], line)
+            }
+            ast::Expr::Method(o, name, args) => match self.method_call(o, name, args, line)? {
+                Called::Object(o) => Ok(o),
+                _ => err(line, format!("'{name}' does not return an object")),
+            },
+            _ => err(line, "expected an object"),
+        }
+    }
+
+    /// Whether an expression denotes an object (for comparisons with 0).
+    fn is_object_expr(&self, e: &ast::Expr) -> bool {
+        match e {
+            ast::Expr::Ident(n) => n.eq_ignore_ascii_case("this") || self.obj_vars.contains(&self.norm(n)),
+            ast::Expr::Member(..) | ast::Expr::New { .. } => true,
+            _ => false,
+        }
+    }
+
+    /// `object.Method(args)`, `Class.Method(args)` (static, or a base class's implementation
+    /// for `this`).
+    fn method_call(&mut self, obj: &ast::Expr, name: &str, args: &[ast::Expr], line: usize) -> Result<Called, Error> {
+        // Class.Method: a base class call on `this` or a static method.
+        if let ast::Expr::Ident(cn) = obj
+            && !cn.eq_ignore_ascii_case("this")
+            && !self.obj_vars.contains(&self.norm(cn))
+        {
+            let class = self.class(cn, line)?;
+            let this = self.scopes.last().and_then(|s| s.this);
+            let (impl_class, m) =
+                self.find_method(&class, name, line)?.ok_or_else(|| Error { line, msg: format!("'{cn}' has no method '{name}'") })?;
+            let this = if m.is_static { None } else { this };
+            return self.inline(this, &impl_class, &m, args, line);
+        }
+        let inst = self.object_of(obj, line)?.ok_or_else(|| Error { line, msg: format!("'{name}' called on a null object") })?;
+        let class = self.instances[inst].class.clone();
+        let (impl_class, m) =
+            self.find_method(&class, name, line)?.ok_or_else(|| Error { line, msg: format!("'{}' has no method '{name}'", class.name) })?;
+        self.inline(Some(inst), &impl_class, &m, args, line)
+    }
+
+    /// A method called without an object inside class code (`Init(pz)`, `Formula(pparent)`):
+    /// a method of `this` (or of the class, for static code). `None` if there is none.
+    fn implicit_method(&mut self, name: &str, args: &[ast::Expr], line: usize) -> Result<Option<Called>, Error> {
+        let Some(s) = self.scopes.last() else { return Ok(None) };
+        let (this, class) = (s.this, s.class.clone());
+        let class = match (this, class) {
+            (Some(t), _) => self.instances[t].class.clone(),
+            (None, Some(c)) => c,
+            _ => return Ok(None),
+        };
+        let Some((impl_class, m)) = self.find_method(&class, name, line)? else { return Ok(None) };
+        let this = if m.is_static { None } else { this };
+        self.inline(this, &impl_class, &m, args, line).map(Some)
+    }
+
+    /// The class an object parameter (`@name`) currently chooses.
+    fn chosen_class(&self, name: &str) -> Option<String> {
+        let prefix = self.scopes.last().map_or(String::new(), |s| s.prefix.clone());
+        let full = format!("{prefix}{name}");
+        let i = self.param_index(&full)?;
+        if self.params[i].kind != ParamKind::Class {
+            return None;
+        }
+        match self.classes.and_then(|c| c.choices.get(&full)) {
+            Some(ast::ParamValue::Class { class }) if !class.is_empty() => Some(class.clone()),
+            _ => match &self.params[i].default {
+                ast::ParamValue::Class { class } => Some(class.clone()),
+                _ => None,
+            },
+        }
+    }
+
+    /// Inlines method `m` of class `c` for object `this`: its statements go to `pending`, the
+    /// result is a local (values) or an object.
+    fn inline(&mut self, this: Option<usize>, c: &Arc<ast::ClassAst>, m: &ast::MethodAst, args: &[ast::Expr], line: usize) -> Result<Called, Error> {
+        if self.scopes.len() >= MAX_INLINE_DEPTH {
+            return err(line, format!("calls nested too deeply at '{}' (recursion is not supported)", m.name));
+        }
+        if args.len() != m.params.len() {
+            return err(line, format!("'{}' takes {} argument(s)", m.name, m.params.len()));
+        }
+        self.site += 1;
+        let site = self.site;
+        let local_key = |n: &str| format!("~{site}:{}", n.to_ascii_lowercase());
+        // Arguments in the caller's scope.
+        enum Arg {
+            Value(Expr),
+            Alias(String),
+            Object(Option<usize>),
+        }
+        let mut bound = Vec::new();
+        for (p, a) in m.params.iter().zip(args) {
+            bound.push(match &p.ty {
+                ast::TypeRef::Class(_) => Arg::Object(self.object_of(a, line)?),
+                ast::TypeRef::Builtin(_) => match a {
+                    ast::Expr::Ident(n) if p.by_ref && self.slots.contains_key(&self.norm(n)) => Arg::Alias(self.norm(n)),
+                    _ => Arg::Value(self.expr(a, line)?),
+                },
+            });
+        }
+        // The method's names: fields of the object, then parameters and locals.
+        let mut names = HashMap::new();
+        let mut fields = HashSet::new();
+        if let Some(t) = this {
+            let class = self.instances[t].class.clone();
+            for k in self.chain(&class, line)? {
+                for f in &k.fields {
+                    let l = f.name.to_ascii_lowercase();
+                    names.insert(l.clone(), field_key(t, &l));
+                    fields.insert(l);
+                }
+            }
+        }
+        let mut locals = HashSet::new();
+        method_locals(&m.body, &fields, &mut locals);
+        for l in locals {
+            names.insert(l.clone(), local_key(&l));
+        }
+        let mut pre = Vec::new();
+        for (p, a) in m.params.iter().zip(bound) {
+            let l = p.name.to_ascii_lowercase();
+            match a {
+                Arg::Alias(k) => {
+                    names.insert(l, k);
+                }
+                Arg::Object(o) => {
+                    let k = local_key(&l);
+                    names.insert(l, k.clone());
+                    self.obj_vars.insert(k.clone());
+                    self.objects.insert(k, o);
+                }
+                Arg::Value(v) => {
+                    let k = local_key(&l);
+                    names.insert(l, k.clone());
+                    let ty = match &p.ty {
+                        ast::TypeRef::Builtin(DeclTy::Bool) => Ty::Bool,
+                        ast::TypeRef::Builtin(DeclTy::Int) => Ty::Int,
+                        ast::TypeRef::Builtin(DeclTy::Float) => Ty::Real,
+                        ast::TypeRef::Builtin(DeclTy::Color) => Ty::Color,
+                        _ => Ty::Complex,
+                    };
+                    self.preset.entry(k.clone()).or_insert(ty);
+                    self.declared.insert(k.clone());
+                    let i = self.key_local(&k, ty);
+                    let t = self.locals[i].ty;
+                    let v = if t == Ty::Bool { v } else { self.numeric(v) };
+                    pre.push(Stmt::Assign(i, conv(v, t)));
+                }
+            }
+        }
+        let (prefix, plugin) = match this {
+            Some(t) => (self.instances[t].prefix.clone(), self.instances[t].plugin),
+            None => self.scopes.last().map_or((String::new(), true), |s| (s.prefix.clone(), s.plugin)),
+        };
+        let ret = match &m.ret {
+            Some(ast::TypeRef::Builtin(d)) => {
+                let ty = match d {
+                    DeclTy::Bool => Ty::Bool,
+                    DeclTy::Int => Ty::Int,
+                    DeclTy::Float => Ty::Real,
+                    DeclTy::Complex => Ty::Complex,
+                    DeclTy::Color => Ty::Color,
+                };
+                let k = local_key("~return");
+                self.preset.entry(k.clone()).or_insert(ty);
+                self.declared.insert(k.clone());
+                let i = self.key_local(&k, ty);
+                Some((i, self.locals[i].ty))
+            }
+            _ => None,
+        };
+        let ret_obj = matches!(m.ret, Some(ast::TypeRef::Class(_))).then_some(None);
+        // A done flag when a return can come before the end.
+        let early = m.body.iter().enumerate().any(|(k, s)| contains_return(s) && !(k + 1 == m.body.len() && matches!(s, ast::Stmt::Return(..))));
+        let done = early.then(|| {
+            let k = local_key("~done");
+            self.preset.entry(k.clone()).or_insert(Ty::Bool);
+            self.key_local(&k, Ty::Bool)
+        });
+        if let Some(d) = done {
+            pre.push(Stmt::Assign(d, Expr { ty: Ty::Bool, kind: Kind::Bool(false) }));
+        }
+        self.scopes.push(Scope { names, this, class: Some(c.clone()), prefix, plugin, ret, ret_obj, done });
+        let body = self.stmts(&m.body);
+        let scope = self.scopes.pop().unwrap();
+        pre.extend(body?);
+        self.pending.extend(pre);
+        Ok(match (scope.ret, scope.ret_obj) {
+            (Some((i, t)), _) => Called::Value(Expr { ty: t, kind: Kind::Local(i) }),
+            (None, Some(o)) => Called::Object(o),
+            _ => Called::Nothing,
+        })
+    }
+
+    /// After the arms of an `if`: object variables must refer to the same objects.
+    fn merge_objects(&mut self, before: &HashMap<String, Option<usize>>, line: usize) -> Result<(), Error> {
+        for (k, v) in &self.objects {
+            if let Some(b) = before.get(k)
+                && b != v
+                && b.is_some()
+                && v.is_some()
+            {
+                return err(line, format!("'{k}' refers to different objects depending on a condition (not supported)"));
+            }
+        }
+        Ok(())
+    }
+
+    /// `@name` inside a method: the object's own parameter (user parameter for plugin
+    /// objects, the default value otherwise).
+    fn scoped_param(&mut self, name: &str, line: usize) -> Option<Result<Expr, Error>> {
+        let s = self.scopes.last()?;
+        let (prefix, plugin, class, this) = (s.prefix.clone(), s.plugin, s.class.clone()?, s.this);
+        let full = format!("{prefix}{name}");
+        if plugin && let Some(i) = self.param_index(&full) {
+            return Some(Ok(Expr { ty: self.params[i].ty, kind: Kind::Param(i) }));
+        }
+        // Defaults of a non-plugin object (search the object's class, else the method's).
+        let class = this.map_or(class, |t| self.instances[t].class.clone());
+        let chain = match self.chain(&class, line) {
+            Ok(c) => c,
+            Err(e) => return Some(Err(e)),
+        };
+        let p = chain.iter().rev().find_map(|c| c.params.iter().find(|p| p.name.eq_ignore_ascii_case(name)))?;
+        Some(Ok(match &p.default {
+            ast::ParamValue::Bool(b) => Expr { ty: Ty::Bool, kind: Kind::Bool(*b) },
+            ast::ParamValue::Int(i) => Expr { ty: Ty::Int, kind: Kind::Int(*i) },
+            ast::ParamValue::Float(f) => real(*f),
+            ast::ParamValue::Complex(c) => Expr { ty: Ty::Complex, kind: Kind::Complex(Box::new(real(c[0])), Box::new(real(c[1]))) },
+            ast::ParamValue::Color(c) => {
+                Expr { ty: Ty::Color, kind: Kind::ColorOp(ColorOp::Rgba, vec![real(c[0]), real(c[1]), real(c[2]), real(c[3])]) }
+            }
+            _ => return Some(err(line, format!("'@{name}' cannot be used as a value"))),
+        }))
+    }
+
     fn ufm_sys(&mut self, name: &str, line: usize) -> Result<Expr, Error> {
         let lower = name.to_ascii_lowercase();
         match (self.kind, lower.as_str()) {
@@ -457,6 +931,31 @@ impl<'a> Ck<'a> {
             }
             ast::Expr::Ident(name) => self.ident(name, line)?,
             ast::Expr::Sys(name) => self.ufm_sys(name, line)?,
+            ast::Expr::Param(name) if !self.scopes.is_empty() && self.scopes.last().is_some_and(|s| s.class.is_some()) => {
+                match self.scoped_param(name, line) {
+                    Some(r) => r?,
+                    None => return err(line, format!("unknown parameter '@{name}' in a class")),
+                }
+            }
+            ast::Expr::Member(o, f) => {
+                let Some(inst) = self.object_of(o, line)? else { return err(line, format!("'.{f}' of a null object")) };
+                let key = field_key(inst, f);
+                if self.obj_vars.contains(&key) {
+                    return err(line, format!("the object field '{f}' cannot be used as a value"));
+                }
+                let i = self.key_local(&key, Ty::Complex);
+                Expr { ty: self.locals[i].ty, kind: Kind::Local(i) }
+            }
+            ast::Expr::MemberIndex(o, f, idx) => {
+                let Some(inst) = self.object_of(o, line)? else { return err(line, format!("'.{f}' of a null object")) };
+                let (slot, i) = self.array_index_key(&field_key(inst, f), f, idx, line)?;
+                Expr { ty: self.locals[slot].ty, kind: Kind::Index(slot, Box::new(i)) }
+            }
+            ast::Expr::Method(o, name, args) => match self.method_call(o, name, args, line)? {
+                Called::Value(e) => e,
+                _ => return err(line, format!("'{name}' gives no value")),
+            },
+            ast::Expr::New { .. } => return err(line, "'new' makes an object; assign it to an object variable"),
             ast::Expr::Param(name) if self.slots.contains_key(&format!("@{}", self.norm(name))) => {
                 let i = self.slots[&format!("@{}", self.norm(name))];
                 Expr { ty: self.locals[i].ty, kind: Kind::Local(i) }
@@ -513,6 +1012,23 @@ impl<'a> Ck<'a> {
     }
 
     fn binary(&mut self, op: BinOp, a: &ast::Expr, b: &ast::Expr, line: usize) -> Result<Expr, Error> {
+        // An object parameter compared with a class name: known when checking.
+        if matches!(op, BinOp::Eq | BinOp::Ne)
+            && let (ast::Expr::Param(p), ast::Expr::Ident(c)) | (ast::Expr::Ident(c), ast::Expr::Param(p)) = (a, b)
+            && let Some(chosen) = self.chosen_class(p)
+        {
+            // True when the chosen class is that class or derives from it.
+            let same = match self.class(&chosen, line) {
+                Ok(k) => self.chain(&k, line)?.iter().any(|x| x.name.eq_ignore_ascii_case(c)),
+                Err(_) => chosen.rsplit(':').next().unwrap_or(&chosen).eq_ignore_ascii_case(c),
+            };
+            return Ok(Expr { ty: Ty::Bool, kind: Kind::Bool(same == (op == BinOp::Eq)) });
+        }
+        // Objects compared with 0 (null) or with each other: known when checking.
+        if matches!(op, BinOp::Eq | BinOp::Ne) && (self.is_object_expr(a) || self.is_object_expr(b)) {
+            let (x, y) = (self.object_of(a, line)?, self.object_of(b, line)?);
+            return Ok(Expr { ty: Ty::Bool, kind: Kind::Bool((x == y) == (op == BinOp::Eq)) });
+        }
         if op == BinOp::Pow {
             let base = {
                 let v = self.expr(a, line)?;
@@ -619,6 +1135,12 @@ impl<'a> Ck<'a> {
     }
 
     fn func_param(&self, name: &str, param: bool) -> Option<usize> {
+        if param
+            && let Some(s) = self.scopes.last()
+            && s.class.is_some()
+        {
+            return self.param_index(&format!("{}{name}", s.prefix)).filter(|&i| self.params[i].kind == ParamKind::Func);
+        }
         let i = if param || self.dialect == Dialect::Frm { self.param_index(name) } else { None };
         let i = i.or_else(|| if self.dialect == Dialect::Frm { self.classic.get(name).copied() } else { None });
         i.filter(|&i| self.params[i].kind == ParamKind::Func)
@@ -626,6 +1148,12 @@ impl<'a> Ck<'a> {
 
     fn call(&mut self, name: &str, param: bool, args: &[ast::Expr], line: usize) -> Result<Expr, Error> {
         if let Some(i) = self.func_param(name, param) {
+            // A color function parameter (merge mode): two colors.
+            if args.len() == 2 {
+                let a = self.expr(&args[0], line)?;
+                let b = self.expr(&args[1], line)?;
+                return Ok(Expr { ty: Ty::Color, kind: Kind::MergeParam(i, Box::new(conv(a, Ty::Color)), Box::new(conv(b, Ty::Color))) });
+            }
             if args.len() != 1 {
                 return err(line, format!("'{name}' takes one argument"));
             }
@@ -716,6 +1244,12 @@ impl<'a> Ck<'a> {
             _ => {}
         }
         let Some(f) = Func::by_name(&lname).filter(|_| self.dialect == Dialect::Ufm || lname == lower) else {
+            if !param && let Some(called) = self.implicit_method(name, args, line)? {
+                return match called {
+                    Called::Value(e) => Ok(e),
+                    _ => err(line, format!("'{name}' gives no value")),
+                };
+            }
             return err(line, format!("unknown function '{name}'"));
         };
         if vals.len() != 1 {
@@ -816,11 +1350,72 @@ impl<'a> Ck<'a> {
 
     fn stmts(&mut self, list: &[ast::Stmt]) -> Result<Vec<Stmt>, Error> {
         let mut out = Vec::new();
-        for s in list {
+        let done = self.scopes.last().and_then(|s| s.done);
+        for (k, s) in list.iter().enumerate() {
+            let before = std::mem::take(&mut self.pending);
+            let mut produced = Vec::new();
+            self.stmt(s, &mut produced)?;
+            let pre = std::mem::replace(&mut self.pending, before);
+            out.extend(pre);
+            out.extend(produced);
+            // After a statement that may return, the rest runs only if it did not.
+            if let Some(d) = done
+                && contains_return(s)
+                && k + 1 < list.len()
+            {
+                let rest = self.stmts(&list[k + 1..])?;
+                if !rest.is_empty() {
+                    let not_done = Expr { ty: Ty::Bool, kind: Kind::Not(Box::new(Expr { ty: Ty::Bool, kind: Kind::Local(d) })) };
+                    out.push(Stmt::If(vec![(not_done, rest)], Vec::new()));
+                }
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    /// An expression with the statements it needs (inlined calls) captured separately.
+    fn cexpr(&mut self, e: &ast::Expr, line: usize) -> Result<(Vec<Stmt>, Expr), Error> {
+        let before = std::mem::take(&mut self.pending);
+        let r = self.expr(e, line);
+        let pre = std::mem::replace(&mut self.pending, before);
+        Ok((pre, r?))
+    }
+
+    fn stmt(&mut self, s: &ast::Stmt, out: &mut Vec<Stmt>) -> Result<(), Error> {
+        {
             match s {
+                ast::Stmt::Assign { target: Target::Var(name), value, line } if self.obj_vars.contains(&self.norm(name)) => {
+                    let o = self.object_of(value, *line)?;
+                    let key = self.norm(name);
+                    self.objects.insert(key, o);
+                }
+                ast::Stmt::Assign { target: Target::Member(obj, field), value, line } => {
+                    let Some(inst) = self.object_of(obj, *line)? else { return err(*line, format!("'.{field}' of a null object")) };
+                    let key = field_key(inst, field);
+                    if self.obj_vars.contains(&key) {
+                        let o = self.object_of(value, *line)?;
+                        self.objects.insert(key, o);
+                    } else {
+                        let v = self.expr(value, *line)?;
+                        let i = self.key_local(&key, v.ty);
+                        let t = self.locals[i].ty;
+                        let v = if t == Ty::Bool { v } else { self.numeric(v) };
+                        out.push(Stmt::Assign(i, conv(v, t)));
+                    }
+                }
+                ast::Stmt::Assign { target: Target::MemberIndex(obj, field, idx), value, line } => {
+                    let Some(inst) = self.object_of(obj, *line)? else { return err(*line, format!("'.{field}' of a null object")) };
+                    let v = self.expr(value, *line)?;
+                    let (slot, i) = self.array_index_key(&field_key(inst, field), field, idx, *line)?;
+                    let t = self.locals[slot].ty;
+                    let v = if t == Ty::Bool { v } else { self.numeric(v) };
+                    out.push(Stmt::SetIndex(slot, i, conv(v, t)));
+                }
                 ast::Stmt::Assign { target, value, line } => {
                     let v = self.expr(value, *line)?;
                     match target {
+                        Target::Member(..) | Target::MemberIndex(..) => unreachable!(),
                         Target::Var(name) => out.push(self.assign(name, v, *line)?),
                         Target::Sys(name) => {
                             let lower = name.to_ascii_lowercase();
@@ -869,7 +1464,7 @@ impl<'a> Ck<'a> {
                             let v = self.expr(v, *line)?;
                             out.push(Stmt::Assign(Z, conv(v, Ty::Complex)));
                         }
-                        continue;
+                        return Ok(());
                     }
                     self.preset.entry(key.clone()).or_insert(t);
                     if self.dialect == Dialect::Ufm {
@@ -883,26 +1478,95 @@ impl<'a> Ck<'a> {
                     }
                 }
                 ast::Stmt::If { arms, els, line } => {
-                    let mut a = Vec::new();
+                    // Conditions that need statements (inlined calls) split the chain: later
+                    // conditions run only when the earlier ones failed.
+                    let mut parts = Vec::new();
                     for (c, b) in arms {
-                        let c = {
-                            let v = self.expr(c, *line)?;
-                            self.cond(v)
-                        };
-                        a.push((c, self.stmts(b)?));
+                        let (pre, v) = self.cexpr(c, *line)?;
+                        let c = self.cond(v);
+                        // A branch known to be false (object checks): its code is not compiled,
+                        // it may call methods the chosen class does not have.
+                        if pre.is_empty() && const_bool(&c) == Some(false) {
+                            continue;
+                        }
+                        let snapshot = self.objects.clone();
+                        let body = self.stmts(b)?;
+                        self.merge_objects(&snapshot, *line)?;
+                        parts.push((pre, c, body));
                     }
-                    let e = self.stmts(els)?;
-                    out.push(Stmt::If(a, e));
+                    let snapshot = self.objects.clone();
+                    let mut tail = self.stmts(els)?;
+                    self.merge_objects(&snapshot, *line)?;
+                    let mut arms_ir: Vec<(Expr, Vec<Stmt>)> = Vec::new();
+                    for (k, (pre, c, body)) in parts.into_iter().enumerate().rev() {
+                        arms_ir.insert(0, (c, body));
+                        if !pre.is_empty() || k == 0 {
+                            let iff = Stmt::If(std::mem::take(&mut arms_ir), tail);
+                            tail = pre;
+                            tail.push(iff);
+                        }
+                    }
+                    out.extend(tail);
                 }
                 ast::Stmt::While { cond, body, line } => {
-                    let c = {
-                        let v = self.expr(cond, *line)?;
-                        self.cond(v)
+                    let (pre, v) = self.cexpr(cond, *line)?;
+                    let mut c = self.cond(v);
+                    let mut b = self.stmts(body)?;
+                    b.extend(pre.iter().cloned());
+                    if let Some(d) = self.scopes.last().and_then(|s| s.done)
+                        && body.iter().any(contains_return)
+                    {
+                        let not_done = Expr { ty: Ty::Bool, kind: Kind::Not(Box::new(Expr { ty: Ty::Bool, kind: Kind::Local(d) })) };
+                        c = Expr { ty: Ty::Bool, kind: Kind::And(Box::new(c), Box::new(not_done)) };
+                    }
+                    out.extend(pre);
+                    out.push(Stmt::While(c, b));
+                }
+                ast::Stmt::ObjDecl { class, name, dims, value, line } => {
+                    if dims.is_some() {
+                        return err(*line, format!("arrays of objects ('{class} {name}[]') are not supported yet"));
+                    }
+                    let key = self.norm(name);
+                    self.obj_vars.insert(key.clone());
+                    let o = match value {
+                        Some(v) => self.object_of(v, *line)?,
+                        None => None,
                     };
-                    out.push(Stmt::While(c, self.stmts(body)?));
+                    self.objects.insert(key, o);
+                }
+                ast::Stmt::Eval(e, line) => match e {
+                    ast::Expr::Method(obj, name, args) => {
+                        let _ = self.method_call(obj, name, args, *line)?;
+                    }
+                    _ => {
+                        let _ = self.expr(e, *line)?;
+                    }
+                },
+                ast::Stmt::Return(value, line) => {
+                    let Some(scope) = self.scopes.last() else { return err(*line, "'return' outside of a method") };
+                    let (ret, done, is_obj) = (scope.ret, scope.done, scope.ret_obj.is_some() || scope.ret.is_none());
+                    match (value, ret) {
+                        (Some(v), Some((slot, t))) => {
+                            let e = self.expr(v, *line)?;
+                            let e = if t == Ty::Bool { e } else { self.numeric(e) };
+                            out.push(Stmt::Assign(slot, conv(e, t)));
+                        }
+                        (Some(v), None) if is_obj => {
+                            let o = self.object_of(v, *line)?;
+                            let scope = self.scopes.last_mut().unwrap();
+                            match scope.ret_obj {
+                                Some(Some(prev)) if Some(prev) != o => return err(*line, "a method returns different objects (not supported)"),
+                                _ => scope.ret_obj = Some(o),
+                            }
+                        }
+                        _ => {}
+                    }
+                    if let Some(d) = done {
+                        out.push(Stmt::Assign(d, Expr { ty: Ty::Bool, kind: Kind::Bool(true) }));
+                    }
                 }
                 ast::Stmt::Seq(list) => out.extend(self.stmts(list)?),
-                ast::Stmt::ArrayDecl { ty, name, dims, line } => self.declare_array(*ty, name, dims, *line, &mut out)?,
+                ast::Stmt::ArrayDecl { ty, name, dims, line } => self.declare_array(*ty, name, dims, *line, out)?,
                 ast::Stmt::Call { name, args, line } => match (name.to_ascii_lowercase().as_str(), args.as_slice()) {
                     ("setlength", [ast::Expr::Ident(a), n]) => {
                         let Some((_, dims)) = self.arrays.get(&self.norm(a)).cloned() else { return err(*line, format!("'{a}' is not an array")) };
@@ -911,19 +1575,26 @@ impl<'a> Ck<'a> {
                     }
                     // Debug output of the original program: nothing to show here.
                     ("print", _) => {}
-                    _ => return err(*line, format!("unknown procedure '{name}'")),
+                    _ => match self.implicit_method(name, args, *line)? {
+                        Some(_) => {}
+                        None => return err(*line, format!("unknown procedure '{name}'")),
+                    },
                 },
                 ast::Stmt::Repeat { body, cond, line } => {
-                    let b = self.stmts(body)?;
-                    let c = {
-                        let v = self.expr(cond, *line)?;
-                        self.cond(v)
-                    };
+                    let mut b = self.stmts(body)?;
+                    let (pre, v) = self.cexpr(cond, *line)?;
+                    let mut c = self.cond(v);
+                    b.extend(pre);
+                    if let Some(d) = self.scopes.last().and_then(|s| s.done)
+                        && body.iter().any(contains_return)
+                    {
+                        c = Expr { ty: Ty::Bool, kind: Kind::Or(Box::new(c), Box::new(Expr { ty: Ty::Bool, kind: Kind::Local(d) })) };
+                    }
                     out.push(Stmt::Repeat(b, c));
                 }
             }
         }
-        Ok(out)
+        Ok(())
     }
 }
 
@@ -935,6 +1606,74 @@ pub fn param_ty(kind: ParamKind) -> Ty {
         ParamKind::Float => Ty::Real,
         ParamKind::Complex | ParamKind::Func => Ty::Complex,
         ParamKind::Color => Ty::Color,
+        // Object parameters have no value in the program (they choose code); a placeholder.
+        ParamKind::Class => Ty::Int,
+    }
+}
+
+/// What an inlined call gives.
+enum Called {
+    Value(Expr),
+    Object(Option<usize>),
+    Nothing,
+}
+
+/// The key of field `name` of object `inst`.
+fn field_key(inst: usize, name: &str) -> String {
+    format!("o{inst}.{}", name.to_ascii_lowercase())
+}
+
+/// The value of a condition known when checking.
+fn const_bool(e: &Expr) -> Option<bool> {
+    match &e.kind {
+        Kind::Bool(b) => Some(*b),
+        Kind::Not(a) => const_bool(a).map(|b| !b),
+        Kind::And(a, b) => match (const_bool(a), const_bool(b)) {
+            (Some(false), _) | (_, Some(false)) => Some(false),
+            (Some(true), Some(true)) => Some(true),
+            _ => None,
+        },
+        Kind::Or(a, b) => match (const_bool(a), const_bool(b)) {
+            (Some(true), _) | (_, Some(true)) => Some(true),
+            (Some(false), Some(false)) => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Whether a statement contains a `return` (at any depth).
+fn contains_return(s: &ast::Stmt) -> bool {
+    match s {
+        ast::Stmt::Return(..) => true,
+        ast::Stmt::If { arms, els, .. } => arms.iter().any(|(_, b)| b.iter().any(contains_return)) || els.iter().any(contains_return),
+        ast::Stmt::While { body, .. } | ast::Stmt::Repeat { body, .. } | ast::Stmt::Seq(body) => body.iter().any(contains_return),
+        _ => false,
+    }
+}
+
+/// Names a method body introduces: declared ones, and assigned ones that are not fields.
+fn method_locals(body: &[ast::Stmt], fields: &HashSet<String>, out: &mut HashSet<String>) {
+    for s in body {
+        match s {
+            ast::Stmt::Decl { name, .. } | ast::Stmt::ArrayDecl { name, .. } | ast::Stmt::ObjDecl { name, .. } => {
+                out.insert(name.to_ascii_lowercase());
+            }
+            ast::Stmt::Assign { target: Target::Var(n) | Target::Comp { var: n, .. }, .. } if !n.starts_with('@') => {
+                let l = n.to_ascii_lowercase();
+                if !fields.contains(&l) && l != "z" {
+                    out.insert(l);
+                }
+            }
+            ast::Stmt::If { arms, els, .. } => {
+                for (_, b) in arms {
+                    method_locals(b, fields, out);
+                }
+                method_locals(els, fields, out);
+            }
+            ast::Stmt::While { body, .. } | ast::Stmt::Repeat { body, .. } | ast::Stmt::Seq(body) => method_locals(body, fields, out),
+            _ => {}
+        }
     }
 }
 
@@ -959,6 +1698,7 @@ fn color_misuse_expr(e: &Expr) -> bool {
     match &e.kind {
         Kind::Conv(a) => e.ty == Ty::Color || a.ty == Ty::Color || color_misuse_expr(a),
         Kind::ColorOp(_, args) => args.iter().any(color_misuse_expr),
+        Kind::MergeParam(_, a, b) => color_misuse_expr(a) || color_misuse_expr(b),
         Kind::Index(_, i) => color_misuse_expr(i),
         Kind::Complex(a, b) | Kind::Arith(_, a, b) | Kind::Pow(a, b) | Kind::PowN(a, b) | Kind::Cmp(_, a, b) | Kind::And(a, b) | Kind::Or(a, b) => {
             colored(a) || colored(b) || color_misuse_expr(a) || color_misuse_expr(b)
@@ -976,6 +1716,12 @@ pub fn check(ast: &FormulaAst) -> Result<Program, Error> {
 
 /// Checks a parsed formula of the given kind.
 pub fn check_kind(ast: &FormulaAst, kind: ProgramKind) -> Result<Program, Error> {
+    check_with(ast, kind, None)
+}
+
+/// Checks a parsed formula that may use objects (`classes`: the class libraries and the
+/// classes chosen for object parameters).
+pub fn check_with(ast: &FormulaAst, kind: ProgramKind, classes: Option<&ClassCtx>) -> Result<Program, Error> {
     let mut preset = HashMap::new();
     for _round in 0..16 {
         let mut ck = Ck {
@@ -996,6 +1742,13 @@ pub fn check_kind(ast: &FormulaAst, kind: ProgramKind) -> Result<Program, Error>
             has_julia: false,
             transcendental: false,
             arrays: HashMap::new(),
+            classes,
+            instances: Vec::new(),
+            scopes: Vec::new(),
+            objects: HashMap::new(),
+            obj_vars: HashSet::new(),
+            pending: Vec::new(),
+            site: 0,
         };
         ck.slots.insert("z".into(), Z);
         if kind == ProgramKind::Coloring {
@@ -1020,7 +1773,7 @@ pub fn check_kind(ast: &FormulaAst, kind: ProgramKind) -> Result<Program, Error>
             }
             if p.kind == ParamKind::Func {
                 match &p.default {
-                    ast::ParamValue::Func(f) if Func::by_name(f).is_some() => {}
+                    ast::ParamValue::Func(f) if Func::by_name(f).is_some() || super::color::merge_mode(f).is_some() => {}
                     other => return err(0, format!("parameter '{}': unknown default function {other:?}", p.name)),
                 }
             }
@@ -1034,6 +1787,7 @@ pub fn check_kind(ast: &FormulaAst, kind: ProgramKind) -> Result<Program, Error>
                 min: p.min,
                 max: p.max,
                 items: p.items.clone(),
+                base: p.base.clone(),
             });
             if let Some(slot) = &p.classic {
                 ck.classic.insert(slot.clone(), ck.params.len() - 1);
@@ -1042,10 +1796,12 @@ pub fn check_kind(ast: &FormulaAst, kind: ProgramKind) -> Result<Program, Error>
         let mut init = ck.shadow_params();
         init.extend(ck.stmts(&ast.global)?);
         init.extend(ck.stmts(&ast.init)?);
-        let body = if kind == ProgramKind::Transform { ck.stmts(&ast.transform)? } else { ck.stmts(&ast.body)? };
+        let mut body = if kind == ProgramKind::Transform { ck.stmts(&ast.transform)? } else { ck.stmts(&ast.body)? };
         let bailout = match (&ast.bailout, kind) {
             (Some(b), ProgramKind::Fractal) => {
-                let e = ck.expr(b, 0)?;
+                // Statements the bailout needs (inlined calls) run at the end of the loop.
+                let (pre, e) = ck.cexpr(b, 0)?;
+                body.extend(pre);
                 ck.cond(e)
             }
             (None, ProgramKind::Fractal) => return err(0, "the formula has no bailout condition"),
@@ -1092,6 +1848,39 @@ pub fn check_kind(ast: &FormulaAst, kind: ProgramKind) -> Result<Program, Error>
 mod tests {
     use super::super::parse::{parse_frm, parse_ufm_entry, split_entries};
     use super::*;
+
+    #[test]
+    fn classes_inline_into_plain_code() {
+        use super::super::cpu::Compiled;
+        use crate::math::complex::C64;
+        let lib = "class Base {\npublic:\n  func Base(Base pparent)\n  endfunc\n  complex func Step(complex pz)\n    return pz\n  endfunc\nprotected:\n  int m_n\ndefault:\n  float param scale\n    default = 1\n  endparam\n}\n\nclass Square(Base) {\npublic:\n  func Square(Base pparent)\n    Base.Base(pparent)\n  endfunc\n  complex func Step(complex pz)\n    m_n = m_n + 1\n    if m_n > 100000\n      return 0\n    endif\n    return Base.Step(pz)^2 * @scale\n  endfunc\n}\n";
+        let classes: Vec<_> = crate::formula::parse::parse_classes(lib).into_iter().map(|(_, c)| std::sync::Arc::new(c.unwrap())).collect();
+        let lookup = |n: &str| classes.iter().find(|c| c.name.eq_ignore_ascii_case(n)).cloned();
+        let src = "Plug {\nglobal:\n  import \"x.ulb\"\n  Base f = new @plug(0)\ninit:\n  z = 0\nloop:\n  z = f.Step(z) + #pixel\nbailout:\n  |z| < 4\ndefault:\n  Base param plug\n    default = Square\n  endparam\n}\n";
+        let e = split_entries(src);
+        let ast = parse_ufm_entry(&e[0]).unwrap();
+        let choices = BTreeMap::new();
+        let ctx = ClassCtx { lookup: &lookup, choices: &choices };
+        let p = check_with(&ast, ProgramKind::Fractal, Some(&ctx)).unwrap();
+        let names: Vec<&str> = p.params.iter().map(|q| q.name.as_str()).collect();
+        assert_eq!(names, ["plug", "plug.scale"]);
+        // The default plugin squares: the Mandelbrot set.
+        let k = Compiled::<f64>::new(&p, &[]);
+        let mut f = k.frame();
+        for (c, inside) in [(C64::new(-0.5, 0.0), true), (C64::new(0.5, 0.5), false), (C64::new(-1.0, 0.0), true)] {
+            f.pixel = c;
+            let o = k.run(&mut f, 200);
+            assert_eq!(!o.escaped, inside, "{c:?}");
+        }
+        // The base class adds the point only: everything escapes slowly or not at all.
+        let choices = BTreeMap::from([("plug".to_string(), ast::ParamValue::Class { class: "Base".into() })]);
+        let ctx = ClassCtx { lookup: &lookup, choices: &choices };
+        let p = check_with(&ast, ProgramKind::Fractal, Some(&ctx)).unwrap();
+        let k = Compiled::<f64>::new(&p, &[]);
+        let mut f = k.frame();
+        f.pixel = C64::new(1.0, 0.0);
+        assert_eq!(k.run(&mut f, 200).iter, 2);
+    }
 
     #[test]
     fn widening_and_types() {

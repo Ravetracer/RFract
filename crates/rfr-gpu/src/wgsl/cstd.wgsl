@@ -60,6 +60,9 @@ fn c_sqrt(a: Cx) -> Cx {
 }
 fn c_pow(a: Cx, w: Cx) -> Cx {
     if s_v(a.re) == 0.0 && s_v(a.im) == 0.0 {
+        if s_v(w.re) == 0.0 && s_v(w.im) == 0.0 {
+            return c_f(1.0, 0.0);
+        }
         return c_f(0.0, 0.0);
     }
     return c_exp(c_mul(w, c_log(a)));
@@ -149,7 +152,7 @@ fn s_rpow(x: S, y: S) -> S {
         return s_exp(s_mul(y, s_log(x)));
     }
     if s_v(x) == 0.0 {
-        return s_c(0.0);
+        return select(s_c(0.0), s_c(1.0), s_v(y) == 0.0);
     }
     return c_pow(c_real(x), c_real(y)).re;
 }

@@ -4,6 +4,20 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
 
 ## [Unreleased]
 
+### Added
+
+- UFM classes: class libraries (.ulb) from the formula folders, objects, methods,
+  inheritance, base class and static calls, object fields and arrays, `return`, object
+  parameters (plugins) with their own parameters, chosen in the inspector. Objects are
+  compiled into plain formula code, so class formulas render on the GPU.
+- RFract's own versions of common standard classes (Mandelbrot, Julia, Pixel, Newton, Smooth,
+  Gradient, trap shapes).
+- Color function parameters (merge modes, `@f(color1, color2)`).
+
+### Fixed
+
+- `0^0` is 1 in complex and real powers (was 0).
+
 ## [0.4.0] - 2026-11-25
 
 Stage 3: formula language compatibility (UFM and FractInt).

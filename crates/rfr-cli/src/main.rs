@@ -301,6 +301,11 @@ fn check_formulas(args: &[String]) -> Result<(), String> {
         return Err("no .ufm, .ucl, .uxf or .frm files found".into());
     }
     files.sort();
+    // Classes for formulas that use objects: the class libraries below the checked paths.
+    let folders: Vec<PathBuf> =
+        paths.iter().map(PathBuf::from).map(|p| if p.is_dir() { p } else { p.parent().map(Path::to_path_buf).unwrap_or_default() }).collect();
+    let registry = rfr_core::formula::library::ClassRegistry::from_folders(&folders);
+    eprintln!("{} classes in the class libraries ({} do not parse)", registry.len(), registry.errors.len());
     // (kind, classic) -> (ok, failed)
     let mut counts: std::collections::BTreeMap<(&str, bool), (usize, usize)> = Default::default();
     // (kind) -> (shader valid and CPU run fine, failed)
@@ -329,7 +334,15 @@ fn check_formulas(args: &[String]) -> Result<(), String> {
                     (
                         e.name.clone(),
                         classic,
-                        rfr_core::formula::parse::parse_ufm_entry(e).and_then(|a| rfr_core::formula::check::check_kind(&a, kind)),
+                        rfr_core::formula::parse::parse_ufm_entry(e).and_then(|a| {
+                            if a.imports.is_empty() && !a.params.iter().any(|p| p.kind == rfr_core::formula::ParamKind::Class) {
+                                return rfr_core::formula::check::check_kind(&a, kind);
+                            }
+                            let lookup = |n: &str| registry.get(n);
+                            let choices = Default::default();
+                            let ctx = rfr_core::formula::check::ClassCtx { lookup: &lookup, choices: &choices };
+                            rfr_core::formula::check::check_with(&a, kind, Some(&ctx))
+                        }),
                     )
                 })
                 .collect()

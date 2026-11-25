@@ -308,6 +308,7 @@ fn param_value(kind: ParamKind, items: &[String], v: &str) -> Option<ParamValue>
     let num = |s: &str| s.trim().parse::<f64>().ok();
     let parts: Vec<&str> = v.split('/').collect();
     Some(match kind {
+        ParamKind::Class => ParamValue::Class { class: v.rsplit(':').next().unwrap_or(v).trim().to_string() },
         ParamKind::Float => ParamValue::Float(num(parts[0])?),
         ParamKind::Complex => ParamValue::Complex([num(parts[0])?, parts.get(1).and_then(|s| num(s)).unwrap_or(0.0)]),
         ParamKind::Int => match num(parts[0]) {

@@ -42,8 +42,8 @@ pub fn err<T>(line: usize, msg: impl Into<String>) -> Result<T, Error> {
     Err(Error { line, msg: msg.into() })
 }
 
-const OPS: [&str; 26] =
-    ["||", "&&", "<=", ">=", "==", "!=", "<", ">", "+", "-", "*", "/", "^", "%", "!", "=", "(", ")", ",", "|", ":", "{", "}", "[", "]", "."];
+const OPS: [&str; 27] =
+    ["||", "&&", "&", "<=", ">=", "==", "!=", "<", ">", "+", "-", "*", "/", "^", "%", "!", "=", "(", ")", ",", "|", ":", "{", "}", "[", "]", "."];
 
 fn lex(src: &str, first_line: usize) -> Result<Vec<Token>, Error> {
     let mut out = Vec::new();
@@ -211,11 +211,18 @@ struct Parser {
     dialect: Dialect,
     /// FractInt syntax (inside UFM files or `.frm`): every number is complex, no integers.
     fractint: bool,
+    /// `import "x.ulb"` seen so far.
+    imports: Vec<String>,
+    /// Open parentheses around the expression being parsed.
+    paren_depth: usize,
 }
 
 const FRM_SECTIONS: [&str; 4] = ["parameters", "init", "loop", "bailout"];
 
-const SECTIONS: [&str; 14] = [
+const SECTIONS: [&str; 17] = [
+    "public",
+    "protected",
+    "private",
     "global",
     "init",
     "loop",
@@ -262,6 +269,9 @@ impl Parser {
     }
     fn expect_op(&mut self, op: &str) -> Result<(), Error> {
         if self.eat_op(op) { Ok(()) } else { err(self.line(), format!("expected '{op}', found {}", show(self.peek()))) }
+    }
+    fn is_op_at(&self, k: usize, op: &str) -> bool {
+        matches!(self.peek_at(k), Tok::Op(o) if *o == op)
     }
     fn is_kw(&self, kw: &str) -> bool {
         matches!(self.peek(), Tok::Ident(s) if s.eq_ignore_ascii_case(kw))
@@ -315,6 +325,9 @@ impl Parser {
             let (op, prec, right) = match self.peek() {
                 Tok::Op("||") => (BinOp::Or, 1, false),
                 Tok::Op("&&") => (BinOp::And, 2, false),
+                Tok::Op("&") if self.dialect == Dialect::Ufm => (BinOp::And, 2, false),
+                // `if (a = b)`: inside parentheses UFM code may compare with a single `=`.
+                Tok::Op("=") if self.paren_depth > 0 && self.dialect == Dialect::Ufm && !self.fractint => (BinOp::Eq, 3, false),
                 Tok::Op("<") => (BinOp::Lt, 3, false),
                 Tok::Op(">") => (BinOp::Gt, 3, false),
                 Tok::Op("<=") => (BinOp::Le, 3, false),
@@ -368,20 +381,58 @@ impl Parser {
     }
 
     fn primary(&mut self) -> Result<Expr, Error> {
+        let base = self.primary_base()?;
+        self.postfix(base)
+    }
+
+    /// `.field` and `.Method(args)` after a value.
+    fn postfix(&mut self, mut e: Expr) -> Result<Expr, Error> {
+        while self.dialect == Dialect::Ufm && !self.fractint && self.is_op(".") && matches!(self.peek_at(1), Tok::Ident(_)) {
+            self.next();
+            let Tok::Ident(name) = self.next() else { unreachable!() };
+            if self.eat_op("(") {
+                let args = self.args()?;
+                e = Expr::Method(Box::new(e), name, args);
+            } else if self.eat_op("[") {
+                let idx = self.index_list()?;
+                e = Expr::MemberIndex(Box::new(e), name, idx);
+            } else {
+                e = Expr::Member(Box::new(e), name);
+            }
+        }
+        Ok(e)
+    }
+
+    fn primary_base(&mut self) -> Result<Expr, Error> {
         let line = self.line();
+        if self.dialect == Dialect::Ufm && self.is_kw("new") {
+            self.next();
+            let (class, param) = match self.next() {
+                Tok::Param(n) => (n, true),
+                Tok::Ident(n) => (self.class_name_rest(n), false),
+                t => return err(line, format!("expected a class after 'new', found {}", show(&t))),
+            };
+            let args = if self.eat_op("(") { self.args()? } else { Vec::new() };
+            return Ok(Expr::New { class, param, args });
+        }
         match self.next() {
             Tok::Num(v, int) => Ok(Expr::Num { v, int: int && self.dialect == Dialect::Ufm && !self.fractint }),
             Tok::Imag(v) => Ok(Expr::Complex(Box::new(Expr::Num { v: 0.0, int: false }), Box::new(Expr::Num { v, int: false }))),
             Tok::Str(s) => Ok(Expr::Str(s)),
             Tok::Op("(") => {
-                let a = self.expr()?;
-                if self.eat_op(",") {
-                    let b = self.expr()?;
+                self.paren_depth += 1;
+                let r = (|| {
+                    let a = self.expr()?;
+                    if self.eat_op(",") {
+                        let b = self.expr()?;
+                        self.expect_op(")")?;
+                        return Ok(Expr::Complex(Box::new(a), Box::new(b)));
+                    }
                     self.expect_op(")")?;
-                    return Ok(Expr::Complex(Box::new(a), Box::new(b)));
-                }
-                self.expect_op(")")?;
-                Ok(a)
+                    Ok(a)
+                })();
+                self.paren_depth -= 1;
+                r
             }
             Tok::Op("|") => {
                 let e = self.binary_no_or()?;
@@ -521,6 +572,74 @@ impl Parser {
             let cond = self.expr()?;
             self.end_of_statement()?;
             return Ok(Stmt::Repeat { body, cond, line });
+        }
+        if self.dialect == Dialect::Ufm && !self.fractint {
+            if self.is_kw("import") {
+                self.next();
+                if let Tok::Str(f) = self.next() {
+                    self.imports.push(f);
+                }
+                self.end_of_statement()?;
+                return Ok(Stmt::Seq(Vec::new()));
+            }
+            if self.is_kw("return") {
+                self.next();
+                let value = if matches!(self.peek(), Tok::Newline | Tok::Eof) { None } else { Some(self.expr()?) };
+                self.end_of_statement()?;
+                return Ok(Stmt::Return(value, line));
+            }
+            // Class-typed declaration: `Formula f = new @formulaClass(0)`, `Line lines[]`.
+            if let (Tok::Ident(t), Tok::Ident(n)) = (self.peek().clone(), self.peek_at(1).clone())
+                && builtin_ty(&t).is_none()
+                && !is_keyword(&t)
+                && !is_keyword(&n)
+            {
+                self.next();
+                self.next();
+                let dims = if self.eat_op("[") { Some(self.index_list()?) } else { None };
+                let value = if self.eat_op("=") { Some(self.expr()?) } else { None };
+                self.end_of_statement()?;
+                return Ok(Stmt::ObjDecl { class: t, name: n, dims, value, line });
+            }
+            // object.field = …, object.Method(…), Class.Method(…), Cast(object).Method(…)
+            let cast_call = matches!(self.peek(), Tok::Ident(_)) && self.is_op_at(1, "(") && {
+                let mut depth = 0usize;
+                let mut k = 1;
+                loop {
+                    match self.peek_at(k) {
+                        Tok::Op("(") => depth += 1,
+                        Tok::Op(")") => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        Tok::Newline | Tok::Eof => break,
+                        _ => {}
+                    }
+                    k += 1;
+                }
+                depth == 0 && self.is_op_at(k + 1, ".")
+            };
+            if cast_call
+                || (matches!(self.peek(), Tok::Ident(_) | Tok::Param(_)) && self.is_op_at(1, ".") && matches!(self.peek_at(2), Tok::Ident(_)))
+            {
+                let e = self.primary()?;
+                if self.eat_op("=") {
+                    let value = self.expr()?;
+                    self.end_of_statement()?;
+                    return match e {
+                        Expr::Member(o, f) => Ok(Stmt::Assign { target: Target::Member(o, f), value, line }),
+                        Expr::MemberIndex(o, f, i) => Ok(Stmt::Assign { target: Target::MemberIndex(o, f, i), value, line }),
+                        _ => err(line, "this cannot be assigned"),
+                    };
+                }
+                self.end_of_statement()?;
+                return match e {
+                    Expr::Method(..) => Ok(Stmt::Eval(e, line)),
+                    _ => err(line, "expected a method call or an assignment"),
+                };
+            }
         }
         if self.dialect == Dialect::Ufm {
             let ty = match self.peek() {
@@ -685,6 +804,8 @@ impl Parser {
                 },
                 Target::Sys(n) => Expr::Sys(n.clone()),
                 Target::Index(n, idx) => Expr::Index(n.clone(), idx.clone()),
+                Target::Member(o, f) => Expr::Member(o.clone(), f.clone()),
+                Target::MemberIndex(o, f, i) => Expr::MemberIndex(o.clone(), f.clone(), i.clone()),
                 Target::Comp { .. } => v.clone(),
             };
             out.push(Stmt::Assign { target: t, value: v, line });
@@ -812,6 +933,7 @@ impl Parser {
                 max: None,
                 items: Vec::new(),
                 classic: None,
+                base: None,
             };
             if self.is_kw("domain") {
                 self.next();
@@ -964,6 +1086,21 @@ impl Parser {
                 f.params.push(p);
                 continue;
             }
+            // An object parameter: `Formula param formulaClass … endparam`.
+            if typed.is_none() && !is_keyword(&word) && matches!(self.peek_at(1), Tok::Ident(s) if s.eq_ignore_ascii_case("param")) {
+                self.next();
+                self.next();
+                if let Some(mut p) = self.ufm_param_block(Some(ParamKind::Class))? {
+                    p.base = Some(word.clone());
+                    if let ParamValue::Class { class } = &p.default
+                        && class.is_empty()
+                    {
+                        p.default = ParamValue::Class { class: word.clone() };
+                    }
+                    f.params.push(p);
+                }
+                continue;
+            }
             if typed.is_some() && matches!(self.peek_at(1), Tok::Ident(s) if s.eq_ignore_ascii_case("param")) {
                 self.next();
                 self.next();
@@ -1030,6 +1167,7 @@ impl Parser {
             max: None,
             items: Vec::new(),
             classic: None,
+            base: None,
         };
         let mut default = None;
         self.skip_separators();
@@ -1061,6 +1199,15 @@ impl Parser {
                         p.hint = s;
                     }
                 }
+                "default" if p.kind == ParamKind::Class => {
+                    // A class name, possibly qualified: Name or file.ulb:Name.
+                    let mut name = String::new();
+                    while let Tok::Ident(t) | Tok::Param(t) = self.peek().clone() {
+                        self.next();
+                        name = self.class_name_rest(t);
+                    }
+                    default = Some(ParamValue::Class { class: name });
+                }
                 "default" => default = self.const_value(),
                 "min" => p.min = self.const_value().map(|v| v.as_f64()),
                 "max" => p.max = self.const_value().map(|v| v.as_f64()),
@@ -1091,6 +1238,8 @@ impl Parser {
             (ParamKind::Int, None) => ParamValue::Int(0),
             (ParamKind::Complex, Some(v)) => ParamValue::Complex(v.as_complex()),
             (ParamKind::Complex, None) => ParamValue::Complex([0.0, 0.0]),
+            (ParamKind::Class, Some(v @ ParamValue::Class { .. })) => v,
+            (ParamKind::Class, _) => ParamValue::Class { class: String::new() },
             (ParamKind::Color, Some(v)) => ParamValue::Color(v.as_color()),
             (ParamKind::Color, None) => ParamValue::Color([0.0, 0.0, 0.0, 1.0]),
             (_, Some(v)) => ParamValue::Float(v.as_f64()),
@@ -1115,6 +1264,7 @@ impl Parser {
             max: None,
             items: Vec::new(),
             classic: None,
+            base: None,
         };
         self.skip_separators();
         loop {
@@ -1172,6 +1322,7 @@ impl Parser {
             skipped_sections: Vec::new(),
             transform: Vec::new(),
             fractint: false,
+            imports: Vec::new(),
         };
         let mut seen_section = false;
         loop {
@@ -1222,8 +1373,233 @@ impl Parser {
                 }
             }
         }
+        f.imports = std::mem::take(&mut self.imports);
         Ok(f)
     }
+
+    // ---- classes ----
+
+    /// A type name in class code (built-in or class).
+    fn type_ref(&mut self) -> Result<TypeRef, Error> {
+        let line = self.line();
+        match self.next() {
+            Tok::Ident(t) => Ok(match builtin_ty(&t) {
+                Some(d) => TypeRef::Builtin(d),
+                None => TypeRef::Class(self.class_name_rest(t)),
+            }),
+            t => err(line, format!("expected a type, found {}", show(&t))),
+        }
+    }
+
+    /// A class name, possibly qualified by its file (`common.ulb:Generic`): the class part.
+    fn class_name_rest(&mut self, first: String) -> String {
+        let mut name = first;
+        // file.ulb:Name
+        if self.is_op(".") && matches!(self.peek_at(1), Tok::Ident(_)) && matches!(self.peek_at(2), Tok::Op(":")) {
+            self.next();
+            self.next();
+            self.next();
+            if let Tok::Ident(n) = self.next() {
+                name = n;
+            }
+        }
+        name
+    }
+
+    /// Members of a class body up to its end.
+    fn class_body(&mut self, c: &mut ClassAst) -> Result<(), Error> {
+        loop {
+            self.skip_newlines();
+            if *self.peek() == Tok::Eof || self.is_op("}") {
+                return Ok(());
+            }
+            if let Some(section) = self.at_section() {
+                self.next();
+                self.next();
+                if section == "default" {
+                    let mut f = FormulaAst {
+                        name: c.name.clone(),
+                        dialect: Dialect::Ufm,
+                        params: Vec::new(),
+                        global: Vec::new(),
+                        init: Vec::new(),
+                        body: Vec::new(),
+                        bailout: None,
+                        fin: Vec::new(),
+                        title: None,
+                        center: None,
+                        magn: None,
+                        maxiter: None,
+                        skipped_sections: Vec::new(),
+                        transform: Vec::new(),
+                        fractint: false,
+                        imports: Vec::new(),
+                    };
+                    self.ufm_default(&mut f)?;
+                    c.params.extend(f.params);
+                    c.title = f.title;
+                }
+                continue;
+            }
+            if self.is_kw("import") {
+                self.skip_line();
+                continue;
+            }
+            let line = self.line();
+            let is_static = self.is_kw("static");
+            if is_static {
+                self.next();
+            }
+            if self.is_kw("const") {
+                self.next();
+            }
+            // [type] func Name(params)
+            let ret = if self.is_kw("func") { None } else { Some(self.type_ref()?) };
+            if self.is_kw("func") {
+                self.next();
+                let name = match self.next() {
+                    Tok::Ident(n) => n,
+                    t => return err(line, format!("expected a method name, found {}", show(&t))),
+                };
+                self.expect_op("(")?;
+                let mut params = Vec::new();
+                if !self.eat_op(")") {
+                    loop {
+                        if self.is_kw("const") {
+                            self.next();
+                        }
+                        let ty = self.type_ref()?;
+                        let by_ref = self.eat_op("&");
+                        let pname = match self.next() {
+                            Tok::Ident(n) => n,
+                            t => return err(self.line(), format!("expected a parameter name, found {}", show(&t))),
+                        };
+                        // Array parameters: name[]
+                        if self.eat_op("[") {
+                            while !self.eat_op("]") {
+                                self.next();
+                            }
+                        }
+                        params.push(MethodParam { ty, name: pname, by_ref });
+                        if self.eat_op(")") {
+                            break;
+                        }
+                        self.expect_op(",")?;
+                    }
+                }
+                self.end_of_statement()?;
+                let body = self.block(&["endfunc"])?;
+                if !self.is_kw("endfunc") {
+                    return err(line, format!("'func {name}' without 'endfunc'"));
+                }
+                self.next();
+                self.end_of_statement()?;
+                c.methods.push(MethodAst { name, ret, params, body, is_static, line });
+                continue;
+            }
+            // Fields: type name[, name …] [dims]
+            let mut ty = ret.ok_or_else(|| Error { line, msg: "expected a member".into() })?;
+            loop {
+                // `float h, float v`: a new type in the list.
+                if matches!((self.peek(), self.peek_at(1)), (Tok::Ident(_), Tok::Ident(_))) {
+                    ty = self.type_ref()?;
+                }
+                let name = match self.next() {
+                    Tok::Ident(n) => n,
+                    t => return err(line, format!("expected a field name, found {}", show(&t))),
+                };
+                let dims = if self.eat_op("[") { Some(self.index_list()?) } else { None };
+                c.fields.push(FieldAst { ty: ty.clone(), name, dims });
+                if self.eat_op("=") {
+                    // Field initializers are rare; the value is ignored (fields start at zero).
+                    while !matches!(self.peek(), Tok::Newline | Tok::Eof) && !self.is_op(",") {
+                        self.next();
+                    }
+                }
+                if !self.eat_op(",") {
+                    break;
+                }
+            }
+            self.end_of_statement()?;
+        }
+    }
+}
+
+/// A built-in type name.
+fn builtin_ty(t: &str) -> Option<DeclTy> {
+    Some(match t.to_ascii_lowercase().as_str() {
+        "bool" => DeclTy::Bool,
+        "int" => DeclTy::Int,
+        "float" => DeclTy::Float,
+        "complex" => DeclTy::Complex,
+        "color" => DeclTy::Color,
+        _ => return None,
+    })
+}
+
+/// Words that start statements and cannot be class names.
+fn is_keyword(t: &str) -> bool {
+    matches!(
+        t.to_ascii_lowercase().as_str(),
+        "if" | "elseif"
+            | "else"
+            | "endif"
+            | "while"
+            | "endwhile"
+            | "repeat"
+            | "until"
+            | "return"
+            | "import"
+            | "func"
+            | "endfunc"
+            | "static"
+            | "const"
+            | "new"
+            | "this"
+    )
+}
+
+/// Tokens of an entry body (with FractInt's `end if` merged).
+fn entry_tokens(body: &str, line: usize) -> Result<Vec<Token>, Error> {
+    let mut toks = lex(body, line)?;
+    let mut k = 0;
+    while k + 1 < toks.len() {
+        if matches!(&toks[k].tok, Tok::Ident(a) if a.eq_ignore_ascii_case("end"))
+            && matches!(&toks[k + 1].tok, Tok::Ident(b) if b.eq_ignore_ascii_case("if"))
+        {
+            toks[k].tok = Tok::Ident("endif".into());
+            toks.remove(k + 1);
+        }
+        k += 1;
+    }
+    Ok(toks)
+}
+
+/// The classes of a class library (`.ulb`): `class Name(Parent) { … }` entries.
+pub fn parse_classes(src: &str) -> Vec<(String, Result<ClassAst, Error>)> {
+    let pre = preprocess(src);
+    split_entries(&pre)
+        .iter()
+        .filter_map(|e| {
+            let head = e.name.trim();
+            let rest = head.strip_prefix("class").or_else(|| head.strip_prefix("Class"))?.trim();
+            let (name, parent) = match rest.split_once('(') {
+                Some((n, p)) => {
+                    let p = p.trim_end_matches(')').trim();
+                    let p = p.rsplit(':').next().unwrap_or(p).trim();
+                    (n.trim().to_string(), (!p.is_empty()).then(|| p.to_string()))
+                }
+                None => (rest.to_string(), None),
+            };
+            let mut c =
+                ClassAst { name: name.clone(), parent, fields: Vec::new(), methods: Vec::new(), params: Vec::new(), title: None, line: e.line };
+            let r = entry_tokens(e.body, e.line).and_then(|toks| {
+                let mut p = Parser { toks, pos: 0, dialect: Dialect::Ufm, fractint: false, imports: Vec::new(), paren_depth: 0 };
+                p.class_body(&mut c)
+            });
+            Some((name, r.map(|_| c)))
+        })
+        .collect()
 }
 
 fn show(t: &Tok) -> String {
@@ -1272,7 +1648,7 @@ pub fn parse_frm(src: &str) -> Result<FormulaAst, Error> {
     let Some((name, rest)) = hl.split_once('{') else { return err(hi + 1, "expected 'Name {'") };
     let body = &src[start + (hl.len() - rest.len())..];
     let toks = lex(body, hi + 1)?;
-    let mut p = Parser { toks, pos: 0, dialect: Dialect::Frm, fractint: false };
+    let mut p = Parser { toks, pos: 0, dialect: Dialect::Frm, fractint: false, imports: Vec::new(), paren_depth: 0 };
     let f = p.formula_body(name.trim().to_string())?;
     p.expect_op("}")?;
     Ok(f)
@@ -1439,19 +1815,8 @@ pub fn split_entries(src: &str) -> Vec<Entry<'_>> {
 
 /// Parses one entry of a UFM syntax file.
 pub fn parse_ufm_entry(e: &Entry) -> Result<FormulaAst, Error> {
-    let mut toks = lex(e.body, e.line)?;
-    // FractInt also accepts `end if`.
-    let mut k = 0;
-    while k + 1 < toks.len() {
-        if matches!(&toks[k].tok, Tok::Ident(a) if a.eq_ignore_ascii_case("end"))
-            && matches!(&toks[k + 1].tok, Tok::Ident(b) if b.eq_ignore_ascii_case("if"))
-        {
-            toks[k].tok = Tok::Ident("endif".into());
-            toks.remove(k + 1);
-        }
-        k += 1;
-    }
-    let mut p = Parser { toks, pos: 0, dialect: Dialect::Ufm, fractint: false };
+    let toks = entry_tokens(e.body, e.line)?;
+    let mut p = Parser { toks, pos: 0, dialect: Dialect::Ufm, fractint: false, imports: Vec::new(), paren_depth: 0 };
     p.formula_body(e.name.clone())
 }
 

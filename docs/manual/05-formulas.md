@@ -114,6 +114,22 @@ rfr-cli formulas --check path/to/formulas
   `p1`…`p6`, `fn1`…`fn4`, `whitesq`, `scrnpix`, `maxit`, `lastsqr`, `rand`, …) and the
   preprocessor (`$define`, `$ifdef`, `$ifndef`, `$else`, `$endif`).
 
+### Classes and plugins
+
+Formulas can use classes from class libraries (`.ulb` files in your formula folders):
+`import "common.ulb"`, `Formula f = new @formulaClass(this)`, methods (`f.Iterate(#z)`),
+inheritance with base class calls (`Formula.Init(pz)`), static methods, fields and arrays in
+objects, and object parameters (plugins): `Formula param formulaClass … endparam` lets you pick
+any class derived from `Formula` in the inspector, and the parameters of the chosen class
+appear indented below it. RFract brings its own versions of the most used standard classes
+(Mandelbrot, Julia, Pixel, Newton, Smooth, Gradient and several trap shapes); they build on
+`common.ulb`, which must be in a formula folder.
+
+RFract compiles objects away: every `new` becomes a set of variables and every method call is
+built into the formula, so class formulas render on the graphics card like any other.
+Changing a plugin compiles the formula again.
+
 !!! note
-    Not supported yet: classes (`class`, `import`, `new`), user functions, image parameters
-    and `.upr` parameter files. The check lists what fails by frequency.
+    Not supported yet: arrays of objects and objects made in a loop that must all stay alive,
+    a variable that refers to different objects depending on a condition, recursion, image
+    parameters and user functions outside classes. The check lists what fails by frequency.

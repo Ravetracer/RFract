@@ -64,6 +64,28 @@ pub fn merge(mode: MergeMode, bottom: Rgba, top: Rgba) -> Rgba {
     [m[0] as f64, m[1] as f64, m[2] as f64, top[3]]
 }
 
+/// The `merge…` function names (for color function parameters).
+pub const MERGE_NAMES: [&str; 18] = [
+    "mergenormal",
+    "mergemultiply",
+    "mergescreen",
+    "mergeoverlay",
+    "mergesoftlight",
+    "mergehardlight",
+    "mergecolordodge",
+    "mergecolorburn",
+    "mergedarken",
+    "mergelighten",
+    "mergedifference",
+    "mergeexclusion",
+    "mergeaddition",
+    "mergesubtraction",
+    "mergehue",
+    "mergesaturation",
+    "mergecolor",
+    "mergeluminance",
+];
+
 /// Merge mode of a UFM `merge…` function name (lowercase).
 pub fn merge_mode(name: &str) -> Option<MergeMode> {
     Some(match name {

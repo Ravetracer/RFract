@@ -1,0 +1,239 @@
+comment {
+  RFract's own versions of the classes that class-based formulas commonly name from the
+  standard class library of another program (Standard_Mandelbrot, Standard_Smooth, …).
+  Written from the documented class interfaces; they build on the common.ulb base classes,
+  which must be in a formula folder.
+}
+
+class Standard_Mandelbrot(common.ulb:DivergentFormula) {
+; z = z^power + c with c the point, starting at the starting point.
+public:
+  func Standard_Mandelbrot(Generic pparent)
+    DivergentFormula.DivergentFormula(pparent)
+  endfunc
+  complex func Init(complex pz)
+    DivergentFormula.Init(pz)
+    m_C = pz
+    return @p_start
+  endfunc
+  complex func Iterate(complex pz)
+    Formula.Iterate(pz)
+    return pz^@p_power + m_C
+  endfunc
+protected:
+  complex m_C
+default:
+  title = "Mandelbrot"
+  complex param p_start
+    caption = "Starting point"
+    default = (0, 0)
+    hint = "Value of z before the first iteration."
+  endparam
+  complex param p_power
+    caption = "Power"
+    default = (2, 0)
+    hint = "Exponent of z."
+  endparam
+}
+
+class Standard_Julia(common.ulb:DivergentFormula) {
+; z = z^power + seed, starting at the point.
+public:
+  func Standard_Julia(Generic pparent)
+    DivergentFormula.DivergentFormula(pparent)
+  endfunc
+  complex func Init(complex pz)
+    DivergentFormula.Init(pz)
+    return pz
+  endfunc
+  complex func Iterate(complex pz)
+    Formula.Iterate(pz)
+    return pz^@p_power + @p_seed
+  endfunc
+default:
+  title = "Julia"
+  complex param p_seed
+    caption = "Julia seed"
+    default = (-0.75, 0.1)
+    hint = "The constant of the Julia set."
+  endparam
+  complex param p_power
+    caption = "Power"
+    default = (2, 0)
+    hint = "Exponent of z."
+  endparam
+}
+
+class Standard_Pixel(common.ulb:Formula) {
+; The point itself: the sequence ends at once (for colorings that read the plane).
+public:
+  func Standard_Pixel(Generic pparent)
+    Formula.Formula(pparent)
+  endfunc
+  complex func Init(complex pz)
+    Formula.Init(pz)
+    return pz
+  endfunc
+default:
+  title = "Pixel"
+}
+
+class Standard_Newton(common.ulb:ConvergentFormula) {
+; Newton's method for z^power = root.
+public:
+  func Standard_Newton(Generic pparent)
+    ConvergentFormula.ConvergentFormula(pparent)
+  endfunc
+  complex func Iterate(complex pz)
+    ConvergentFormula.Iterate(pz)
+    return pz - (pz^@p_power - @p_root) / (@p_power * pz^(@p_power - 1))
+  endfunc
+default:
+  title = "Newton"
+  complex param p_power
+    caption = "Exponent"
+    default = (3, 0)
+  endparam
+  complex param p_root
+    caption = "Root"
+    default = (1, 0)
+  endparam
+}
+
+class Standard_Smooth(common.ulb:GradientColoring) {
+; Continuous iteration count of divergent formulas.
+public:
+  func Standard_Smooth(Generic pparent)
+    GradientColoring.GradientColoring(pparent)
+  endfunc
+  float func ResultIndex(complex pz)
+    float lz = log(max(cabs(pz), 1.000001))
+    float p = log(max(cabs(@p_power), 1.000001))
+    return 0.05 * (m_Iterations + log(0.5 * log(@p_bailout) / lz) / p)
+  endfunc
+default:
+  title = "Smooth"
+  complex param p_power
+    caption = "Exponent"
+    default = (2, 0)
+    hint = "The fractal formula's exponent."
+  endparam
+  float param p_bailout
+    caption = "Bailout"
+    default = 128
+    hint = "The fractal formula's bailout."
+  endparam
+}
+
+class Standard_Gradient(common.ulb:GradientColoring) {
+; A straight gradient across the plane, at an angle.
+public:
+  func Standard_Gradient(Generic pparent)
+    GradientColoring.GradientColoring(pparent)
+  endfunc
+  float func ResultIndex(complex pz)
+    return real(m_Pixel * exp((0, -1) * @p_angle * #pi / 180)) * @p_scale
+  endfunc
+default:
+  title = "Gradient"
+  float param p_angle
+    caption = "Angle"
+    default = 0
+  endparam
+  float param p_scale
+    caption = "Scale"
+    default = 1
+  endparam
+}
+
+class Standard_TrapShapePoint(common.ulb:TrapShape) {
+; Distance to a point (the origin of the trap).
+public:
+  func Standard_TrapShapePoint(Generic pparent)
+    TrapShape.TrapShape(pparent)
+  endfunc
+  float func Iterate(complex pz)
+    TrapShape.Iterate(pz)
+    return cabs(pz)
+  endfunc
+default:
+  title = "Point"
+}
+
+class Standard_TrapShapeRing(common.ulb:TrapShape) {
+; Distance to a circle.
+public:
+  func Standard_TrapShapeRing(Generic pparent)
+    TrapShape.TrapShape(pparent)
+  endfunc
+  float func Iterate(complex pz)
+    TrapShape.Iterate(pz)
+    return abs(cabs(pz) - @p_radius)
+  endfunc
+default:
+  title = "Ring"
+  float param p_radius
+    caption = "Radius"
+    default = 1
+  endparam
+}
+
+class Standard_TrapShapeCross(common.ulb:TrapShape) {
+; Distance to the axes.
+public:
+  func Standard_TrapShapeCross(Generic pparent)
+    TrapShape.TrapShape(pparent)
+  endfunc
+  float func Iterate(complex pz)
+    TrapShape.Iterate(pz)
+    return min(abs(real(pz)), abs(imag(pz)))
+  endfunc
+default:
+  title = "Cross"
+}
+
+class Standard_TrapShapeLines(common.ulb:TrapShape) {
+; Distance to the horizontal axis.
+public:
+  func Standard_TrapShapeLines(Generic pparent)
+    TrapShape.TrapShape(pparent)
+  endfunc
+  float func Iterate(complex pz)
+    TrapShape.Iterate(pz)
+    return abs(imag(pz))
+  endfunc
+default:
+  title = "Lines"
+}
+
+class Standard_TrapShapeBox(common.ulb:TrapShape) {
+; Distance to a square.
+public:
+  func Standard_TrapShapeBox(Generic pparent)
+    TrapShape.TrapShape(pparent)
+  endfunc
+  float func Iterate(complex pz)
+    TrapShape.Iterate(pz)
+    return abs(max(abs(real(pz)), abs(imag(pz))) - @p_radius)
+  endfunc
+default:
+  title = "Box"
+  float param p_radius
+    caption = "Size"
+    default = 1
+  endparam
+}
+
+class Standard_TrapShapeGaussianInteger(common.ulb:TrapShape) {
+; Distance to the nearest Gaussian integer.
+public:
+  func Standard_TrapShapeGaussianInteger(Generic pparent)
+    TrapShape.TrapShape(pparent)
+  endfunc
+  float func Iterate(complex pz)
+    TrapShape.Iterate(pz)
+    return cabs(pz - round(pz))
+  endfunc
+default:
+  title = "Gaussian integer"
+}

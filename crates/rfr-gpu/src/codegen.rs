@@ -35,6 +35,7 @@ pub const MAX_PARAMS: usize = 4096;
 
 struct Gen<'a> {
     prog: &'a Program,
+    values: &'a [ParamValue],
     funcs: Vec<Option<Func>>,
     /// Name prefix of this program's locals (`l` fractal, `t0_` transformations, `ko` / `ki`
     /// colorings).
@@ -165,6 +166,10 @@ impl Gen<'_> {
             Kind::Call(f, args) => self.call(*f, args, e.ty),
             Kind::ColorOp(op, a) => self.color_op(*op, a),
             Kind::RandomInt(a) => format!("bitcast<i32>(hash(bitcast<u32>({})))", self.expr(a)),
+            Kind::MergeParam(i, a, b) => {
+                let mode = merge_choices(self.prog, self.values).get(*i).copied().flatten().unwrap_or_default();
+                format!("k_merge({}u, {}, {})", mode.index(), self.expr(a), self.expr(b))
+            }
             Kind::CallParam(i, a) => {
                 let f = self.funcs.get(*i).copied().flatten().unwrap_or(Func::Ident);
                 self.complex_call(f, &self.expr(a))
@@ -402,7 +407,7 @@ fn locals(g: &Gen, out: &mut String, pad: &str, first: Option<&str>) {
 /// The complete kernel shader of a layer.
 pub fn kernel(lp: &LayerPlan, mode: Mode) -> String {
     fn gen_for<'a>(prog: &'a Prog, prefix: String, base: &mut usize) -> Gen<'a> {
-        let g = Gen { prog: &prog.program, funcs: func_choices(&prog.program, &prog.values), prefix, base: *base };
+        let g = Gen { prog: &prog.program, values: &prog.values, funcs: func_choices(&prog.program, &prog.values), prefix, base: *base };
         *base += prog.program.params.len();
         g
     }
@@ -531,6 +536,7 @@ pub fn signature(lp: &LayerPlan, mode: Mode) -> u64 {
         p.id.hash(&mut h);
         format!("{:?}", p.program).hash(&mut h);
         format!("{:?}", func_choices(&p.program, &p.values)).hash(&mut h);
+        format!("{:?}", merge_choices(&p.program, &p.values)).hash(&mut h);
     }
     lp.outside.formula().is_some().hash(&mut h);
     lp.inside.formula().is_some().hash(&mut h);

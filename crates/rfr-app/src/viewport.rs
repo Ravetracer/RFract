@@ -142,7 +142,8 @@ impl Viewport {
     pub fn set_julia(&mut self, doc: &mut Document, sel: &Selection, seed: Option<[f64; 2]>) -> Option<String> {
         let view = doc.view.clone();
         let layer = target_mut(doc, sel)?;
-        let has_julia = rfr_core::formula::library::library().get(&layer.formula).and_then(|e| e.program().ok()).is_some_and(|p| p.has_julia);
+        let has_julia =
+            rfr_core::formula::library::library().get(&layer.formula).and_then(|e| e.program_with(&layer.params).ok()).is_some_and(|p| p.has_julia);
         if !has_julia {
             return Some("This formula has no Julia mode".into());
         }

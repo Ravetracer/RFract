@@ -3,14 +3,14 @@
 The stages and their scope are in PLAN.md. This file holds the next concrete steps and wishes
 that come up along the way.
 
-## Next: stage 3b – UFM classes
+## Stage 3b – UFM classes
 
-- [ ] `class`/`extends`, methods (virtual, static), fields, `import "x.ulb"`, `new`, object
-      parameters (`param ... type`) and plugin parameters (`func`-like class choices).
-- [ ] Nested plugin parameters in the document and the inspector.
-- [ ] Own implementation of the standard base classes (formula, coloring, transform, gradient,
-      generator); `common.ulb` from the user's formula folders.
-- [ ] GPU through monomorphization (plugin choices are known when the shader is built).
+- [x] Classes, inheritance, methods, static and base calls, fields, object parameters
+      (plugins) with nested parameters, casts; compiled into plain IR (GPU and CPU).
+- [x] RFract's standard classes (`formulas/rfract/standard.ulb`) on top of `common.ulb`.
+- [ ] Arrays of objects / objects made in loops (needs unrolling with known indexes).
+- [ ] More standard classes (orbit traps, exponential smoothing, direct orbit traps, …).
+- [ ] Image parameters (`Image` class), user functions outside classes.
 - [ ] Optional: Cranelift JIT for the CPU path.
 
 ## Done in stage 3 (v0.4.0)

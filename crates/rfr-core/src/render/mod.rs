@@ -35,7 +35,7 @@ impl Prog {
         if entry.kind != kind {
             return Err(format!("'{}' is not a {}", entry.title, kind_name(kind)));
         }
-        let program = entry.program().map_err(|e| format!("'{}' does not compile: {e}", entry.title))?;
+        let program = entry.program_with(params).map_err(|e| format!("'{}' does not compile: {e}", entry.title))?;
         let values = program.params.iter().map(|p| resolve_value(p.kind, &p.default, params.get(&p.name))).collect();
         Ok(Prog { id: id.to_string(), program, values })
     }
@@ -366,7 +366,11 @@ pub enum Precision {
 pub fn resolve_value(kind: ParamKind, default: &ParamValue, v: Option<&ParamValue>) -> ParamValue {
     let Some(v) = v else { return default.clone() };
     match (kind, v) {
-        (ParamKind::Func, ParamValue::Func(f)) if crate::formula::ir::Func::by_name(f).is_some() => v.clone(),
+        (ParamKind::Func, ParamValue::Func(f))
+            if crate::formula::ir::Func::by_name(f).is_some() || crate::formula::color::merge_mode(f).is_some() =>
+        {
+            v.clone()
+        }
         (ParamKind::Func, _) => default.clone(),
         (ParamKind::Bool, ParamValue::Bool(_))
         | (ParamKind::Int, ParamValue::Int(_))
@@ -378,6 +382,8 @@ pub fn resolve_value(kind: ParamKind, default: &ParamValue, v: Option<&ParamValu
         (ParamKind::Float, other) => ParamValue::Float(other.as_f64()),
         (ParamKind::Complex, other) => ParamValue::Complex(other.as_complex()),
         (ParamKind::Color, other) => ParamValue::Color(other.as_color()),
+        (ParamKind::Class, ParamValue::Class { .. }) => v.clone(),
+        (ParamKind::Class, _) => default.clone(),
     }
 }
 

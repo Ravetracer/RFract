@@ -135,7 +135,7 @@ pub fn real_pow<S: Scalar>(x: S, y: S) -> S {
     if x.v() > 0.0 {
         (y * x.ln()).exp()
     } else if x.v() == 0.0 {
-        S::zero()
+        if y.v() == 0.0 { S::one() } else { S::zero() }
     } else {
         Cx::real(x).pow(Cx::real(y)).re
     }
@@ -524,6 +524,11 @@ impl<'a, S: Scalar + Send + Sync + 'static> Cc<'a, S> {
             Kind::RandomInt(a) => {
                 let a = self.i(a);
                 E::I(Box::new(move |f| crate::render::hash(a(f) as u32) as i32 as i64))
+            }
+            Kind::MergeParam(i, a, b) => {
+                let mode = merge_choices(self.prog, self.values).get(*i).copied().flatten().unwrap_or_default();
+                let (a, b) = (self.k(a), self.k(b));
+                E::K(Box::new(move |f| super::color::merge(mode, a(f), b(f))))
             }
             Kind::CallParam(i, a) => {
                 let func = self.func_choice(*i);

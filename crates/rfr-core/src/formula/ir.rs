@@ -293,6 +293,8 @@ pub enum Kind {
     RandomInt(Box<Expr>),
     /// Color constructor, channel or mixing function (see [`ColorOp`] for the operands).
     ColorOp(ColorOp, Vec<Expr>),
+    /// `@fn(a, b)` through a color function parameter: the merge mode it chooses (colors).
+    MergeParam(usize, Box<Expr>, Box<Expr>),
     /// Element of the array local `slot` at the (flat, int) index, clamped to its capacity.
     Index(usize, Box<Expr>),
 }
@@ -340,6 +342,8 @@ pub struct Param {
     pub min: Option<f64>,
     pub max: Option<f64>,
     pub items: Vec<String>,
+    /// Object parameters: the base class of the choices.
+    pub base: Option<String>,
 }
 
 /// The local slot of `z`.
@@ -393,6 +397,25 @@ pub enum ColorOp {
     Merge(crate::doc::MergeMode),
     /// `gradient(t)`: the coloring's gradient at `t` (real → color).
     Gradient,
+}
+
+/// The merge mode each color function parameter chooses (`None`: not one).
+pub fn merge_choices(prog: &Program, values: &[ParamValue]) -> Vec<Option<crate::doc::MergeMode>> {
+    prog.params
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            if p.kind != ParamKind::Func {
+                return None;
+            }
+            let name = match (values.get(i), &p.default) {
+                (Some(ParamValue::Func(f)), _) if super::color::merge_mode(f).is_some() => f.clone(),
+                (_, ParamValue::Func(f)) => f.clone(),
+                _ => return None,
+            };
+            super::color::merge_mode(&name)
+        })
+        .collect()
 }
 
 impl Program {

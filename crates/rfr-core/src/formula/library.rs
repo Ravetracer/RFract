@@ -11,7 +11,9 @@ use std::sync::{Arc, OnceLock, RwLock};
 
 use serde::Deserialize;
 
-use super::ast::{Dialect, FormulaAst, ProgramKind};
+use std::collections::BTreeMap;
+
+use super::ast::{Dialect, FormulaAst, ParamValue, ProgramKind};
 use super::ir::Program;
 use super::parse::Error;
 
@@ -21,6 +23,7 @@ const RFRACT_UFM: &str = include_str!("../../formulas/rfract/rfract.ufm");
 const RFRACT_UCL: &str = include_str!("../../formulas/rfract/rfract.ucl");
 const RFRACT_UXF: &str = include_str!("../../formulas/rfract/rfract.uxf");
 const FRACTINT_UFM: &str = include_str!("../../formulas/rfract/fractint.ufm");
+const STANDARD_ULB: &str = include_str!("../../formulas/rfract/standard.ulb");
 const FRACTALPARK_INDEX: &str = include_str!("../../formulas/fractalpark/index.json");
 
 /// Where a formula comes from.
@@ -82,12 +85,43 @@ pub struct Entry {
     pub view: DefaultView,
     origin: Origin,
     program: OnceLock<Result<Arc<Program>, Error>>,
+    /// Whether the formula uses objects (its program depends on the chosen classes).
+    classy: OnceLock<bool>,
+    /// Programs for other class choices (key: the choices).
+    variants: std::sync::Mutex<HashMap<String, Result<Arc<Program>, Error>>>,
 }
 
 impl Entry {
+    /// The program for stored parameter values: formulas that use objects compile for the
+    /// classes chosen in `params` (object parameters, `ParamValue::Class`).
+    pub fn program_with(&self, params: &BTreeMap<String, ParamValue>) -> Result<Arc<Program>, Error> {
+        let base = self.program();
+        if !self.classy.get().copied().unwrap_or(false) {
+            return base;
+        }
+        let choices: BTreeMap<String, ParamValue> =
+            params.iter().filter(|(_, v)| matches!(v, ParamValue::Class { .. })).map(|(k, v)| (k.clone(), v.clone())).collect();
+        if choices.is_empty() {
+            return base;
+        }
+        let key = choices.iter().map(|(k, v)| format!("{k}={v:?}")).collect::<Vec<_>>().join(";");
+        if let Some(r) = self.variants.lock().ok().and_then(|m| m.get(&key).cloned()) {
+            return r;
+        }
+        let r = self.compile_with(&choices).map(Arc::new);
+        if let Ok(mut m) = self.variants.lock() {
+            m.insert(key, r.clone());
+        }
+        r
+    }
+
+    /// Whether the formula uses objects (known after the first compile).
+    pub fn uses_classes(&self) -> bool {
+        self.classy.get().copied().unwrap_or(false)
+    }
     /// The compiled program (compiled on the first call for user formulas).
     pub fn program(&self) -> Result<Arc<Program>, Error> {
-        self.program.get_or_init(|| self.compile().map(Arc::new)).clone()
+        self.program.get_or_init(|| self.compile_with(&BTreeMap::new()).map(Arc::new)).clone()
     }
 
     /// Whether the entry compiled, if it was compiled already.
@@ -111,7 +145,7 @@ impl Entry {
         }
     }
 
-    fn compile(&self) -> Result<Program, Error> {
+    fn compile_with(&self, choices: &BTreeMap<String, ParamValue>) -> Result<Program, Error> {
         let src = self.source().ok_or_else(|| Error { line: 0, msg: "the formula file cannot be read".into() })?;
         if self.dialect == Dialect::Frm {
             return super::compile_frm(&src);
@@ -122,7 +156,16 @@ impl Entry {
             .iter()
             .find(|e| e.name == self.entry)
             .ok_or_else(|| Error { line: 0, msg: format!("the entry '{}' is no longer in the file", self.entry) })?;
-        super::parse::parse_ufm_entry(e).and_then(|a| super::check::check_kind(&a, self.kind))
+        let ast = super::parse::parse_ufm_entry(e)?;
+        let classy = !ast.imports.is_empty() || ast.params.iter().any(|p| p.kind == super::ast::ParamKind::Class);
+        let _ = self.classy.set(classy);
+        if !classy {
+            return super::check::check_kind(&ast, self.kind);
+        }
+        let reg = class_registry();
+        let lookup = |n: &str| reg.get(n);
+        let ctx = super::check::ClassCtx { lookup: &lookup, choices };
+        super::check::check_with(&ast, self.kind, Some(&ctx))
     }
 
     fn compiled(mut self, program: Result<Program, Error>) -> Entry {
@@ -201,6 +244,127 @@ struct FpProfile {
 }
 
 static USER: RwLock<Option<Arc<Library>>> = RwLock::new(None);
+static CLASSES: RwLock<Option<(u64, Arc<ClassRegistry>)>> = RwLock::new(None);
+
+/// The classes of the class libraries (`.ulb`) in the formula folders and RFract's own
+/// standard classes; parsed on first use after the folders change.
+pub fn class_registry() -> Arc<ClassRegistry> {
+    let generation = generation();
+    if let Some((g, r)) = CLASSES.read().ok().and_then(|c| c.clone())
+        && g == generation
+    {
+        return r;
+    }
+    let r = Arc::new(ClassRegistry::from_folders(&user_folders()));
+    if let Ok(mut c) = CLASSES.write() {
+        *c = Some((generation, r.clone()));
+    }
+    r
+}
+
+/// Classes by (lowercase) name. The first definition of a name counts.
+#[derive(Default)]
+pub struct ClassRegistry {
+    classes: HashMap<String, Arc<super::ast::ClassAst>>,
+    files: HashMap<String, String>,
+    /// Classes that do not parse: name and why.
+    pub errors: Vec<(String, Error)>,
+}
+
+impl ClassRegistry {
+    /// The classes of every `.ulb` file below `folders` and the bundled standard classes.
+    pub fn from_folders(folders: &[PathBuf]) -> ClassRegistry {
+        let mut r = ClassRegistry::default();
+        r.add_source(STANDARD_ULB, "standard.ulb (RFract)");
+        let mut files = Vec::new();
+        for f in folders {
+            ulb_files(f, &mut files);
+        }
+        for f in files {
+            if let Some(text) = read_text(&f) {
+                let name = f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                r.add_source(&text, &name);
+            }
+        }
+        r
+    }
+
+    fn add_source(&mut self, text: &str, file: &str) {
+        for (name, c) in super::parse::parse_classes(text) {
+            let key = name.to_ascii_lowercase();
+            if self.classes.contains_key(&key) {
+                continue;
+            }
+            match c {
+                Ok(c) => {
+                    self.files.insert(key.clone(), file.to_string());
+                    self.classes.insert(key, Arc::new(c));
+                }
+                Err(e) => self.errors.push((name, e)),
+            }
+        }
+    }
+
+    pub fn get(&self, name: &str) -> Option<Arc<super::ast::ClassAst>> {
+        let n = name.rsplit(':').next().unwrap_or(name).trim();
+        self.classes.get(&n.to_ascii_lowercase()).cloned()
+    }
+
+    /// The file a class comes from.
+    pub fn file_of(&self, name: &str) -> Option<&str> {
+        self.files.get(&name.to_ascii_lowercase()).map(String::as_str)
+    }
+
+    pub fn len(&self) -> usize {
+        self.classes.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.classes.is_empty()
+    }
+
+    /// Classes derived from `base` (including itself), sorted by name.
+    pub fn derived(&self, base: &str) -> Vec<String> {
+        let base = base.to_ascii_lowercase();
+        let mut out: Vec<String> = self
+            .classes
+            .values()
+            .filter(|c| {
+                let mut cur = Some((*c).clone());
+                let mut steps = 0;
+                while let Some(k) = cur {
+                    if k.name.eq_ignore_ascii_case(&base) {
+                        return true;
+                    }
+                    steps += 1;
+                    if steps > 32 {
+                        return false;
+                    }
+                    cur = k.parent.as_ref().and_then(|p| self.get(p));
+                }
+                false
+            })
+            .map(|c| c.name.clone())
+            .collect();
+        out.sort_by_key(|n| n.to_ascii_lowercase());
+        out
+    }
+}
+
+/// Class library files (`.ulb`) below `dir`.
+fn ulb_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    if dir.is_dir() {
+        if let Ok(rd) = std::fs::read_dir(dir) {
+            let mut list: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
+            list.sort();
+            for p in list {
+                ulb_files(&p, out);
+            }
+        }
+    } else if dir.extension().is_some_and(|e| e.eq_ignore_ascii_case("ulb")) {
+        out.push(dir.to_path_buf());
+    }
+}
 static FOLDERS: RwLock<Vec<PathBuf>> = RwLock::new(Vec::new());
 
 /// The formula folders of the last [`set_user_folders`].
@@ -311,6 +475,8 @@ fn scan_file(root: &Path, f: &Path, seen: &mut std::collections::HashSet<String>
                 view: DefaultView::default(),
                 origin: Origin::File(f.to_path_buf()),
                 program: OnceLock::new(),
+                classy: OnceLock::new(),
+                variants: Default::default(),
             }));
         }
         return;
@@ -337,6 +503,8 @@ fn scan_file(root: &Path, f: &Path, seen: &mut std::collections::HashSet<String>
             view,
             origin: Origin::File(f.to_path_buf()),
             program: OnceLock::new(),
+            classy: OnceLock::new(),
+            variants: Default::default(),
         };
         // Entries that do not even parse are known to fail.
         out.push(Arc::new(match ast {
@@ -408,6 +576,8 @@ fn ufm_entries(src: &'static str, kind: ProgramKind, prefix: &str, family: &str,
             view,
             origin: Origin::Static(src),
             program: OnceLock::new(),
+            classy: OnceLock::new(),
+            variants: Default::default(),
         };
         out.push(Arc::new(entry.compiled(program)));
     }
@@ -446,6 +616,8 @@ fn build() -> Vec<Arc<Entry>> {
             },
             origin: Origin::Static(src),
             program: OnceLock::new(),
+            classy: OnceLock::new(),
+            variants: Default::default(),
         };
         out_push(&mut entries, entry.compiled(super::compile_frm(src)));
     }

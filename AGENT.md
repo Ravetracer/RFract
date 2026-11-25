@@ -78,6 +78,12 @@ cargo fmt --all --check
   `rfr-cli --formula-dir <folder> params --check <files> [--thumbs dir] [--notes]` converts
   `.upr`/`.par` files. Formulas of other programs' standard files map onto built-ins in
   `io/upr.rs` (`standard`), FractInt types in `io/par.rs` (`type_formula`).
+- Classes (`.ulb`) are compiled away in `check.rs`: every `new` is an instance whose fields are
+  locals `o<n>.<field>`, method calls are inlined (`inline`, `pending` statements before the
+  using statement, `return` via result/done locals), plugin parameters are `<path>.<name>`.
+  `library::class_registry()` holds the classes, `Entry::program_with(params)` compiles per
+  plugin choice. Dev tools: `cargo run -p rfr-core --example check_entry -- <file> <entry>`
+  (compile one entry with its folder's classes, trace orbits), `--example ulb_errors <dir>`.
 - Arrays live per sample (`ir::Local::cap`, at most 4096 elements); colors are `Ty::Color`
   (sRGB-encoded RGBA, `ColorOp`), never converted to numbers (`check::color_misuse`).
 - Colorings and transformations are programs of the same IR (`ProgramKind`): colorings run

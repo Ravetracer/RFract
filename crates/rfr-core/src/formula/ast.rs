@@ -80,6 +80,18 @@ pub enum Expr {
     Mag(Box<Expr>),
     /// `a[i]`, `a[i, j]`
     Index(String, Vec<Expr>),
+    /// `object.field`
+    Member(Box<Expr>, String),
+    /// `object.field[i, …]`
+    MemberIndex(Box<Expr>, String, Vec<Expr>),
+    /// `object.Method(args)`, also `Class.Method(args)` (static or base class calls).
+    Method(Box<Expr>, String, Vec<Expr>),
+    /// `new Class(args)` or `new @param(args)` (the class chosen by an object parameter).
+    New {
+        class: String,
+        param: bool,
+        args: Vec<Expr>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -93,6 +105,10 @@ pub enum Target {
     },
     /// `a[i] = …`
     Index(String, Vec<Expr>),
+    /// `object.field = …`
+    Member(Box<Expr>, String),
+    /// `object.field[i] = …`
+    MemberIndex(Box<Expr>, String, Vec<Expr>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -147,6 +163,65 @@ pub enum Stmt {
         args: Vec<Expr>,
         line: usize,
     },
+    /// A variable of a class type (`Formula f = new @formulaClass(0)`), or an array of them.
+    ObjDecl {
+        class: String,
+        name: String,
+        dims: Option<Vec<Expr>>,
+        value: Option<Expr>,
+        line: usize,
+    },
+    /// An expression evaluated for its effect (a method call: `f.Init(#z)`).
+    Eval(Expr, usize),
+    /// `return` in a class method.
+    Return(Option<Expr>, usize),
+}
+
+/// A type in class code: a built-in type or a class.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TypeRef {
+    Builtin(DeclTy),
+    Class(String),
+}
+
+/// A method parameter: type, name, passed by reference (`&name`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct MethodParam {
+    pub ty: TypeRef,
+    pub name: String,
+    pub by_ref: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct MethodAst {
+    pub name: String,
+    /// `None`: no value (constructors and procedures).
+    pub ret: Option<TypeRef>,
+    pub params: Vec<MethodParam>,
+    pub body: Vec<Stmt>,
+    pub is_static: bool,
+    pub line: usize,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct FieldAst {
+    pub ty: TypeRef,
+    pub name: String,
+    /// Array dimensions (`[]`: dynamic).
+    pub dims: Option<Vec<Expr>>,
+}
+
+/// A class of a `.ulb` file.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClassAst {
+    pub name: String,
+    pub parent: Option<String>,
+    pub fields: Vec<FieldAst>,
+    pub methods: Vec<MethodAst>,
+    /// Parameters of the `default:` section (every object of the class has them).
+    pub params: Vec<ParamDecl>,
+    pub title: Option<String>,
+    pub line: usize,
 }
 
 /// Parameter kinds of formula definitions.
@@ -161,6 +236,8 @@ pub enum ParamKind {
     Func,
     /// RGBA color (sRGB-encoded channels 0…1, straight alpha).
     Color,
+    /// An object parameter: the user picks a class derived from `ParamDecl::base`.
+    Class,
 }
 
 /// A parameter value as stored in documents and formula defaults.
@@ -174,6 +251,10 @@ pub enum ParamValue {
     /// RGBA, sRGB-encoded channels 0…1.
     Color([f64; 4]),
     Func(String),
+    /// The class chosen for an object parameter.
+    Class {
+        class: String,
+    },
 }
 
 impl ParamValue {
@@ -184,7 +265,7 @@ impl ParamValue {
             ParamValue::Float(f) => *f,
             ParamValue::Complex(c) => c[0],
             ParamValue::Color(c) => c[0],
-            ParamValue::Func(_) => 0.0,
+            ParamValue::Func(_) | ParamValue::Class { .. } => 0.0,
         }
     }
     pub fn as_complex(&self) -> [f64; 2] {
@@ -217,6 +298,8 @@ pub struct ParamDecl {
     pub items: Vec<String>,
     /// FractInt slot this parameter mirrors (`p1`…`p5`, `fn1`…`fn4`).
     pub classic: Option<String>,
+    /// Object parameters: the base class of the choices.
+    pub base: Option<String>,
 }
 
 /// One formula entry as parsed.
@@ -242,4 +325,6 @@ pub struct FormulaAst {
     pub skipped_sections: Vec<String>,
     /// Written in FractInt syntax (unknown names start at zero).
     pub fractint: bool,
+    /// Class libraries named by `import "x.ulb"`.
+    pub imports: Vec<String>,
 }

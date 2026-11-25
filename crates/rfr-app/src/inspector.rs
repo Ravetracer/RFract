@@ -38,7 +38,10 @@ fn func_names() -> impl Iterator<Item = &'static str> {
 
 fn param_widget(ui: &mut Ui, salt: &str, p: &Param, value: &mut ParamValue) -> bool {
     let tip = if p.hint.is_empty() { p.caption.clone() } else { p.hint.clone() };
-    widgets::label(ui, &p.caption, &tip);
+    // Parameters of plugin objects (`formulaClass.power`) are indented under their object.
+    let depth = p.name.matches('.').count();
+    let caption = format!("{}{}", "    ".repeat(depth), p.caption);
+    widgets::label(ui, &caption, &tip);
     let before = value.clone();
     match (p.kind, &mut *value) {
         (ParamKind::Float, ParamValue::Float(v)) => {
@@ -79,11 +82,46 @@ fn param_widget(ui: &mut Ui, salt: &str, p: &Param, value: &mut ParamValue) -> b
             ui.checkbox(b, "").on_hover_text(&tip);
         }
         (ParamKind::Func, ParamValue::Func(f)) => {
+            // Color function parameters choose a merge mode.
+            let merge = matches!(&p.default, ParamValue::Func(d) if rfr_core::formula::color::merge_mode(d).is_some());
             egui::ComboBox::from_id_salt((salt, "param-func", &p.name)).selected_text(f.as_str()).height(400.0).show_ui(ui, |ui| {
-                for n in func_names() {
-                    ui.selectable_value(f, n.to_string(), n);
+                if merge {
+                    for n in rfr_core::formula::color::MERGE_NAMES {
+                        ui.selectable_value(f, n.to_string(), n);
+                    }
+                } else {
+                    for n in func_names() {
+                        ui.selectable_value(f, n.to_string(), n);
+                    }
                 }
             });
+        }
+        (ParamKind::Class, ParamValue::Class { class }) => {
+            // An object parameter: the classes derived from its base class.
+            let reg = rfr_core::formula::library::class_registry();
+            let base = p.base.clone().unwrap_or_default();
+            let choices = reg.derived(&base);
+            let label = if class.is_empty() { "(none)".to_string() } else { class.clone() };
+            let search_id = egui::Id::new((salt, "param-class-search", &p.name));
+            egui::ComboBox::from_id_salt((salt, "param-class", &p.name))
+                .selected_text(label)
+                .height(400.0)
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                .show_ui(ui, |ui| {
+                    let mut q: String = ui.data_mut(|d| d.get_temp(search_id).unwrap_or_default());
+                    ui.add(egui::TextEdit::singleline(&mut q).hint_text(format!("{}  Search", icons::SEARCH)).desired_width(240.0))
+                        .on_hover_text("Filter the classes by name");
+                    ui.data_mut(|d| d.insert_temp(search_id, q.clone()));
+                    let q = q.to_lowercase();
+                    for c in choices.iter().filter(|c| q.is_empty() || c.to_lowercase().contains(&q)) {
+                        let file = reg.file_of(c).unwrap_or("").to_string();
+                        if ui.selectable_value(class, c.clone(), c).on_hover_text(format!("{c} ({file})")).clicked() {
+                            ui.close();
+                        }
+                    }
+                })
+                .response
+                .on_hover_text(format!("{tip}\nThe class (plugin) to use: any class derived from {base}; its parameters follow below."));
         }
         (ParamKind::Color, ParamValue::Color(c)) => {
             // Formula colors are sRGB-encoded; the picker works on linear values.
@@ -107,6 +145,10 @@ fn param_widget(ui: &mut Ui, salt: &str, p: &Param, value: &mut ParamValue) -> b
 fn params_ui(ui: &mut Ui, salt: &str, prog: &Program, map: &mut BTreeMap<String, ParamValue>) {
     widgets::grid(ui, &format!("{salt}-params"), |ui| {
         for param in &prog.params {
+            // Class libraries keep internal version numbers as parameters.
+            if param.caption.starts_with("Version (") {
+                continue;
+            }
             let mut v = resolve_value(param.kind, &param.default, map.get(&param.name));
             if param_widget(ui, salt, param, &mut v) {
                 map.insert(param.name.clone(), v);
@@ -200,12 +242,12 @@ fn coloring_formula(ui: &mut Ui, id: &str, c: &mut Coloring, actions: &mut Vec<A
             if ui.small_button("Source").on_hover_text("Show the coloring formula's source (and edit user formulas)").clicked() {
                 actions.push(Action::EditFormula(e.id.clone()));
             }
-            if let Err(err) = e.program() {
+            if let Err(err) = e.program_with(&c.params) {
                 ui.label(RichText::new(format!("Does not compile: {err}")).color(theme::WARN));
             }
         });
     }
-    if let Some(p) = library().get(&c.formula).and_then(|e| e.program().ok()) {
+    if let Some(p) = library().get(&c.formula).and_then(|e| e.program_with(&c.params).or_else(|_| e.program()).ok()) {
         params_ui(ui, &format!("{id}-coloring"), &p, &mut c.params);
     }
 }
@@ -292,7 +334,7 @@ fn transforms_ui(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
                     }
                 });
             });
-            if let Some(p) = library().get(&t.formula).and_then(|e| e.program().ok()) {
+            if let Some(p) = library().get(&t.formula).and_then(|e| e.program_with(&t.params).or_else(|_| e.program()).ok()) {
                 params_ui(ui, &format!("transform-{k}"), &p, &mut t.params);
             }
         });
@@ -356,7 +398,7 @@ fn fractal_sections(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
                 });
                 ui.label(RichText::new(format!("{} · {}", e.set.label(), e.family)).size(theme::fs(11.0)).color(theme::TEXT_MUTED))
                     .on_hover_text(&e.id);
-                if let Err(err) = e.program() {
+                if let Err(err) = e.program_with(&l.params) {
                     ui.label(RichText::new(format!("Does not compile: {err}")).color(theme::WARN));
                 }
             }
@@ -364,7 +406,9 @@ fn fractal_sections(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
                 ui.label(RichText::new(format!("Unknown formula '{}'", l.formula)).color(theme::WARN));
             }
         }
-        let program = entry.and_then(|e| e.program().ok());
+        // A plugin choice that does not compile: the default program's parameters stay
+        // visible so the choice can be changed back.
+        let program = entry.and_then(|e| e.program_with(&l.params).or_else(|_| e.program()).ok());
         if let Some(p) = &program {
             params_ui(ui, "formula", p, &mut l.params);
         }

@@ -99,6 +99,10 @@ impl<S: Scalar> Cx<S> {
     /// `exp(w * log(z))`; zero for a zero base.
     pub fn pow(self, w: Self) -> Self {
         if self.re.v() == 0.0 && self.im.v() == 0.0 {
+            // 0^0 = 1; 0^w = 0 otherwise.
+            if w.re.v() == 0.0 && w.im.v() == 0.0 {
+                return Cx::from_f64(1.0, 0.0);
+            }
             return Cx::zero();
         }
         (w * self.log()).exp()
