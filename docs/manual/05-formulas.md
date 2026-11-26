@@ -1,11 +1,14 @@
 # Formulas
 
 A formula describes one iteration step: how *z* changes from one step to the next, where it
-starts and when it has escaped (the bailout condition). RFract ships 552 formulas:
+starts and when it has escaped (the bailout condition). RFract ships 565 formulas:
 
-- **RFract** (18): Mandelbrot (integer powers), Multibrot (real powers), Burning Ship, Tricorn,
+- **RFract** (22): Mandelbrot (integer powers), Multibrot (real powers), Burning Ship, Tricorn,
   Celtic, Buffalo, Perpendicular Mandelbrot, Phoenix, Lambda, Magnet I and II, Newton, Nova,
-  Spider, Manowar and three Barnsley formulas.
+  Spider, Manowar, three Barnsley formulas, Lyapunov (Markus–Lyapunov sequences), Truchet
+  tiles, Sierpinski carpet and Root finding (Newton, Halley or Schröder steps for any
+  polynomial up to degree 6, with relaxation and Nova).
+- **Attractors** (9): strange attractors for density layers (see *Layers*).
 - **FractalPark** (534): the published formula library of the open source FractalPark project
   (MIT license), grouped into families such as algebraic powers, transcendental functions,
   function compositions, rational functions, orbit memory, folded absolute values and root

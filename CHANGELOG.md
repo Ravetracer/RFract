@@ -14,6 +14,8 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
   *Starlight*.
 - IFS density layers: the chaos game over affine maps with weights and variations (as in
   fractal flames), presets, view fitting, FractInt `.ifs` import.
+- Formulas *Truchet tiles*, *Sierpinski carpet* and *Root finding (polynomial)* (Newton,
+  Halley or Schröder steps for any polynomial up to degree 6, relaxation, Nova).
 - *Lyapunov* formula (Markus–Lyapunov sequences) with the *Lyapunov exponent* coloring;
   bundled formulas can suggest their coloring.
 - Fill and image layers (layer menu): solid fill, gradient fill (new *Gradient fill*
