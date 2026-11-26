@@ -14,11 +14,13 @@ that come up along the way.
 - [ ] Object arrays sized by a parameter (`new VectorArray(@nlight)`): unroll to the
       parameter's maximum with a run-time guard. Loops that change which object a variable
       refers to.
-- [ ] Assignments inside expressions (`Cast(a[10] = new @f(this))`, `abs(r = random(r))`).
-- [ ] More standard classes (orbit traps, exponential smoothing, direct orbit traps, …).
+- [x] Assignments inside expressions (`Cast(a[10] = new @f(this))`, `abs(r = random(r))`).
+- [x] More standard classes (orbit traps, direct orbit traps, trap mode, trap shapes,
+      default, exponential smoothing, distance estimator, height transfer).
 - [x] Image parameters (`Image` class, `getColor`/`getPixel`/…), the *Image* coloring.
 - [x] Arithmetic on colors (channel by channel).
-- [ ] User functions outside classes.
+- [x] User functions outside classes (formula functions).
+- [x] Copying whole arrays (`complex points[n] = startpts`).
 - [ ] Optional: Cranelift JIT for the CPU path.
 
 ## Done in stage 3 (v0.4.0)

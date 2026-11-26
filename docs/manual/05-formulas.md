@@ -101,6 +101,12 @@ rfr-cli formulas --check path/to/formulas
   `length(a)`. Each sample keeps its own arrays (at most 4096 elements; dynamic arrays get
   2048). Arrays as large as the image (summing over all pixels) are not supported. Indices
   outside the array are clamped to its ends.
+- Functions of the formula: `complex func f(complex w, int n) … endfunc` (or `func p()`
+  without a value) in any section, called like built-in functions; arrays are passed by
+  reference. `complex b[n] = a` and `b = a` copy array `a`. RFract builds every call into the formula, as it does with class methods.
+- Assignments inside expressions: `(x = sqrt(y)) < 1`, `(a = b = 0)`, `abs(r = random(r))`,
+  `until (i = i + 1) >= 10` assign and give the assigned value. A single `=` compares when
+  its left side cannot be assigned or a text follows (`(@mode = "Julia")`).
 - Colors: `rgb`, `rgba`, `hsl`, `hsla` (hue 0 to 6), `red`, `green`, `blue`, `alpha`, `hue`,
   `sat`, `lum`, `blend`, `compose`, `gradient` (the coloring's gradient) and the merge
   functions (`mergenormal`, `mergemultiply`, `mergescreen`, … `mergeluminance`). Colors are
@@ -124,8 +130,9 @@ inheritance with base class calls (`Formula.Init(pz)`), static methods, fields a
 objects, and object parameters (plugins): `Formula param formulaClass … endparam` lets you pick
 any class derived from `Formula` in the inspector, and the parameters of the chosen class
 appear indented below it. RFract brings its own versions of the most used standard classes
-(Mandelbrot, Julia, Pixel, Newton, Smooth, Gradient and several trap shapes); they build on
-`common.ulb`, which must be in a formula folder.
+(Mandelbrot, Julia, Pixel, Newton, Smooth, Gradient, Default, Orbit Traps and Direct Orbit
+Traps with a closest-point trap mode and 18 trap shapes, Exponential Smoothing, Distance
+Estimator, Height Transfer); they build on `common.ulb`, which must be in a formula folder.
 
 RFract compiles objects away: every `new` becomes a set of variables and every method call is
 built into the formula, so class formulas render on the graphics card like any other.
@@ -153,5 +160,4 @@ everything else.
 
 !!! note
     Not supported yet: object arrays sized by a parameter, a loop that changes which object a
-    variable refers to, assignments inside expressions, recursion and user functions outside
-    classes. The check lists what fails by frequency.
+    variable refers to and recursion. The check lists what fails by frequency.

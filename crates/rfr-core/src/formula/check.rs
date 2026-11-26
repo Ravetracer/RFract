@@ -52,6 +52,8 @@ struct Ck<'a> {
     pending: Vec<Stmt>,
     /// Counter of inlined calls (unique local names).
     site: usize,
+    /// The formula's own functions as the methods of a class without objects.
+    formula_class: Option<Arc<ast::ClassAst>>,
 }
 
 /// Classes for checking formulas that use objects: the class lookup (case-insensitive name)
@@ -256,6 +258,44 @@ impl<'a> Ck<'a> {
         Ok(())
     }
 
+    /// `target = src` copies an array: `src` is one, and the target is either an array or a
+    /// new one with sizes (`complex b[n] = a`).
+    fn is_array_copy(&self, target: &Target, src: &str) -> bool {
+        if !self.arrays.contains_key(&self.norm(src)) {
+            return false;
+        }
+        match target {
+            Target::Var(n) => self.arrays.contains_key(&self.norm(n)),
+            Target::Index(n, _) => !self.arrays.contains_key(&self.norm(n)),
+            _ => false,
+        }
+    }
+
+    /// Copies the elements of array `src` into array `dst` (keys), element by element.
+    fn copy_array(&mut self, dst: &str, src: &str, out: &mut Vec<Stmt>) {
+        let (ds, _) = self.arrays[dst].clone();
+        let (ss, sdims) = self.arrays[src].clone();
+        let int = |kind| Expr { ty: Ty::Int, kind };
+        let n = sdims
+            .iter()
+            .map(|&d| int(Kind::Local(d)))
+            .reduce(|a, b| int(Kind::Arith(Arith::Mul, Box::new(a), Box::new(b))))
+            .unwrap_or(int(Kind::Int(0)));
+        self.site += 1;
+        let k = format!("~{}:~copy", self.site);
+        self.preset.insert(k.clone(), Ty::Int);
+        let k = self.key_local(&k, Ty::Int);
+        let kv = || int(Kind::Local(k));
+        let elem = Expr { ty: self.locals[ss].ty, kind: Kind::Index(ss, Box::new(kv())) };
+        let t = self.locals[ds].ty;
+        let elem = if t == Ty::Bool { elem } else { self.numeric(elem) };
+        out.push(Stmt::Assign(k, int(Kind::Int(0))));
+        out.push(Stmt::While(
+            Expr { ty: Ty::Bool, kind: Kind::Cmp(Cmp::Lt, Box::new(kv()), Box::new(n)) },
+            vec![Stmt::SetIndex(ds, kv(), conv(elem, t)), Stmt::Assign(k, int(Kind::Arith(Arith::Add, Box::new(kv()), Box::new(int(Kind::Int(1))))))],
+        ));
+    }
+
     /// Flat element index of `name[idx…]` and the array's slot.
     fn array_index(&mut self, name: &str, idx: &[ast::Expr], line: usize) -> Result<(usize, Expr), Error> {
         let key = self.norm(name);
@@ -426,6 +466,7 @@ impl<'a> Ck<'a> {
                     ast::Stmt::While { body, .. } | ast::Stmt::Repeat { body, .. } | ast::Stmt::Seq(body) => walk(body, out),
                     _ => {}
                 }
+                out.extend(inner_assigned(s).into_iter().filter_map(|v| v.strip_prefix('@').map(str::to_string)));
             }
         }
         let mut names = Vec::new();
@@ -467,7 +508,7 @@ impl<'a> Ck<'a> {
                 ast::Stmt::If { arms, els, .. } => arms.iter().any(|(_, b)| walk(b, key, ufm)) || walk(els, key, ufm),
                 ast::Stmt::While { body, .. } | ast::Stmt::Repeat { body, .. } | ast::Stmt::Seq(body) => walk(body, key, ufm),
                 _ => false,
-            })
+            } || inner_assigned(s).iter().any(|v| if ufm { v.eq_ignore_ascii_case(key) } else { v == key }))
         }
         let ufm = self.dialect == Dialect::Ufm;
         let a = self.ast;
@@ -1128,6 +1169,10 @@ impl<'a> Ck<'a> {
                 Some(alts) => Ok(self.materialize(alts)),
                 None => err(line, "expected an object"),
             },
+            ast::Expr::Assign(t, v) => {
+                let read = self.assign_in_expr(t, v, line)?;
+                self.object_of(&read, line)
+            }
             ast::Expr::Num { v, .. } if *v == 0.0 => Ok(OVal::One(None)),
             ast::Expr::Ident(n) if n.eq_ignore_ascii_case("this") => Ok(OVal::One(self.scopes.last().and_then(|s| s.this))),
             ast::Expr::Ident(n) => {
@@ -1164,6 +1209,27 @@ impl<'a> Ck<'a> {
             },
             _ => err(line, "expected an object"),
         }
+    }
+
+    /// `(target = value)` inside an expression: the assignment goes to the pending statements;
+    /// returns the expression that reads the target.
+    fn assign_in_expr(&mut self, t: &Target, v: &ast::Expr, line: usize) -> Result<ast::Expr, Error> {
+        let mut out = Vec::new();
+        self.stmt(&ast::Stmt::Assign { target: t.clone(), value: v.clone(), line }, &mut out)?;
+        self.pending.extend(out);
+        Ok(match t {
+            Target::Var(n) => match n.strip_prefix('@') {
+                Some(p) => ast::Expr::Param(p.to_string()),
+                None => ast::Expr::Ident(n.clone()),
+            },
+            Target::Sys(n) => ast::Expr::Sys(n.clone()),
+            Target::Index(n, i) => ast::Expr::Index(n.clone(), i.clone()),
+            Target::Member(o, f) => ast::Expr::Member(o.clone(), f.clone()),
+            Target::MemberIndex(o, f, i) => ast::Expr::MemberIndex(o.clone(), f.clone(), i.clone()),
+            Target::Comp { re, var } => {
+                ast::Expr::Call { name: if *re { "real" } else { "imag" }.into(), param: false, args: vec![ast::Expr::Ident(var.clone())] }
+            }
+        })
     }
 
     /// Whether an expression denotes an object (for comparisons with 0).
@@ -1273,16 +1339,26 @@ impl<'a> Ck<'a> {
     /// A method called without an object inside class code (`Init(pz)`, `Formula(pparent)`):
     /// a method of `this` (or of the class, for static code). `None` if there is none.
     fn implicit_method(&mut self, name: &str, args: &[ast::Expr], line: usize) -> Result<Option<Called>, Error> {
-        let Some(s) = self.scopes.last() else { return Ok(None) };
-        let (this, class) = (s.this, s.class.clone());
-        let class = match (this, class) {
-            (Some(t), _) => self.instances[t].class.clone(),
-            (None, Some(c)) => c,
-            _ => return Ok(None),
-        };
-        let Some((impl_class, m)) = self.find_method(&class, name, line)? else { return Ok(None) };
-        let this = if m.is_static { None } else { this };
-        self.inline(this, &impl_class, &m, args, line).map(Some)
+        if let Some(s) = self.scopes.last() {
+            let (this, class) = (s.this, s.class.clone());
+            let class = match (this, class) {
+                (Some(t), _) => Some(self.instances[t].class.clone()),
+                (None, c) => c,
+            };
+            if let Some(class) = class
+                && let Some((impl_class, m)) = self.find_method(&class, name, line)?
+            {
+                let this = if m.is_static { None } else { this };
+                return self.inline(this, &impl_class, &m, args, line).map(Some);
+            }
+        }
+        // A function of the formula (`complex func f(…)` in a section).
+        if let Some(fc) = self.formula_class.clone()
+            && let Some(m) = fc.methods.iter().find(|m| m.name.eq_ignore_ascii_case(name)).cloned()
+        {
+            return self.inline(None, &fc, &m, args, line).map(Some);
+        }
+        Ok(None)
     }
 
     /// The class an object parameter (`@name`) currently chooses.
@@ -1325,6 +1401,8 @@ impl<'a> Ck<'a> {
             bound.push(match &p.ty {
                 ast::TypeRef::Class(_) => Arg::Object(self.object_of(a, line)?),
                 ast::TypeRef::Builtin(_) => match a {
+                    // Arrays are passed by reference.
+                    ast::Expr::Ident(n) if self.arrays.contains_key(&self.norm(n)) => Arg::Alias(self.norm(n)),
                     ast::Expr::Ident(n) if p.by_ref && self.slots.contains_key(&self.norm(n)) && !self.unroll.contains_key(&self.norm(n)) => {
                         Arg::Alias(self.norm(n))
                     }
@@ -1517,6 +1595,11 @@ impl<'a> Ck<'a> {
                 }
             }
             ast::Expr::Bool(b) => Expr { ty: Ty::Bool, kind: Kind::Bool(*b) },
+            ast::Expr::Assign(t, v) => {
+                // The assignment runs before the using statement; the value is the target's.
+                let read = self.assign_in_expr(t, v, line)?;
+                self.expr(&read, line)?
+            }
             ast::Expr::Complex(a, b) => {
                 let a = conv(self.expr(a, line)?, Ty::Real);
                 let b = conv(self.expr(b, line)?, Ty::Real);
@@ -2048,6 +2131,25 @@ impl<'a> Ck<'a> {
                     let key = self.norm(name);
                     self.objects.insert(key, o);
                 }
+                // `complex b[n] = a` (declares b) and `b = a`: copies an array.
+                ast::Stmt::Assign { target, value: ast::Expr::Ident(src), line } if self.is_array_copy(target, src) => {
+                    let src_key = self.norm(src);
+                    if let Target::Index(name, dims) = target {
+                        let ty = match self.locals[self.arrays[&src_key].0].ty {
+                            Ty::Bool => DeclTy::Bool,
+                            Ty::Int => DeclTy::Int,
+                            Ty::Real => DeclTy::Float,
+                            Ty::Complex => DeclTy::Complex,
+                            Ty::Color => DeclTy::Color,
+                        };
+                        self.declare_array(ty, name, dims, *line, out)?;
+                    }
+                    let dst_key = match target {
+                        Target::Index(n, _) | Target::Var(n) => self.norm(n),
+                        _ => unreachable!(),
+                    };
+                    self.copy_array(&dst_key, &src_key, out);
+                }
                 ast::Stmt::Assign { target: Target::Index(name, idx), value, line } if self.obj_arrays.contains_key(&self.norm(name)) => {
                     let key = self.norm(name);
                     self.assign_element(&key, name, idx, value, *line)?;
@@ -2413,40 +2515,57 @@ fn elem_key(key: &str, k: usize) -> String {
 /// Whether `s` (at any depth) contains an expression for which `pe` holds or an assignment
 /// target for which `pt` holds (declarations count as assignments to `Target::Var`).
 fn stmt_any(s: &ast::Stmt, pe: &mut dyn FnMut(&ast::Expr) -> bool, pt: &mut dyn FnMut(&Target) -> bool) -> bool {
-    fn expr_any(e: &ast::Expr, pe: &mut dyn FnMut(&ast::Expr) -> bool) -> bool {
+    fn expr_any(e: &ast::Expr, pe: &mut dyn FnMut(&ast::Expr) -> bool, pt: &mut dyn FnMut(&Target) -> bool) -> bool {
         if pe(e) {
             return true;
         }
         match e {
-            ast::Expr::Complex(a, b) | ast::Expr::Binary(_, a, b) => expr_any(a, pe) || expr_any(b, pe),
-            ast::Expr::Unary(_, a) | ast::Expr::Mag(a) | ast::Expr::Member(a, _) => expr_any(a, pe),
-            ast::Expr::Call { args, .. } | ast::Expr::Index(_, args) | ast::Expr::New { args, .. } => args.iter().any(|a| expr_any(a, pe)),
-            ast::Expr::MemberIndex(o, _, args) | ast::Expr::Method(o, _, args) => expr_any(o, pe) || args.iter().any(|a| expr_any(a, pe)),
+            ast::Expr::Complex(a, b) | ast::Expr::Binary(_, a, b) => expr_any(a, pe, pt) || expr_any(b, pe, pt),
+            ast::Expr::Unary(_, a) | ast::Expr::Mag(a) | ast::Expr::Member(a, _) => expr_any(a, pe, pt),
+            ast::Expr::Call { args, .. } | ast::Expr::Index(_, args) | ast::Expr::New { args, .. } => args.iter().any(|a| expr_any(a, pe, pt)),
+            ast::Expr::MemberIndex(o, _, args) | ast::Expr::Method(o, _, args) => expr_any(o, pe, pt) || args.iter().any(|a| expr_any(a, pe, pt)),
+            ast::Expr::Assign(t, v) => pt(t) || target_any(t, pe, pt) || expr_any(v, pe, pt),
+            _ => false,
+        }
+    }
+    fn target_any(t: &Target, pe: &mut dyn FnMut(&ast::Expr) -> bool, pt: &mut dyn FnMut(&Target) -> bool) -> bool {
+        match t {
+            Target::Index(_, idx) => idx.iter().any(|a| expr_any(a, pe, pt)),
+            Target::Member(o, _) => expr_any(o, pe, pt),
+            Target::MemberIndex(o, _, idx) => expr_any(o, pe, pt) || idx.iter().any(|a| expr_any(a, pe, pt)),
             _ => false,
         }
     }
     let list = |b: &[ast::Stmt], pe: &mut dyn FnMut(&ast::Expr) -> bool, pt: &mut dyn FnMut(&Target) -> bool| b.iter().any(|s| stmt_any(s, pe, pt));
     match s {
-        ast::Stmt::Assign { target, value, .. } => {
-            pt(target)
-                || expr_any(value, pe)
-                || match target {
-                    Target::Index(_, idx) => idx.iter().any(|a| expr_any(a, pe)),
-                    Target::Member(o, _) => expr_any(o, pe),
-                    Target::MemberIndex(o, _, idx) => expr_any(o, pe) || idx.iter().any(|a| expr_any(a, pe)),
-                    _ => false,
-                }
+        ast::Stmt::Assign { target, value, .. } => pt(target) || expr_any(value, pe, pt) || target_any(target, pe, pt),
+        ast::Stmt::Decl { name, value, .. } => pt(&Target::Var(name.clone())) || value.as_ref().is_some_and(|v| expr_any(v, pe, pt)),
+        ast::Stmt::ObjDecl { dims, value, .. } => {
+            dims.iter().flatten().any(|d| expr_any(d, pe, pt)) || value.as_ref().is_some_and(|v| expr_any(v, pe, pt))
         }
-        ast::Stmt::Decl { name, value, .. } => pt(&Target::Var(name.clone())) || value.as_ref().is_some_and(|v| expr_any(v, pe)),
-        ast::Stmt::ObjDecl { dims, value, .. } => dims.iter().flatten().any(|d| expr_any(d, pe)) || value.as_ref().is_some_and(|v| expr_any(v, pe)),
-        ast::Stmt::ArrayDecl { dims, .. } => dims.iter().any(|d| expr_any(d, pe)),
-        ast::Stmt::If { arms, els, .. } => arms.iter().any(|(c, b)| expr_any(c, pe) || list(b, pe, pt)) || list(els, pe, pt),
-        ast::Stmt::While { cond, body, .. } | ast::Stmt::Repeat { body, cond, .. } => expr_any(cond, pe) || list(body, pe, pt),
+        ast::Stmt::ArrayDecl { dims, .. } => dims.iter().any(|d| expr_any(d, pe, pt)),
+        ast::Stmt::If { arms, els, .. } => arms.iter().any(|(c, b)| expr_any(c, pe, pt) || list(b, pe, pt)) || list(els, pe, pt),
+        ast::Stmt::While { cond, body, .. } | ast::Stmt::Repeat { body, cond, .. } => expr_any(cond, pe, pt) || list(body, pe, pt),
         ast::Stmt::Seq(body) => list(body, pe, pt),
-        ast::Stmt::Call { args, .. } => args.iter().any(|a| expr_any(a, pe)),
-        ast::Stmt::Eval(e, _) => expr_any(e, pe),
-        ast::Stmt::Return(v, _) => v.as_ref().is_some_and(|v| expr_any(v, pe)),
+        ast::Stmt::Call { args, .. } => args.iter().any(|a| expr_any(a, pe, pt)),
+        ast::Stmt::Eval(e, _) => expr_any(e, pe, pt),
+        ast::Stmt::Return(v, _) => v.as_ref().is_some_and(|v| expr_any(v, pe, pt)),
     }
+}
+
+/// Variables assigned inside expressions of `s` (at any depth): `(x = …)`.
+fn inner_assigned(s: &ast::Stmt) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut pe = |e: &ast::Expr| {
+        if let ast::Expr::Assign(t, _) = e
+            && let Target::Var(v) | Target::Comp { var: v, .. } = &**t
+        {
+            names.push(v.clone());
+        }
+        false
+    };
+    stmt_any(s, &mut pe, &mut |_| false);
+    names
 }
 
 /// The key of field `name` of object `inst`.
@@ -2486,6 +2605,12 @@ fn contains_return(s: &ast::Stmt) -> bool {
 /// Names a method body introduces: declared ones, and assigned ones that are not fields.
 fn method_locals(body: &[ast::Stmt], fields: &HashSet<String>, out: &mut HashSet<String>) {
     for s in body {
+        for n in inner_assigned(s) {
+            let l = n.to_ascii_lowercase();
+            if !l.starts_with('@') && !fields.contains(&l) && l != "z" {
+                out.insert(l);
+            }
+        }
         match s {
             ast::Stmt::Decl { name, .. } | ast::Stmt::ArrayDecl { name, .. } | ast::Stmt::ObjDecl { name, .. } => {
                 out.insert(name.to_ascii_lowercase());
@@ -2582,6 +2707,17 @@ pub fn check_with(ast: &FormulaAst, kind: ProgramKind, classes: Option<&ClassCtx
             unroll: HashMap::new(),
             pending: Vec::new(),
             site: 0,
+            formula_class: (!ast.funcs.is_empty()).then(|| {
+                Arc::new(ast::ClassAst {
+                    name: "~formula".into(),
+                    parent: None,
+                    fields: Vec::new(),
+                    methods: ast.funcs.clone(),
+                    params: Vec::new(),
+                    title: None,
+                    line: 0,
+                })
+            }),
         };
         ck.slots.insert("z".into(), Z);
         if kind == ProgramKind::Coloring {
@@ -2781,6 +2917,50 @@ mod tests {
         // Colors and complex numbers do not mix.
         let src = "C {\nfinal:\n  #color = rgb(1, 0, 0) * (1, 1)\n}\n";
         assert!(check_kind(&parse_ufm_entry(&split_entries(src)[0]).unwrap(), ProgramKind::Coloring).is_err());
+    }
+
+    #[test]
+    fn assignments_inside_expressions() {
+        use super::super::cpu::Compiled;
+        // a = b = 3, r = 4 (inside an argument), n counts to 10; z = 3 + 3 + 4 + 10 = 20.
+        let src = "T {\ninit:\n  int n = 0\n  float a = 0\n  float b = 0\n  float r = 0\n  if (a = b = 3) == 3\n    z = a + b + abs(r = r + 4) + 0 * r\n  endif\n  repeat\n  until (n = n + 1) >= 10\n  z = z + n\nloop:\n  z = z\nbailout:\n  |z| < 1e9\ndefault:\n  int param mode\n    enum = \"A\" \"B\"\n    default = 1\n  endparam\n}\n";
+        let p = check(&parse_ufm_entry(&split_entries(src)[0]).unwrap()).unwrap();
+        let k = Compiled::<f64>::new(&p, &[ast::ParamValue::Int(1)]);
+        let mut f = k.frame();
+        let o = k.run(&mut f, 1);
+        assert!((o.z.re - 20.0).abs() < 1e-12, "{:?}", o.z);
+        // A text on the right compares: (@mode = "B").
+        let src = "T {\ninit:\n  z = 0\n  if (@mode = \"B\")\n    z = 1\n  endif\nloop:\n  z = z\nbailout:\n  |z| < 4\ndefault:\n  int param mode\n    enum = \"A\" \"B\"\n    default = 1\n  endparam\n}\n";
+        let p = check(&parse_ufm_entry(&split_entries(src)[0]).unwrap()).unwrap();
+        let k = Compiled::<f64>::new(&p, &[ast::ParamValue::Int(1)]);
+        let mut f = k.frame();
+        assert_eq!(k.run(&mut f, 1).z.re, 1.0);
+    }
+
+    #[test]
+    fn array_copies() {
+        use super::super::cpu::Compiled;
+        let src = "T {\ninit:\n  float a[3]\n  a[0] = 1\n  a[1] = 2\n  a[2] = 3\n  float b[3] = a\n  a[0] = 100\n  float c[3]\n  c = b\n  z = c[0] + c[1] + c[2]\nloop:\n  z = z\nbailout:\n  |z| < 1e9\n}\n";
+        let p = check(&parse_ufm_entry(&split_entries(src)[0]).unwrap()).unwrap();
+        let k = Compiled::<f64>::new(&p, &[]);
+        let mut f = k.frame();
+        assert_eq!(k.run(&mut f, 1).z.re, 6.0);
+    }
+
+    #[test]
+    fn formula_functions() {
+        use super::super::cpu::Compiled;
+        use crate::math::complex::C64;
+        // step(z) = twice(z)^2 / 2 + c = z^2 + c (the Mandelbrot set); count() counts calls.
+        let src = "T {\ninit:\n  int calls = 0\n  complex func twice(complex w)\n    return w * 2\n  endfunc\n  complex func step(complex w, complex k)\n    complex t = twice(w)\n    return t * t / 4 + k\n  endfunc\n  func count()\n    calls = calls + 1\n  endfunc\n  z = 0\nloop:\n  z = step(z, #pixel)\n  count()\nbailout:\n  |z| < 4 && calls < 1000\n}\n";
+        let p = check(&parse_ufm_entry(&split_entries(src)[0]).unwrap()).unwrap();
+        let k = Compiled::<f64>::new(&p, &[]);
+        let mut f = k.frame();
+        for (c, inside) in [(C64::new(-0.5, 0.0), true), (C64::new(0.5, 0.5), false), (C64::new(-1.0, 0.0), true)] {
+            f.pixel = c;
+            let o = k.run(&mut f, 200);
+            assert_eq!(!o.escaped, inside, "{c:?}");
+        }
     }
 
     #[test]

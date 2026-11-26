@@ -92,6 +92,8 @@ pub enum Expr {
         param: bool,
         args: Vec<Expr>,
     },
+    /// An assignment inside an expression (`(x = sqrt(y)) < 1`): assigns, gives the value.
+    Assign(Box<Target>, Box<Expr>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -333,4 +335,6 @@ pub struct FormulaAst {
     pub fractint: bool,
     /// Class libraries named by `import "x.ulb"`.
     pub imports: Vec<String>,
+    /// Functions declared in the sections (`complex func f(complex z) … endfunc`).
+    pub funcs: Vec<MethodAst>,
 }

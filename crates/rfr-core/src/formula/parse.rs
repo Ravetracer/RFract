@@ -215,6 +215,8 @@ struct Parser {
     imports: Vec<String>,
     /// Open parentheses around the expression being parsed.
     paren_depth: usize,
+    /// Functions declared in the sections of the formula being parsed.
+    funcs: Vec<MethodAst>,
 }
 
 const FRM_SECTIONS: [&str; 4] = ["parameters", "init", "loop", "bailout"];
@@ -322,12 +324,27 @@ impl Parser {
     fn binary(&mut self, min_prec: u8) -> Result<Expr, Error> {
         let mut lhs = self.unary()?;
         loop {
+            // `(x = value)`: an assignment inside an expression (the whole of a parenthesized
+            // expression or an argument; right-associative: `(a = b = c)`). A text on the
+            // right compares (`@mode = "Julia"`).
+            if min_prec == 0
+                && self.paren_depth > 0
+                && self.dialect == Dialect::Ufm
+                && self.is_op("=")
+                && let Some(target) = assign_target(&lhs)
+                && !matches!(self.peek_at(1), Tok::Str(_))
+            {
+                self.next();
+                let value = self.binary(0)?;
+                lhs = Expr::Assign(Box::new(target), Box::new(value));
+                continue;
+            }
             let (op, prec, right) = match self.peek() {
                 Tok::Op("||") => (BinOp::Or, 1, false),
                 Tok::Op("&&") => (BinOp::And, 2, false),
                 Tok::Op("&") if self.dialect == Dialect::Ufm => (BinOp::And, 2, false),
-                // `if (a = b)`: inside parentheses UFM code may compare with a single `=`.
-                Tok::Op("=") if self.paren_depth > 0 && self.dialect == Dialect::Ufm && !self.fractint => (BinOp::Eq, 3, false),
+                // `if (a + 1 = b)`: inside parentheses UFM code may compare with a single `=`.
+                Tok::Op("=") if self.paren_depth > 0 && self.dialect == Dialect::Ufm => (BinOp::Eq, 3, false),
                 Tok::Op("<") => (BinOp::Lt, 3, false),
                 Tok::Op(">") => (BinOp::Gt, 3, false),
                 Tok::Op("<=") => (BinOp::Le, 3, false),
@@ -492,7 +509,11 @@ impl Parser {
             return Ok(args);
         }
         loop {
-            args.push(self.expr()?);
+            // Arguments count as parenthesized (assignments inside: `abs(r = random(r))`).
+            self.paren_depth += 1;
+            let a = self.expr();
+            self.paren_depth -= 1;
+            args.push(a?);
             if self.eat_op(")") {
                 // FractInt functions take one argument: f(a, b) is f((a, b)).
                 if self.fractint && args.len() == 2 {
@@ -515,6 +536,18 @@ impl Parser {
             self.skip_newlines();
             if *self.peek() == Tok::Eof || self.is_op("}") || self.at_section().is_some() || ends.iter().any(|e| self.is_kw(e)) {
                 return Ok(out);
+            }
+            // A function of the formula: `[type] func Name(…) … endfunc`.
+            if self.dialect == Dialect::Ufm && !self.fractint {
+                let at = |p: &Self, k: usize| matches!(p.peek_at(k), Tok::Ident(s) if s.eq_ignore_ascii_case("func"));
+                let typed = matches!(self.peek(), Tok::Ident(_)) && at(self, 1) && matches!(self.peek_at(2), Tok::Ident(_));
+                if typed || (at(self, 0) && matches!(self.peek_at(1), Tok::Ident(_)) && self.is_op_at(2, "(")) {
+                    let line = self.line();
+                    let ret = if typed { Some(self.type_ref()?) } else { None };
+                    let m = self.method_decl(ret, false, line)?;
+                    self.funcs.push(m);
+                    continue;
+                }
             }
             out.push(self.statement()?);
         }
@@ -1335,6 +1368,7 @@ impl Parser {
             transform: Vec::new(),
             fractint: false,
             imports: Vec::new(),
+            funcs: Vec::new(),
         };
         let mut seen_section = false;
         loop {
@@ -1386,6 +1420,7 @@ impl Parser {
             }
         }
         f.imports = std::mem::take(&mut self.imports);
+        f.funcs = std::mem::take(&mut self.funcs);
         Ok(f)
     }
 
@@ -1418,6 +1453,49 @@ impl Parser {
         name
     }
 
+    /// `func Name(params) … endfunc` (at `func`; the return type is read already).
+    fn method_decl(&mut self, ret: Option<TypeRef>, is_static: bool, line: usize) -> Result<MethodAst, Error> {
+        self.next();
+        let name = match self.next() {
+            Tok::Ident(n) => n,
+            t => return err(line, format!("expected a method name, found {}", show(&t))),
+        };
+        self.expect_op("(")?;
+        let mut params = Vec::new();
+        if !self.eat_op(")") {
+            loop {
+                if self.is_kw("const") {
+                    self.next();
+                }
+                let ty = self.type_ref()?;
+                let by_ref = self.eat_op("&");
+                let pname = match self.next() {
+                    Tok::Ident(n) => n,
+                    t => return err(self.line(), format!("expected a parameter name, found {}", show(&t))),
+                };
+                // Array parameters: name[]
+                if self.eat_op("[") {
+                    while !self.eat_op("]") {
+                        self.next();
+                    }
+                }
+                params.push(MethodParam { ty, name: pname, by_ref });
+                if self.eat_op(")") {
+                    break;
+                }
+                self.expect_op(",")?;
+            }
+        }
+        self.end_of_statement()?;
+        let body = self.block(&["endfunc"])?;
+        if !self.is_kw("endfunc") {
+            return err(line, format!("'func {name}' without 'endfunc'"));
+        }
+        self.next();
+        self.end_of_statement()?;
+        Ok(MethodAst { name, ret, params, body, is_static, line })
+    }
+
     /// Members of a class body up to its end.
     fn class_body(&mut self, c: &mut ClassAst) -> Result<(), Error> {
         loop {
@@ -1446,6 +1524,7 @@ impl Parser {
                         transform: Vec::new(),
                         fractint: false,
                         imports: Vec::new(),
+                        funcs: Vec::new(),
                     };
                     self.ufm_default(&mut f)?;
                     c.params.extend(f.params);
@@ -1468,45 +1547,8 @@ impl Parser {
             // [type] func Name(params)
             let ret = if self.is_kw("func") { None } else { Some(self.type_ref()?) };
             if self.is_kw("func") {
-                self.next();
-                let name = match self.next() {
-                    Tok::Ident(n) => n,
-                    t => return err(line, format!("expected a method name, found {}", show(&t))),
-                };
-                self.expect_op("(")?;
-                let mut params = Vec::new();
-                if !self.eat_op(")") {
-                    loop {
-                        if self.is_kw("const") {
-                            self.next();
-                        }
-                        let ty = self.type_ref()?;
-                        let by_ref = self.eat_op("&");
-                        let pname = match self.next() {
-                            Tok::Ident(n) => n,
-                            t => return err(self.line(), format!("expected a parameter name, found {}", show(&t))),
-                        };
-                        // Array parameters: name[]
-                        if self.eat_op("[") {
-                            while !self.eat_op("]") {
-                                self.next();
-                            }
-                        }
-                        params.push(MethodParam { ty, name: pname, by_ref });
-                        if self.eat_op(")") {
-                            break;
-                        }
-                        self.expect_op(",")?;
-                    }
-                }
-                self.end_of_statement()?;
-                let body = self.block(&["endfunc"])?;
-                if !self.is_kw("endfunc") {
-                    return err(line, format!("'func {name}' without 'endfunc'"));
-                }
-                self.next();
-                self.end_of_statement()?;
-                c.methods.push(MethodAst { name, ret, params, body, is_static, line });
+                let m = self.method_decl(ret, is_static, line)?;
+                c.methods.push(m);
                 continue;
             }
             // Fields: type name[, name …] [dims]
@@ -1606,12 +1648,25 @@ pub fn parse_classes(src: &str) -> Vec<(String, Result<ClassAst, Error>)> {
             let mut c =
                 ClassAst { name: name.clone(), parent, fields: Vec::new(), methods: Vec::new(), params: Vec::new(), title: None, line: e.line };
             let r = entry_tokens(e.body, e.line).and_then(|toks| {
-                let mut p = Parser { toks, pos: 0, dialect: Dialect::Ufm, fractint: false, imports: Vec::new(), paren_depth: 0 };
+                let mut p = Parser { toks, pos: 0, dialect: Dialect::Ufm, fractint: false, imports: Vec::new(), funcs: Vec::new(), paren_depth: 0 };
                 p.class_body(&mut c)
             });
             Some((name, r.map(|_| c)))
         })
         .collect()
+}
+
+/// The assignment target an expression names (`x`, `@p`, `#z`, `a[i]`, `o.f`, `o.f[i]`).
+fn assign_target(e: &Expr) -> Option<Target> {
+    Some(match e {
+        Expr::Ident(n) if !is_keyword(n) => Target::Var(n.clone()),
+        Expr::Param(n) => Target::Var(format!("@{n}")),
+        Expr::Sys(n) => Target::Sys(n.clone()),
+        Expr::Index(n, i) => Target::Index(n.clone(), i.clone()),
+        Expr::Member(o, f) => Target::Member(o.clone(), f.clone()),
+        Expr::MemberIndex(o, f, i) => Target::MemberIndex(o.clone(), f.clone(), i.clone()),
+        _ => return None,
+    })
 }
 
 fn show(t: &Tok) -> String {
@@ -1660,7 +1715,7 @@ pub fn parse_frm(src: &str) -> Result<FormulaAst, Error> {
     let Some((name, rest)) = hl.split_once('{') else { return err(hi + 1, "expected 'Name {'") };
     let body = &src[start + (hl.len() - rest.len())..];
     let toks = lex(body, hi + 1)?;
-    let mut p = Parser { toks, pos: 0, dialect: Dialect::Frm, fractint: false, imports: Vec::new(), paren_depth: 0 };
+    let mut p = Parser { toks, pos: 0, dialect: Dialect::Frm, fractint: false, imports: Vec::new(), funcs: Vec::new(), paren_depth: 0 };
     let f = p.formula_body(name.trim().to_string())?;
     p.expect_op("}")?;
     Ok(f)
@@ -1828,7 +1883,7 @@ pub fn split_entries(src: &str) -> Vec<Entry<'_>> {
 /// Parses one entry of a UFM syntax file.
 pub fn parse_ufm_entry(e: &Entry) -> Result<FormulaAst, Error> {
     let toks = entry_tokens(e.body, e.line)?;
-    let mut p = Parser { toks, pos: 0, dialect: Dialect::Ufm, fractint: false, imports: Vec::new(), paren_depth: 0 };
+    let mut p = Parser { toks, pos: 0, dialect: Dialect::Ufm, fractint: false, imports: Vec::new(), funcs: Vec::new(), paren_depth: 0 };
     p.formula_body(e.name.clone())
 }
 

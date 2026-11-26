@@ -11,7 +11,8 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
   parameters (plugins) with their own parameters, chosen in the inspector. Objects are
   compiled into plain formula code, so class formulas render on the GPU.
 - RFract's own versions of common standard classes (Mandelbrot, Julia, Pixel, Newton, Smooth,
-  Gradient, trap shapes).
+  Gradient, Default, Orbit Traps, Direct Orbit Traps, a trap mode, 18 trap shapes, Exponential
+  Smoothing, Distance Estimator, Height Transfer).
 - Color function parameters (merge modes, `@f(color1, color2)`).
 - Arrays of objects (`TrapShape m_Elements[10]`, `setLength`, `length`): objects stored at
   known indexes, counting loops that make or use objects are unrolled, elements chosen by an
@@ -25,6 +26,11 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
 - Image parameters: `Image param` chooses a PNG or JPEG file in the inspector; formulas read
   it through image objects (`getColor`, `getPixel`, `getWidth`, `getHeight`, `getEmpty`) on
   the CPU and the GPU. Image classes of class libraries (`ImageImport`) work.
+- Functions declared in formula sections (`complex func f(…) … endfunc`); arrays are passed
+  to functions and methods by reference; `complex b[n] = a` and `b = a` copy arrays.
+- Assignments inside expressions (`(x = sqrt(y)) < 1`, `abs(r = random(r))`,
+  `until (i = i + 1) >= 10`); a single `=` inside parentheses was a comparison before, which
+  computed such formulas wrongly.
 - Arithmetic on colors: `+`, `-`, `*`, `/` channel by channel, numbers apply to all four
   channels (`c1 * t + c2 * (1 - t)`).
 - The *Image* coloring: an image file looked up by the final z, the pixel or the orbit's

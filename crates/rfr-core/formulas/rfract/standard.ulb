@@ -237,3 +237,540 @@ public:
 default:
   title = "Gaussian integer"
 }
+
+class Standard_TrapShapeHeart(common.ulb:TrapShape) {
+; Distance to a heart (a cardioid pointing down).
+public:
+  func Standard_TrapShapeHeart(Generic pparent)
+    TrapShape.TrapShape(pparent)
+  endfunc
+  float func Iterate(complex pz)
+    TrapShape.Iterate(pz)
+    return abs(cabs(pz) - @p_radius * (1 - sin(atan2(pz))))
+  endfunc
+default:
+  title = "Heart"
+  float param p_radius
+    caption = "Size"
+    default = 1
+  endparam
+}
+
+class Standard_TrapShapeSpiral(common.ulb:TrapShape) {
+; Distance to an Archimedean spiral.
+public:
+  func Standard_TrapShapeSpiral(Generic pparent)
+    TrapShape.TrapShape(pparent)
+  endfunc
+  float func Iterate(complex pz)
+    TrapShape.Iterate(pz)
+    float t = cabs(pz) / @p_radius - (atan2(pz) / (2 * #pi) + 0.5)
+    return abs(t - round(t)) * @p_radius
+  endfunc
+default:
+  title = "Spiral"
+  float param p_radius
+    caption = "Spacing"
+    default = 1
+  endparam
+}
+
+class Standard_TrapShapeAstroid(common.ulb:TrapShape) {
+; Distance to an astroid.
+public:
+  func Standard_TrapShapeAstroid(Generic pparent)
+    TrapShape.TrapShape(pparent)
+  endfunc
+  float func Iterate(complex pz)
+    TrapShape.Iterate(pz)
+    return abs(abs(real(pz))^(2.0 / 3.0) + abs(imag(pz))^(2.0 / 3.0) - @p_radius^(2.0 / 3.0))
+  endfunc
+default:
+  title = "Astroid"
+  float param p_radius
+    caption = "Size"
+    default = 1
+  endparam
+}
+
+class Standard_TrapShapeDiamond(common.ulb:TrapShape) {
+; Distance to a square standing on a corner.
+public:
+  func Standard_TrapShapeDiamond(Generic pparent)
+    TrapShape.TrapShape(pparent)
+  endfunc
+  float func Iterate(complex pz)
+    TrapShape.Iterate(pz)
+    return abs(abs(real(pz)) + abs(imag(pz)) - @p_radius)
+  endfunc
+default:
+  title = "Diamond"
+  float param p_radius
+    caption = "Size"
+    default = 1
+  endparam
+}
+
+class Standard_TrapShapeRectangle(common.ulb:TrapShape) {
+; Distance to a rectangle.
+public:
+  func Standard_TrapShapeRectangle(Generic pparent)
+    TrapShape.TrapShape(pparent)
+  endfunc
+  float func Iterate(complex pz)
+    TrapShape.Iterate(pz)
+    return abs(max(abs(real(pz)) - @p_width, abs(imag(pz)) - @p_height))
+  endfunc
+default:
+  title = "Rectangle"
+  float param p_width
+    caption = "Half width"
+    default = 1
+  endparam
+  float param p_height
+    caption = "Half height"
+    default = 0.5
+  endparam
+}
+
+class Standard_TrapShapeRing2(common.ulb:TrapShape) {
+; Distance to the nearer of two circles.
+public:
+  func Standard_TrapShapeRing2(Generic pparent)
+    TrapShape.TrapShape(pparent)
+  endfunc
+  float func Iterate(complex pz)
+    TrapShape.Iterate(pz)
+    float r = cabs(pz)
+    return min(abs(r - @p_radius), abs(r - @p_radius2))
+  endfunc
+default:
+  title = "Two rings"
+  float param p_radius
+    caption = "Radius 1"
+    default = 1
+  endparam
+  float param p_radius2
+    caption = "Radius 2"
+    default = 0.5
+  endparam
+}
+
+class Standard_TrapShapeEgg(common.ulb:TrapShape) {
+; Distance to an ellipse.
+public:
+  func Standard_TrapShapeEgg(Generic pparent)
+    TrapShape.TrapShape(pparent)
+  endfunc
+  float func Iterate(complex pz)
+    TrapShape.Iterate(pz)
+    return abs(cabs(real(pz) / @p_width + flip(imag(pz) / @p_height)) - 1)
+  endfunc
+default:
+  title = "Egg"
+  float param p_width
+    caption = "Half width"
+    default = 1
+  endparam
+  float param p_height
+    caption = "Half height"
+    default = 0.7
+  endparam
+}
+
+class Standard_TrapShapeWaves(common.ulb:TrapShape) {
+; Distance to a sine wave along the real axis.
+public:
+  func Standard_TrapShapeWaves(Generic pparent)
+    TrapShape.TrapShape(pparent)
+  endfunc
+  float func Iterate(complex pz)
+    TrapShape.Iterate(pz)
+    return abs(imag(pz) - @p_amplitude * sin(real(pz) * @p_frequency))
+  endfunc
+default:
+  title = "Waves"
+  float param p_amplitude
+    caption = "Amplitude"
+    default = 0.5
+  endparam
+  float param p_frequency
+    caption = "Frequency"
+    default = 3
+  endparam
+}
+
+class Standard_TrapShapeRipples(common.ulb:TrapShape) {
+; Distance to concentric circles.
+public:
+  func Standard_TrapShapeRipples(Generic pparent)
+    TrapShape.TrapShape(pparent)
+  endfunc
+  float func Iterate(complex pz)
+    TrapShape.Iterate(pz)
+    float t = cabs(pz) / @p_spacing
+    return abs(t - round(t)) * @p_spacing
+  endfunc
+default:
+  title = "Ripples"
+  float param p_spacing
+    caption = "Spacing"
+    default = 0.5
+  endparam
+}
+
+class Standard_TrapShapePinch(common.ulb:TrapShape) {
+; Distance to a flower: a circle pinched toward the center between its petals.
+public:
+  func Standard_TrapShapePinch(Generic pparent)
+    TrapShape.TrapShape(pparent)
+  endfunc
+  float func Iterate(complex pz)
+    TrapShape.Iterate(pz)
+    return abs(cabs(pz) - @p_radius * abs(cos(atan2(pz) * @p_petals / 2)))
+  endfunc
+default:
+  title = "Pinch"
+  float param p_radius
+    caption = "Size"
+    default = 1
+  endparam
+  float param p_petals
+    caption = "Petals"
+    default = 4
+  endparam
+}
+
+class Standard_TrapShapeHyperbola(common.ulb:TrapShape) {
+; Distance to the hyperbolas x y = ±size.
+public:
+  func Standard_TrapShapeHyperbola(Generic pparent)
+    TrapShape.TrapShape(pparent)
+  endfunc
+  float func Iterate(complex pz)
+    TrapShape.Iterate(pz)
+    return abs(abs(real(pz) * imag(pz)) - @p_radius)
+  endfunc
+default:
+  title = "Hyperbola"
+  float param p_radius
+    caption = "Size"
+    default = 0.5
+  endparam
+}
+
+class Standard_TrapShapeHypercross(common.ulb:TrapShape) {
+; The product of the distances to both axes: a cross with curved arms.
+public:
+  func Standard_TrapShapeHypercross(Generic pparent)
+    TrapShape.TrapShape(pparent)
+  endfunc
+  float func Iterate(complex pz)
+    TrapShape.Iterate(pz)
+    return abs(real(pz) * imag(pz))
+  endfunc
+default:
+  title = "Hypercross"
+}
+
+class Standard_TrapModeBase(common.ulb:TrapModeWithThreshold) {
+; Keeps the orbit point closest to the trap (distance, texture, points, iteration).
+public:
+  func Standard_TrapModeBase(Generic pparent)
+    TrapModeWithThreshold.TrapModeWithThreshold(pparent)
+    m_Threshold = @p_threshold
+  endfunc
+  func Init(complex pz)
+    TrapMode.Init(pz)
+    m_Distances[0] = 1e20
+  endfunc
+  func Iterate(complex pz, complex pzt, float pdistance, float ptexture)
+    TrapMode.Iterate(pz, pzt, pdistance, ptexture)
+    if pdistance < m_Distances[0]
+      m_Distances[0] = pdistance
+      m_Textures[0] = ptexture
+      m_UntransformedPoints[0] = pz
+      m_TransformedPoints[0] = pzt
+      m_IterationPoints[0] = m_Iterations
+    endif
+  endfunc
+  func Result()
+    m_Solid = m_Distances[0] >= 1e20 || (@p_solid && m_Distances[0] > m_Threshold)
+  endfunc
+default:
+  title = "Closest"
+  float param p_threshold
+    caption = "Trap threshold"
+    default = 1
+    hint = "The width of the trap: distances above it count as missed."
+  endparam
+  bool param p_solid
+    caption = "Solid outside the trap"
+    default = false
+    hint = "Orbits that never come within the threshold get the solid color."
+  endparam
+}
+
+class Standard_OrbitTraps(common.ulb:GradientColoring) {
+; Orbit traps: a trap shape at a center, a trap mode that picks the orbit point, a trap coloring
+; that turns it into a gradient position.
+public:
+  func Standard_OrbitTraps(Generic pparent)
+    GradientColoring.GradientColoring(pparent)
+    m_TrapShape = new @f_trapshape(this)
+    m_TrapMode = new @f_trapmode(this)
+    m_TrapColoring = new @f_trapcoloring(this)
+    m_Rotation = (cos(-@p_trapangle * #pi / 180), sin(-@p_trapangle * #pi / 180))
+  endfunc
+  func Init(complex pz, complex ppixel)
+    GradientColoring.Init(pz, ppixel)
+    m_TrapShape.Init(pz)
+    m_TrapMode.Init(pz)
+  endfunc
+  func Iterate(complex pz)
+    GradientColoring.Iterate(pz)
+    complex w = (pz - @p_trapcenter) * m_Rotation
+    float d = m_TrapShape.Iterate(w)
+    m_TrapMode.Iterate(pz, m_TrapShape.GetTransformedPoint(), d, m_TrapShape.GetTextureValue())
+  endfunc
+  float func ResultIndex(complex pz)
+    m_TrapMode.Result()
+    m_Solid = m_TrapMode.IsSolid()
+    return m_TrapColoring.Result(m_TrapMode)
+  endfunc
+protected:
+  TrapShape m_TrapShape
+  TrapMode m_TrapMode
+  TrapColoring m_TrapColoring
+  complex m_Rotation
+default:
+  title = "Orbit Traps"
+  complex param p_trapcenter
+    caption = "Trap center"
+    default = (0, 0)
+  endparam
+  float param p_trapangle
+    caption = "Trap rotation"
+    default = 0
+    hint = "Rotation of the trap shape in degrees."
+  endparam
+  TrapShape param f_trapshape
+    caption = "Trap shape"
+    default = Standard_TrapShapePoint
+  endparam
+  TrapMode param f_trapmode
+    caption = "Trap mode"
+    default = Standard_TrapModeBase
+  endparam
+  TrapColoring param f_trapcoloring
+    caption = "Trap coloring"
+    default = TrapColoringDistance
+  endparam
+}
+
+class Standard_DirectOrbitTraps(common.ulb:DirectColoring) {
+; Orbit traps as a direct coloring: the gradient at the trap coloring's position, solid where
+; the trap mode says the orbit missed the trap.
+public:
+  func Standard_DirectOrbitTraps(Generic pparent)
+    DirectColoring.DirectColoring(pparent)
+    m_TrapShape = new @f_trapshape(this)
+    m_TrapMode = new @f_trapmode(this)
+    m_TrapColoring = new @f_trapcoloring(this)
+    m_Rotation = (cos(-@p_trapangle * #pi / 180), sin(-@p_trapangle * #pi / 180))
+  endfunc
+  func Init(complex pz, complex ppixel)
+    DirectColoring.Init(pz, ppixel)
+    m_TrapShape.Init(pz)
+    m_TrapMode.Init(pz)
+  endfunc
+  func Iterate(complex pz)
+    DirectColoring.Iterate(pz)
+    complex w = (pz - @p_trapcenter) * m_Rotation
+    float d = m_TrapShape.Iterate(w)
+    m_TrapMode.Iterate(pz, m_TrapShape.GetTransformedPoint(), d, m_TrapShape.GetTextureValue())
+  endfunc
+  color func Result(complex pz)
+    m_TrapMode.Result()
+    m_Solid = m_TrapMode.IsSolid()
+    return gradient(m_TrapColoring.Result(m_TrapMode))
+  endfunc
+protected:
+  TrapShape m_TrapShape
+  TrapMode m_TrapMode
+  TrapColoring m_TrapColoring
+  complex m_Rotation
+default:
+  title = "Direct Orbit Traps"
+  complex param p_trapcenter
+    caption = "Trap center"
+    default = (0, 0)
+  endparam
+  float param p_trapangle
+    caption = "Trap rotation"
+    default = 0
+    hint = "Rotation of the trap shape in degrees."
+  endparam
+  TrapShape param f_trapshape
+    caption = "Trap shape"
+    default = Standard_TrapShapePoint
+  endparam
+  TrapMode param f_trapmode
+    caption = "Trap mode"
+    default = Standard_TrapModeBase
+  endparam
+  TrapColoring param f_trapcoloring
+    caption = "Trap coloring"
+    default = TrapColoringDistance
+  endparam
+}
+
+class Standard_Default(common.ulb:GradientColoring) {
+; The iteration count.
+public:
+  func Standard_Default(Generic pparent)
+    GradientColoring.GradientColoring(pparent)
+  endfunc
+  float func ResultIndex(complex pz)
+    return m_Iterations * @p_scale
+  endfunc
+default:
+  title = "Default"
+  float param p_scale
+    caption = "Scale"
+    default = 0.01
+    hint = "Gradient positions per iteration."
+  endparam
+}
+
+class Standard_ExponentialSmoothing(common.ulb:GradientColoring) {
+; Sum of exp(-|z|) (escaping orbits) or exp(-1/|Δz|) (converging orbits).
+public:
+  func Standard_ExponentialSmoothing(Generic pparent)
+    GradientColoring.GradientColoring(pparent)
+  endfunc
+  func Init(complex pz, complex ppixel)
+    GradientColoring.Init(pz, ppixel)
+    m_Diverge = 0
+    m_Converge = 0
+    m_Old = pz
+  endfunc
+  func Iterate(complex pz)
+    GradientColoring.Iterate(pz)
+    m_Diverge = m_Diverge + exp(-cabs(pz))
+    float d = cabs(pz - m_Old)
+    if d > 1e-30
+      m_Converge = m_Converge + exp(-1 / d)
+    endif
+    m_Old = pz
+  endfunc
+  float func ResultIndex(complex pz)
+    if @p_mode == 1 || (@p_mode == 0 && cabs(pz) > 2)
+      return m_Diverge * @p_scale
+    endif
+    return m_Converge * @p_scale
+  endfunc
+protected:
+  float m_Diverge
+  float m_Converge
+  complex m_Old
+default:
+  title = "Exponential Smoothing"
+  int param p_mode
+    caption = "Orbits"
+    enum = "Automatic" "Escaping" "Converging"
+    default = 0
+  endparam
+  float param p_scale
+    caption = "Scale"
+    default = 0.1
+  endparam
+}
+
+class Standard_DistanceEstimator(common.ulb:GradientColoring) {
+; Distance estimation for z = z^power + c: the derivative follows the orbit.
+public:
+  func Standard_DistanceEstimator(Generic pparent)
+    GradientColoring.GradientColoring(pparent)
+  endfunc
+  func Init(complex pz, complex ppixel)
+    GradientColoring.Init(pz, ppixel)
+    m_Old = pz
+    if @p_julia
+      m_Dz = 1
+    else
+      m_Dz = 0
+    endif
+  endfunc
+  func Iterate(complex pz)
+    GradientColoring.Iterate(pz)
+    if @p_julia
+      m_Dz = @p_power * m_Old^(@p_power - 1) * m_Dz
+    else
+      m_Dz = @p_power * m_Old^(@p_power - 1) * m_Dz + 1
+    endif
+    m_Old = pz
+  endfunc
+  float func ResultIndex(complex pz)
+    float r = cabs(pz)
+    if r < 1.000001 || cabs(m_Dz) < 1e-300
+      return 0
+    endif
+    float de = r * log(r) / cabs(m_Dz)
+    return -log(max(de, 1e-300)) * @p_scale
+  endfunc
+protected:
+  complex m_Dz
+  complex m_Old
+default:
+  title = "Distance Estimator"
+  complex param p_power
+    caption = "Exponent"
+    default = (2, 0)
+    hint = "The fractal formula's exponent."
+  endparam
+  bool param p_julia
+    caption = "Julia set"
+    default = false
+    hint = "The derivative by the starting point (Julia sets) instead of by c."
+  endparam
+  float param p_scale
+    caption = "Scale"
+    default = 0.05
+  endparam
+}
+
+class Standard_HeightTransfer(common.ulb:Transfer) {
+; Maps a height value: a transfer function, then scale and offset.
+public:
+  func Standard_HeightTransfer(Generic pparent)
+    Transfer.Transfer(pparent)
+  endfunc
+  float func Iterate(float pr)
+    Transfer.Iterate(pr)
+    float v = pr
+    if @p_function == 1
+      v = sqrt(max(pr, 0))
+    elseif @p_function == 2
+      v = log(1 + max(pr, 0))
+    elseif @p_function == 3
+      v = pr * pr
+    endif
+    return v * @p_scale + @p_offset
+  endfunc
+default:
+  title = "Height Transfer"
+  int param p_function
+    caption = "Transfer function"
+    enum = "Linear" "Square root" "Log" "Square"
+    default = 0
+  endparam
+  float param p_scale
+    caption = "Scale"
+    default = 1
+  endparam
+  float param p_offset
+    caption = "Offset"
+    default = 0
+  endparam
+}
