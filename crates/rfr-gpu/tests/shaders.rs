@@ -335,6 +335,12 @@ fn gpu_density_matches_the_cpu() {
     let mut q = k.clone();
     q.layers[0].density.kleinian = rfr_core::doc::Kleinian::default();
     cases.push(("quasi-fuchsian", q));
+    let mut koch = rfr_core::io::lsystem::document("Koch", rfr_core::doc::LSystem { width: 0.6, ..Default::default() });
+    koch.image.width = 96;
+    koch.image.height = 64;
+    rfr_core::render::density::fit_view(&mut koch, &[0]);
+    koch.layers[0].density.orbits = 2000;
+    cases.push(("koch", koch));
     let (w, h, s) = (96, 64, 8);
     for (name, doc) in cases {
         let plan = Plan::sized(&doc, w, h).unwrap();

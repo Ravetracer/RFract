@@ -13,7 +13,7 @@ formula folders.
 ## Parameter files (.upr, .par)
 
 **Ctrl+O** also opens `.upr` and FractInt `.par` parameter files and FractInt `.ifs` files
-(iterated function systems, see *Density layers*). A file with several images shows their list
+(iterated function systems) and `.l` files (L-systems), see *Density layers*. A file with several images shows their list
 (with a search); click one to open it as a new document. RFract converts the layers (caption,
 opacity, merge mode, visibility), the view (center, magnification, rotation), the formulas
 with their parameters, the inside and outside colorings, the transformations and the gradient

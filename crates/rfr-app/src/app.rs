@@ -404,8 +404,11 @@ impl App {
                 self.notify("New document");
             }
             Action::Open => {
-                if let Some(p) =
-                    self.prefs.dialog().add_filter("RFract documents, images and parameter files", &["rfr", "png", "upr", "par", "ifs"]).pick_file()
+                if let Some(p) = self
+                    .prefs
+                    .dialog()
+                    .add_filter("RFract documents, images and parameter files", &["rfr", "png", "upr", "par", "ifs", "l"])
+                    .pick_file()
                 {
                     if is_upr(&p) {
                         // Pick the image first; the unsaved-changes question comes with the pick.
@@ -993,15 +996,11 @@ impl eframe::App for App {
                     }
                 }
                 InspectorAction::Select(s) => self.selection = s,
-                InspectorAction::FitIfs => {
-                    if let Some(l) = layers::target(&self.doc.doc, &self.selection) {
-                        let fitted = rfr_core::io::ifs::document(&l.name, l.density.ifs.clone());
-                        self.doc.doc.view = fitted.view;
-                        let region = fitted.layers[0].density.region;
-                        if let Some(l) = layers::target_mut(&mut self.doc.doc, &self.selection) {
-                            l.density.region = region;
-                        }
-                        self.notify("View fitted to the IFS attractor");
+                InspectorAction::FitDensity => {
+                    if rfr_core::render::density::fit_view(&mut self.doc.doc, &self.selection.path) {
+                        self.notify("View fitted to the layer");
+                    } else {
+                        self.notify("Nothing to fit (the layer has no strokes or maps)");
                     }
                 }
             }

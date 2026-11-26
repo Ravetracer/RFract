@@ -122,6 +122,44 @@ fn d_klein(i: u32, start: vec2<f32>) {
     }
 }
 
+// Points on an L-system's strokes in `bla` (rfr_core::render::density::lsystem_orbit): a
+// segment by its cumulative share, a place along it and across the stroke width.
+fn d_lsys(i: u32) {
+    let n = U.densx.w;
+    if n == 0u {
+        return;
+    }
+    let w = U.densb.z;
+    var rnd = hash(i ^ hash(U.densn.w ^ 0x3C6EF372u));
+    for (var it = 0u; it < U.densx.y; it = it + 1u) {
+        rnd = hash(rnd);
+        let u = f32(rnd) / 4294967296.0;
+        rnd = hash(rnd);
+        let t = f32(rnd) / 4294967296.0;
+        rnd = hash(rnd);
+        let v = f32(rnd) / 4294967296.0 - 0.5;
+        var lo = 0u;
+        var hi = n - 1u;
+        loop {
+            if lo >= hi {
+                break;
+            }
+            let mid = (lo + hi) / 2u;
+            if bla[2u * mid + 1u].x > u {
+                hi = mid;
+            } else {
+                lo = mid + 1u;
+            }
+        }
+        let g = bla[2u * lo];
+        let d = g.zw - g.xy;
+        let len = max(length(d), 1e-12);
+        let nrm = vec2<f32>(-d.y, d.x) / len;
+        let p = g.xy + d * t + nrm * (v * w);
+        d_plot(c_f(p.x, p.y), 1u);
+    }
+}
+
 @compute @workgroup_size(64)
 fn scatter(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
@@ -140,6 +178,10 @@ fn scatter(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     if U.densi.x == 4u {
         d_klein(i, start);
+        return;
+    }
+    if U.densi.x == 5u {
+        d_lsys(i);
         return;
     }
     let x = 0u;

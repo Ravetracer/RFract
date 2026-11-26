@@ -29,8 +29,8 @@ pub enum Action {
     Select(Selection),
     /// Open the formula editor on this library entry.
     EditFormula(String),
-    /// Fit the view to the selected layer's IFS attractor.
-    FitIfs,
+    /// Fit the view to the selected density layer's attractor or strokes.
+    FitDensity,
 }
 
 /// Function names offered for function parameters.
@@ -397,7 +397,9 @@ fn transforms_ui(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
 
 fn fractal_sections(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
     // IFS and Kleinian density layers do not use their formula.
-    if l.kind == LayerKind::Density && matches!(l.density.mode, rfr_core::doc::DensityMode::Ifs | rfr_core::doc::DensityMode::Kleinian) {
+    if l.kind == LayerKind::Density
+        && matches!(l.density.mode, rfr_core::doc::DensityMode::Ifs | rfr_core::doc::DensityMode::Kleinian | rfr_core::doc::DensityMode::LSystem)
+    {
         density_section(ui, l, actions);
         return;
     }
@@ -561,12 +563,12 @@ fn ifs_maps(ui: &mut Ui, d: &mut rfr_core::doc::Density, actions: &mut Vec<Actio
             for (name, maps) in rfr_core::doc::ifs_presets() {
                 if ui.selectable_label(false, name).on_hover_text(format!("Replace the maps with the {name}")).clicked() {
                     d.ifs = maps;
-                    actions.push(Action::FitIfs);
+                    actions.push(Action::FitDensity);
                 }
             }
         });
         if ui.button("Fit view").on_hover_text("Fit the view and the start region to the attractor").clicked() {
-            actions.push(Action::FitIfs);
+            actions.push(Action::FitDensity);
         }
         if ui.button(format!("{} Map", icons::PLUS)).on_hover_text("Add a map (half size, no shift)").clicked() {
             d.ifs.push(IfsMap::default());
@@ -599,6 +601,55 @@ fn ifs_maps(ui: &mut Ui, d: &mut rfr_core::doc::Density, actions: &mut Vec<Actio
         d.ifs.remove(k);
     }
     ui.separator();
+}
+
+/// The L-system of a density layer: axiom, rules, angle, rewrites, stroke width, presets.
+fn lsystem_ui(ui: &mut Ui, s: &mut rfr_core::doc::LSystem, actions: &mut Vec<Action>) {
+    use rfr_core::doc::LSystem;
+    ui.horizontal(|ui| {
+        egui::ComboBox::from_id_salt("lsys-preset").selected_text("Presets").show_ui(ui, |ui| {
+            let presets: [(&str, LSystem); 5] = [
+                ("Koch snowflake", LSystem::default()),
+                ("Plant", LSystem { axiom: "F".into(), rules: "F=FF-[-F+F+F]+[+F-F-F]".into(), angle: 16.0, iterations: 4, width: 0.4 }),
+                ("Dragon curve", LSystem { axiom: "FX".into(), rules: "X=X+YF+\nY=-FX-Y".into(), angle: 4.0, iterations: 12, width: 0.15 }),
+                (
+                    "Hilbert curve",
+                    LSystem { axiom: "X".into(), rules: "X=-YF+XFX+FY-\nY=+XF-YFY-FX+".into(), angle: 4.0, iterations: 6, width: 0.15 },
+                ),
+                (
+                    "Sierpinski arrowhead",
+                    LSystem { axiom: "YF".into(), rules: "X=YF+XF+Y\nY=XF-YF-X".into(), angle: 6.0, iterations: 7, width: 0.15 },
+                ),
+            ];
+            for (name, p) in presets {
+                if ui.selectable_label(false, name).on_hover_text(format!("The {name}")).clicked() {
+                    *s = p;
+                    actions.push(Action::FitDensity);
+                }
+            }
+        });
+        if ui.button("Fit view").on_hover_text("Fit the view to the strokes").clicked() {
+            actions.push(Action::FitDensity);
+        }
+    });
+    widgets::grid(ui, "lsys-grid", |ui| {
+        widgets::label(ui, "Axiom", "The starting string");
+        ui.add(egui::TextEdit::singleline(&mut s.axiom).font(egui::TextStyle::Monospace))
+            .on_hover_text("F, D: forward with a line; G, M, f: forward; + −: turn; |: turn around; !: swap turns; [ ]: save, restore");
+        ui.end_row();
+        widgets::label(ui, "Rules", "One rule per line: a letter, '=' and what it becomes");
+        ui.add(egui::TextEdit::multiline(&mut s.rules).font(egui::TextStyle::Monospace).desired_rows(3)).on_hover_text("For example F=F+F--F+F");
+        ui.end_row();
+        widgets::label(ui, "Angle", "Turns as divisions of the full circle (6: 60°, 4: 90°)");
+        ui.add(egui::DragValue::new(&mut s.angle).range(1.0..=360.0).speed(0.05).max_decimals(3)).on_hover_text("Divisions of 360°");
+        ui.end_row();
+        widgets::label(ui, "Rewrites", "How often the rules are applied (the strokes grow fast)");
+        ui.add(egui::DragValue::new(&mut s.iterations).range(0..=20)).on_hover_text("Rewrites of the axiom");
+        ui.end_row();
+        widgets::label(ui, "Stroke width", "Width of the lines in turtle steps");
+        ui.add(egui::DragValue::new(&mut s.width).range(0.0..=10.0).speed(0.005).max_decimals(3)).on_hover_text("Line width");
+        ui.end_row();
+    });
 }
 
 /// The group of a Kleinian density layer: recipe, traces, presets.
@@ -667,8 +718,12 @@ fn density_section(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
             (DensityMode::Attractor, "Attractor", "Every orbit after a warm-up: strange attractors (formulas of the Attractors family)"),
             (DensityMode::Ifs, "IFS", "The chaos game over the affine maps below (iterated function systems; the formula is not used)"),
             (DensityMode::Kleinian, "Kleinian", "The limit set of a group of two Möbius maps (Indra's pearls; the formula is not used)"),
+            (DensityMode::LSystem, "L-system", "The strokes of an L-system's turtle (the formula is not used)"),
         ],
     );
+    if d.mode == DensityMode::LSystem {
+        lsystem_ui(ui, &mut d.lsystem, actions);
+    }
     if d.mode == DensityMode::Ifs {
         ifs_maps(ui, d, actions);
     }

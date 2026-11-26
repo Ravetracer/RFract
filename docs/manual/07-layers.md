@@ -72,6 +72,7 @@ inspector decides which orbits count:
 | Attractor | Every orbit after a warm-up: **strange attractors** (the formulas of the *Attractors* family: Clifford, de Jong, Hopalong, Gumowski–Mira, Ikeda, Tinkerbell, Pickover, Lorenz, Rössler) |
 | IFS | The chaos game of an **iterated function system**: every step applies one of the layer's maps, chosen by its weight (the formula is not used) |
 | Kleinian | The **limit set** of a group of two Möbius transformations and their inverses (a random walk over them; the formula is not used) |
+| L-system | The strokes of an **L-system**'s turtle, antialiased (the formula is not used) |
 
 In IFS mode the inspector lists the maps: the six coefficients (x' = a·x + b·y + e,
 y' = c·x + d·y + f), the weight and a *variation* (a nonlinear function after the map, as in
@@ -84,6 +85,13 @@ In Kleinian mode the two generators come from *Grandma's recipe* (the traces of 
 complex numbers: 2 and 2 give the Apollonian gasket, a second trace of 2 gives Maskit's
 groups) or from *Riley's* recipe (one complex parameter). Small changes of the traces bend the
 limit set from circles into spirals and dust; *Presets* holds a few starting points.
+
+In L-system mode the axiom is rewritten by the rules (one per line, `F=F+F--F+F`) as often as
+*Rewrites* says; the turtle then draws: `F` and `D` go forward with a line, `G`, `M` and `f`
+without, `+` and `-` turn by 360° divided by *Angle*, `|` turns around, `!` swaps the turn
+directions, `[` and `]` save and restore the turtle. *Stroke width* is in turtle steps.
+*Presets* holds the Koch snowflake, a plant, the dragon and Hilbert curves and the Sierpinski
+arrowhead; FractInt `.l` files open like parameter files.
 
 - *Shortest orbit* leaves out orbits that escape at once (they only add a haze).
 - *Start region* is where the start points come from (plane units, independent of the view).

@@ -684,7 +684,7 @@ impl GpuRenderer {
                     uni.densi = [d.mode.index(), d.min_iter, d.warmup, d.orbits.max(1)];
                     uni.densn = [d.nebula_iter[0], d.nebula_iter[1], d.nebula_iter[2], 0];
                     uni.densx = [channels, rfr_core::render::density::max_iter(lp, d), (channels == 3) as u32, d.ifs.len() as u32];
-                    uni.densb = [d.brightness as f32, d.gamma as f32, 0.0, 0.0];
+                    uni.densb = [d.brightness as f32, d.gamma as f32, d.lsystem.width as f32, 0.0];
                     let uniform = device.create_buffer(&wgpu::BufferDescriptor {
                         label: Some("density"),
                         size: std::mem::size_of::<Uni>() as u64,
@@ -702,6 +702,15 @@ impl GpuRenderer {
                     contents: bytemuck::cast_slice(&rfr_core::render::density::ifs_words(d)),
                     usage: wgpu::BufferUsages::STORAGE,
                 }),
+                Some(d) if d.mode == rfr_core::doc::DensityMode::LSystem => {
+                    let words = rfr_core::render::density::Strokes::new(d).words();
+                    uni.densx[3] = (words.len() / 2) as u32;
+                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("l-system strokes"),
+                        contents: bytemuck::cast_slice(&words),
+                        usage: wgpu::BufferUsages::STORAGE,
+                    })
+                }
                 Some(d) if d.mode == rfr_core::doc::DensityMode::Kleinian => device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("kleinian generators"),
                     contents: bytemuck::cast_slice(&rfr_core::render::density::kleinian_words(d)),

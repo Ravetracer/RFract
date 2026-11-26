@@ -238,6 +238,98 @@ pub enum DensityMode {
     /// A random walk over two Möbius generators and their inverses: the limit set of a
     /// Kleinian group (see [`Kleinian`]).
     Kleinian,
+    /// The strokes of an L-system's turtle (see [`LSystem`]).
+    LSystem,
+}
+
+/// An L-system: the axiom is rewritten by the rules `iterations` times; the turtle then draws
+/// `F` and `D` (forward with a line), moves on `G`, `M` and `f`, turns by 360°/`angle` on `+` and
+/// `-`, turns around on `|`, swaps the turn directions on `!`, saves and restores its state on
+/// `[` and `]`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LSystem {
+    pub axiom: String,
+    /// One rule per line: `F=F+F--F+F`.
+    pub rules: String,
+    /// Turn angle as a division of the full circle (6: 60°).
+    pub angle: f64,
+    pub iterations: u32,
+    /// Stroke width in turtle steps.
+    pub width: f64,
+}
+
+impl Default for LSystem {
+    fn default() -> Self {
+        LSystem { axiom: "F--F--F".into(), rules: "F=F+F--F+F".into(), angle: 6.0, iterations: 4, width: 0.15 }
+    }
+}
+
+/// The most segments an L-system draws.
+pub const LSYSTEM_MAX_SEGMENTS: usize = 2_000_000;
+
+impl LSystem {
+    /// The rewritten string (limited in length).
+    pub fn expand(&self) -> String {
+        let rules: Vec<(char, String)> = self
+            .rules
+            .lines()
+            .filter_map(|l| {
+                let (k, v) = l.split_once('=')?;
+                let c = k.trim().chars().next()?;
+                Some((c.to_ascii_uppercase(), v.trim().to_string()))
+            })
+            .collect();
+        let mut s = self.axiom.trim().to_string();
+        for _ in 0..self.iterations.min(20) {
+            let mut next = String::with_capacity(s.len() * 3);
+            for ch in s.chars() {
+                match rules.iter().find(|(k, _)| *k == ch.to_ascii_uppercase()) {
+                    Some((_, r)) => next.push_str(r),
+                    None => next.push(ch),
+                }
+                if next.len() > 8 * LSYSTEM_MAX_SEGMENTS {
+                    return next;
+                }
+            }
+            s = next;
+        }
+        s
+    }
+
+    /// The turtle's line segments (x0, y0, x1, y1), steps of length 1 from the origin.
+    pub fn segments(&self) -> Vec<[f64; 4]> {
+        let turn = std::f64::consts::TAU / self.angle.max(1.0);
+        let (mut x, mut y, mut a, mut sign) = (0.0f64, 0.0f64, std::f64::consts::FRAC_PI_2, 1.0f64);
+        let mut stack = Vec::new();
+        let mut out = Vec::new();
+        for ch in self.expand().chars() {
+            match ch {
+                'F' | 'D' | 'G' | 'M' | 'f' => {
+                    let (nx, ny) = (x + a.cos(), y + a.sin());
+                    if matches!(ch, 'F' | 'D') {
+                        out.push([x, y, nx, ny]);
+                        if out.len() >= LSYSTEM_MAX_SEGMENTS {
+                            break;
+                        }
+                    }
+                    (x, y) = (nx, ny);
+                }
+                '+' => a += sign * turn,
+                '-' => a -= sign * turn,
+                '|' => a += std::f64::consts::PI,
+                '!' => sign = -sign,
+                '[' => stack.push((x, y, a, sign)),
+                ']' => {
+                    if let Some(s) = stack.pop() {
+                        (x, y, a, sign) = s;
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
+    }
 }
 
 /// How a Kleinian group's two generators are made.
@@ -452,6 +544,7 @@ impl DensityMode {
             DensityMode::Attractor => 2,
             DensityMode::Ifs => 3,
             DensityMode::Kleinian => 4,
+            DensityMode::LSystem => 5,
         }
     }
 }
@@ -479,6 +572,8 @@ pub struct Density {
     pub ifs: Vec<IfsMap>,
     /// The group of the Kleinian mode.
     pub kleinian: Kleinian,
+    /// The L-system of the L-system mode.
+    pub lsystem: LSystem,
 }
 
 impl Default for Density {
@@ -495,6 +590,7 @@ impl Default for Density {
             gamma: 1.5,
             ifs: sierpinski(),
             kleinian: Kleinian::default(),
+            lsystem: LSystem::default(),
         }
     }
 }

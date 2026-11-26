@@ -147,10 +147,11 @@ enum Kernel {
     Density(Box<DensityK>),
 }
 
-/// A density layer: its formula and the counts of its orbits.
+/// A density layer: its formula, the counts of its orbits and its strokes (L-systems).
 struct DensityK {
     fractal: Compiled<f64>,
     hist: density::Histogram,
+    strokes: density::Strokes,
 }
 
 #[derive(Clone)]
@@ -167,6 +168,7 @@ impl Kernel {
             return Kernel::Density(Box::new(DensityK {
                 fractal: Compiled::new(&lp.fractal.program, &lp.fractal.values),
                 hist: density::Histogram::new(plan.frame.width, plan.frame.height, channels),
+                strokes: density::Strokes::new(d),
             }));
         }
         // Deeper than double precision: perturbation when the formula allows it.
@@ -297,7 +299,15 @@ impl CpuRenderer {
             let (Kernel::Density(dk), Some(d)) = (k, &lp.density) else { continue };
             any = true;
             let frame = self.plan.frame;
-            let s = density::Scatter { fractal: &dk.fractal, lp, density: d, frame: &frame, hist: &dk.hist, pass: self.density_passes };
+            let s = density::Scatter {
+                fractal: &dk.fractal,
+                lp,
+                density: d,
+                frame: &frame,
+                hist: &dk.hist,
+                pass: self.density_passes,
+                strokes: &dk.strokes,
+            };
             (0..d.orbits).into_par_iter().for_each_init(|| dk.fractal.frame(), |f, i| s.orbit(f, i));
             dk.hist.update_max();
         }

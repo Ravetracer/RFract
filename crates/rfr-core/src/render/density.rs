@@ -91,6 +91,64 @@ pub fn ifs_words(d: &Density) -> Vec<[f32; 4]> {
     out
 }
 
+/// The extent of an IFS attractor (a short chaos game) or of an L-system's strokes: lower left
+/// and upper right corner.
+pub fn extent(d: &Density) -> Option<([f64; 2], [f64; 2])> {
+    let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+    let mut add = |x: f64, y: f64| {
+        if x.is_finite() && y.is_finite() {
+            lo = [lo[0].min(x), lo[1].min(y)];
+            hi = [hi[0].max(x), hi[1].max(y)];
+        }
+    };
+    match d.mode {
+        DensityMode::LSystem => {
+            for s in d.lsystem.segments() {
+                add(s[0], s[1]);
+                add(s[2], s[3]);
+            }
+        }
+        DensityMode::Ifs if !d.ifs.is_empty() => {
+            let total: f64 = d.ifs.iter().map(|m| m.weight.max(0.0)).sum::<f64>().max(1e-12);
+            let (mut x, mut y) = (0.0, 0.0);
+            let mut rnd = 0x1234_5678u32;
+            for it in 0..20000 {
+                rnd = hash(rnd);
+                let u = rnd as f64 / 4294967296.0 * total;
+                let mut acc = 0.0;
+                let m = d
+                    .ifs
+                    .iter()
+                    .find(|m| {
+                        acc += m.weight.max(0.0);
+                        u < acc
+                    })
+                    .unwrap_or(&d.ifs[d.ifs.len() - 1]);
+                (x, y) = m.apply(x, y);
+                if it > 20 {
+                    add(x, y);
+                }
+            }
+        }
+        _ => return None,
+    }
+    lo[0].is_finite().then_some((lo, hi))
+}
+
+/// Fits the document's view (and the layer's start region) to a density layer's extent.
+pub fn fit_view(doc: &mut crate::doc::Document, layer: &[usize]) -> bool {
+    let Some(l) = doc.layer(layer) else { return false };
+    let Some((lo, hi)) = extent(&l.density) else { return false };
+    let aspect = doc.image.width as f64 / doc.image.height.max(1) as f64;
+    let half = ((hi[1] - lo[1]) * 0.55).max((hi[0] - lo[0]) * 0.55 / aspect).max(1e-9);
+    doc.view.set_center([(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0]);
+    doc.view.radius = half.into();
+    if let Some(l) = doc.layer_mut(layer) {
+        l.density.region = [lo[0], lo[1], hi[0], hi[1]];
+    }
+    true
+}
+
 /// The iteration limit of the orbits (Nebulabrot: the largest channel limit).
 pub fn max_iter(lp: &LayerPlan, d: &Density) -> u32 {
     if d.nebula { d.nebula_iter.iter().copied().max().unwrap_or(1).max(1) } else { lp.max_iter }
@@ -104,6 +162,44 @@ pub fn channel_mask(d: &Density, n: u32) -> u32 {
     (0..3).filter(|&c| n <= d.nebula_iter[c]).fold(0, |m, c| m | (1 << c))
 }
 
+/// An L-system's segments with their cumulative lengths (normalized to end at 1).
+#[derive(Clone, Debug, Default)]
+pub struct Strokes {
+    pub segments: Vec<[f64; 4]>,
+    pub cum: Vec<f64>,
+}
+
+impl Strokes {
+    pub fn new(d: &Density) -> Strokes {
+        if d.mode != DensityMode::LSystem {
+            return Strokes::default();
+        }
+        let segments = d.lsystem.segments();
+        let mut acc = 0.0;
+        let mut cum: Vec<f64> = segments
+            .iter()
+            .map(|s| {
+                acc += ((s[2] - s[0]).powi(2) + (s[3] - s[1]).powi(2)).sqrt();
+                acc
+            })
+            .collect();
+        if acc > 0.0 {
+            cum.iter_mut().for_each(|c| *c /= acc);
+        }
+        Strokes { segments, cum }
+    }
+
+    /// The segments for the GPU: (x0, y0, x1, y1) and (cumulative share, 0, 0, 0) each.
+    pub fn words(&self) -> Vec<[f32; 4]> {
+        let mut out: Vec<[f32; 4]> =
+            self.segments.iter().zip(&self.cum).flat_map(|(s, c)| [s.map(|v| v as f32), [*c as f32, 0.0, 0.0, 0.0]]).collect();
+        if out.is_empty() {
+            out.push([0.0; 4]);
+        }
+        out
+    }
+}
+
 /// One pass of a density layer's orbits into its counts.
 pub struct Scatter<'a> {
     pub fractal: &'a Compiled<f64>,
@@ -112,6 +208,7 @@ pub struct Scatter<'a> {
     pub frame: &'a ViewFrame,
     pub hist: &'a Histogram,
     pub pass: u32,
+    pub strokes: &'a Strokes,
 }
 
 impl Scatter<'_> {
@@ -206,14 +303,52 @@ pub fn kleinian_words(d: &Density) -> Vec<[f32; 4]> {
         .collect()
 }
 
+/// Points on the strokes: a segment by length, a place along it and across the stroke width
+/// (the same hashed numbers as the GPU, the segment found by its cumulative share).
+fn lsystem_orbit(s: &Scatter, i: u32) {
+    let st = s.strokes;
+    let n = st.segments.len();
+    if n == 0 {
+        return;
+    }
+    let w = s.density.lsystem.width;
+    let mut rnd = hash(i ^ hash(s.pass ^ 0x3C6E_F372));
+    let plane = (s.hist.width * s.hist.height) as usize;
+    for _ in 0..s.lp.max_iter {
+        rnd = hash(rnd);
+        let u = rnd as f64 / 4294967296.0;
+        rnd = hash(rnd);
+        let t = rnd as f64 / 4294967296.0;
+        rnd = hash(rnd);
+        let v = rnd as f64 / 4294967296.0 - 0.5;
+        // The first segment whose cumulative share passes u.
+        let (mut lo, mut hi) = (0usize, n - 1);
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            if st.cum[mid] > u { hi = mid } else { lo = mid + 1 }
+        }
+        let g = st.segments[lo];
+        let (dx, dy) = (g[2] - g[0], g[3] - g[1]);
+        let len = (dx * dx + dy * dy).sqrt().max(1e-12);
+        let (nx, ny) = (-dy / len, dx / len);
+        let p = C64::new(g[0] + dx * t + nx * v * w, g[1] + dy * t + ny * v * w);
+        if let Some((px, py)) = pixel_of(s.frame, p) {
+            s.hist.counts[(py * s.hist.width + px) as usize % plane].fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
 fn scatter_orbit(s: &Scatter, f: &mut Frame<f64>, i: u32) {
+    if s.density.mode == DensityMode::LSystem {
+        return lsystem_orbit(s, i);
+    }
     if s.density.mode == DensityMode::Ifs {
         return ifs_orbit(s, i);
     }
     if s.density.mode == DensityMode::Kleinian {
         return kleinian_orbit(s, i);
     }
-    let Scatter { fractal: k, lp, density: d, frame, hist, pass } = *s;
+    let Scatter { fractal: k, lp, density: d, frame, hist, pass, .. } = *s;
     let start = start_point(d, pass, i);
     let maxit = max_iter(lp, d);
     let setup = |f: &mut Frame<f64>| {

@@ -3,6 +3,7 @@
 //! Files: documents (`.rfr`) and PNG images that carry their document.
 
 pub mod ifs;
+pub mod lsystem;
 pub mod par;
 pub mod png;
 pub mod upr;
@@ -20,9 +21,9 @@ pub struct ImportedImage {
     pub notes: Vec<String>,
 }
 
-/// Whether `path` is a parameter file (`.upr`, `.par` or `.ifs`).
+/// Whether `path` is a parameter file (`.upr`, `.par`, `.ifs` or `.l`).
 pub fn is_parameter_file(path: &Path) -> bool {
-    path.extension().is_some_and(|e| ["upr", "par", "ifs"].iter().any(|x| e.eq_ignore_ascii_case(x)))
+    path.extension().is_some_and(|e| ["upr", "par", "ifs", "l"].iter().any(|x| e.eq_ignore_ascii_case(x)))
 }
 
 /// The images of a parameter file (`.upr`, `.par` or `.ifs`).
@@ -31,6 +32,7 @@ pub fn read_parameter_file(path: &Path) -> Result<Vec<ImportedImage>, String> {
     match ext.as_str() {
         "par" => par::read(path),
         "ifs" => ifs::read(path),
+        "l" => lsystem::read(path),
         _ => upr::read(path),
     }
 }
