@@ -7,6 +7,7 @@
 
 pub mod composite;
 pub mod cpu;
+pub mod density;
 pub mod oidn;
 
 use std::collections::BTreeMap;
@@ -190,6 +191,8 @@ pub struct LayerPlan {
     pub transforms: Vec<Prog>,
     pub outside: ColorPlan,
     pub inside: ColorPlan,
+    /// Density layers: the orbits are counted per pixel instead of colored per pixel.
+    pub density: Option<crate::doc::Density>,
 }
 
 impl LayerPlan {
@@ -215,6 +218,7 @@ impl LayerPlan {
             transforms,
             outside: ColorPlan::outside(l.outside_method, &l.outside).map_err(|e| format!("{}: {e}", l.name))?,
             inside: ColorPlan::inside(l.inside_method, &l.inside).map_err(|e| format!("{}: {e}", l.name))?,
+            density: (l.kind == LayerKind::Density).then(|| l.density.clone()),
             fractal,
         })
     }
@@ -270,7 +274,7 @@ fn nodes(list: &[Layer]) -> Result<Vec<Node>, String> {
     for l in list.iter().filter(|l| l.visible && l.opacity > 0.0) {
         let blend = Blend { mode: l.merge, opacity: l.opacity.clamp(0.0, 1.0) as f32 };
         match l.kind {
-            LayerKind::Fractal => out.push(Node::Layer { layer: Box::new(LayerPlan::new(l)?), blend, mask: mask_plan(l)? }),
+            LayerKind::Fractal | LayerKind::Density => out.push(Node::Layer { layer: Box::new(LayerPlan::new(l)?), blend, mask: mask_plan(l)? }),
             LayerKind::Group => {
                 let children = nodes(&l.children)?;
                 if !children.is_empty() {

@@ -218,6 +218,68 @@ pub enum LayerKind {
     Fractal,
     /// Combines its children first, then merges the result like one layer.
     Group,
+    /// Where the orbits of the layer's formula go: Buddhabrot, attractors (see [`Density`]).
+    Density,
+}
+
+/// Which orbits a density layer draws.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum DensityMode {
+    /// Orbits of points that escape (Buddhabrot): random c in the region.
+    #[default]
+    Escaping,
+    /// Orbits of points that stay (anti-Buddhabrot).
+    Captive,
+    /// Every orbit from random starts in the region after a warm-up (strange attractors).
+    Attractor,
+}
+
+impl DensityMode {
+    pub fn index(self) -> u32 {
+        match self {
+            DensityMode::Escaping => 0,
+            DensityMode::Captive => 1,
+            DensityMode::Attractor => 2,
+        }
+    }
+}
+
+/// Settings of a density layer: the orbits of its formula are counted per pixel and the
+/// counts are tone-mapped (log density) to the outside gradient, or to RGB (Nebulabrot).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Density {
+    pub mode: DensityMode,
+    /// Escaping orbits shorter than this are not drawn.
+    pub min_iter: u32,
+    /// Nebulabrot: red, green and blue count orbits up to their own iteration limits.
+    pub nebula: bool,
+    pub nebula_iter: [u32; 3],
+    /// Where the start points are drawn from: x0, y0, x1, y1 (plane units).
+    pub region: [f64; 4],
+    /// Orbits per pass.
+    pub orbits: u32,
+    /// Attractors: iterations before points are counted.
+    pub warmup: u32,
+    pub brightness: f64,
+    pub gamma: f64,
+}
+
+impl Default for Density {
+    fn default() -> Self {
+        Density {
+            mode: DensityMode::Escaping,
+            min_iter: 20,
+            nebula: false,
+            nebula_iter: [5000, 500, 50],
+            region: [-2.0, -1.5, 1.0, 1.5],
+            orbits: 65536,
+            warmup: 20,
+            brightness: 1.0,
+            gamma: 1.5,
+        }
+    }
 }
 
 /// Where a mask's value comes from.
@@ -360,6 +422,8 @@ pub struct Layer {
     pub outside: Coloring,
     pub inside_method: InsideMethod,
     pub inside: Coloring,
+    /// Density layers: which orbits and how they are tone-mapped.
+    pub density: Density,
 }
 
 impl Default for Layer {
@@ -382,6 +446,7 @@ impl Default for Layer {
             outside: Coloring::default(),
             inside_method: InsideMethod::Solid,
             inside: Coloring { density: 1.0, transfer: Transfer::Linear, ..Coloring::default() },
+            density: Density::default(),
         }
     }
 }
@@ -423,7 +488,7 @@ impl Document {
     pub fn active_layer(&self) -> Option<&Layer> {
         fn find(list: &[Layer]) -> Option<&Layer> {
             list.iter().rev().filter(|l| l.visible).find_map(|l| match l.kind {
-                LayerKind::Fractal => Some(l),
+                LayerKind::Fractal | LayerKind::Density => Some(l),
                 LayerKind::Group => find(&l.children),
             })
         }

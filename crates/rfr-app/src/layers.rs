@@ -65,6 +65,7 @@ fn name_of(l: &Layer) -> String {
     match l.kind {
         LayerKind::Group => format!("{}  {}", icons::FOLDER, l.name),
         LayerKind::Fractal => l.name.clone(),
+        LayerKind::Density => format!("{}  {}", icons::DENSITY, l.name),
     }
 }
 

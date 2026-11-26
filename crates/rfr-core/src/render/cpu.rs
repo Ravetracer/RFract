@@ -8,7 +8,7 @@
 use rayon::prelude::*;
 
 use super::composite::{composite, mask_value};
-use super::{ColorMethod, LayerPlan, Node, OrbitResult, Plan, Precision, sample_offset, shade_formula, shade_native};
+use super::{ColorMethod, LayerPlan, Node, OrbitResult, Plan, Precision, density, sample_offset, shade_formula, shade_native};
 use crate::formula::cpu::{Compiled, Frame, Hook};
 use crate::formula::perturb::{BlaTable, Deep, Perturbation, RefOrbit};
 use crate::gradient::linear_to_srgb;
@@ -140,20 +140,35 @@ impl<S: Scalar + Send + Sync + 'static> LayerK<S> {
     }
 }
 
-/// A layer compiled plain or with derivatives (distance estimation).
+/// A layer compiled plain or with derivatives (distance estimation), or a density layer.
 enum Kernel {
     Plain(LayerK<f64>),
     Dual(LayerK<Dual>),
+    Density(Box<DensityK>),
+}
+
+/// A density layer: its formula and the counts of its orbits.
+struct DensityK {
+    fractal: Compiled<f64>,
+    hist: density::Histogram,
 }
 
 #[derive(Clone)]
 enum KernelF {
     Plain(Box<LayerF<f64>>),
     Dual(Box<LayerF<Dual>>),
+    None,
 }
 
 impl Kernel {
     fn new(lp: &LayerPlan, plan: &Plan) -> Kernel {
+        if let Some(d) = &lp.density {
+            let channels = if d.nebula { 3 } else { 1 };
+            return Kernel::Density(Box::new(DensityK {
+                fractal: Compiled::new(&lp.fractal.program, &lp.fractal.values),
+                hist: density::Histogram::new(plan.frame.width, plan.frame.height, channels),
+            }));
+        }
         // Deeper than double precision: perturbation when the formula allows it.
         if plan.precision() == Precision::Beyond
             && lp.transforms.is_empty()
@@ -173,12 +188,16 @@ impl Kernel {
         match self {
             Kernel::Plain(k) => KernelF::Plain(Box::new(k.frames())),
             Kernel::Dual(k) => KernelF::Dual(Box::new(k.frames())),
+            Kernel::Density(_) => KernelF::None,
         }
     }
     /// The layer's color at plane point `p`; `turn` is the derivative's direction (a turn).
     /// `at`: the sample's plane point and its offset from the view center (deep zooms).
     fn eval(&self, f: &mut KernelF, lp: &LayerPlan, plan: &Plan, at: (C64, Cfx), turn: f64, pix: (u32, u32, u32)) -> [f32; 4] {
         let (p, d) = at;
+        if let Kernel::Density(k) = self {
+            return lp.density.as_ref().map_or([0.0; 4], |dn| density::color(lp, dn, &k.hist, pix.0, pix.1));
+        }
         match (self, f) {
             (Kernel::Plain(k), KernelF::Plain(f)) => k.eval(f, lp, plan, p, d, pix),
             (Kernel::Dual(k), KernelF::Dual(f)) => {
@@ -199,6 +218,10 @@ pub struct CpuRenderer {
     /// Premultiplied linear RGBA sums per pixel, row-major.
     accum: Vec<[f32; 4]>,
     samples: u32,
+    /// Passes of the density layers' orbits so far.
+    density_passes: u32,
+    /// Samples the render aims at (density layers restart the image while it fills).
+    pub target_samples: u32,
 }
 
 /// One sample's evaluation state: the layers are evaluated in `plan.layers()` order.
@@ -246,7 +269,7 @@ impl CpuRenderer {
     pub fn new(plan: Plan) -> CpuRenderer {
         let kernels = plan.layers().iter().map(|l| Kernel::new(l, &plan)).collect();
         let n = (plan.frame.width * plan.frame.height) as usize;
-        CpuRenderer { plan, kernels, accum: vec![[0.0; 4]; n], samples: 0 }
+        CpuRenderer { plan, kernels, accum: vec![[0.0; 4]; n], samples: 0, density_passes: 0, target_samples: u32::MAX }
     }
 
     pub fn plan(&self) -> &Plan {
@@ -264,8 +287,32 @@ impl CpuRenderer {
         composite_nodes(&self.plan.nodes, self.plan.background, &mut ctx)
     }
 
+    /// Density layers: one pass of orbits into their counts. While the counts fill up, the
+    /// accumulated image restarts whenever the passes double, so it never keeps samples made
+    /// from counts below half of the current ones.
+    fn density_pass(&mut self) {
+        let layers = self.plan.layers();
+        let mut any = false;
+        for (k, lp) in self.kernels.iter().zip(&layers) {
+            let (Kernel::Density(dk), Some(d)) = (k, &lp.density) else { continue };
+            any = true;
+            let frame = self.plan.frame;
+            let s = density::Scatter { fractal: &dk.fractal, lp, density: d, frame: &frame, hist: &dk.hist, pass: self.density_passes };
+            (0..d.orbits).into_par_iter().for_each_init(|| dk.fractal.frame(), |f, i| s.orbit(f, i));
+            dk.hist.update_max();
+        }
+        if any {
+            self.density_passes += 1;
+            if density::restart_due(self.density_passes, self.target_samples) {
+                self.accum.iter_mut().for_each(|a| *a = [0.0; 4]);
+                self.samples = 0;
+            }
+        }
+    }
+
     /// Adds one sample to every pixel.
     pub fn pass(&mut self) {
+        self.density_pass();
         let w = self.plan.frame.width as usize;
         let s = self.samples;
         let proto: Vec<KernelF> = self.kernels.iter().map(|k| k.frames()).collect();
@@ -326,6 +373,7 @@ pub fn rgba8(lin: &[[f32; 4]]) -> Vec<u8> {
 /// Renders `samples` passes of the document at `width` × `height`.
 pub fn render(doc: &crate::doc::Document, width: u32, height: u32, samples: u32) -> Result<CpuRenderer, String> {
     let mut r = CpuRenderer::new(Plan::sized(doc, width, height)?);
+    r.target_samples = samples.max(1);
     for _ in 0..samples.max(1) {
         r.pass();
     }

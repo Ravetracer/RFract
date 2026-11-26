@@ -23,6 +23,7 @@ const RFRACT_UFM: &str = include_str!("../../formulas/rfract/rfract.ufm");
 const RFRACT_UCL: &str = include_str!("../../formulas/rfract/rfract.ucl");
 const RFRACT_UXF: &str = include_str!("../../formulas/rfract/rfract.uxf");
 const FRACTINT_UFM: &str = include_str!("../../formulas/rfract/fractint.ufm");
+const ATTRACTORS_UFM: &str = include_str!("../../formulas/rfract/attractors.ufm");
 const STANDARD_ULB: &str = include_str!("../../formulas/rfract/standard.ulb");
 const FRACTALPARK_INDEX: &str = include_str!("../../formulas/fractalpark/index.json");
 
@@ -589,6 +590,7 @@ fn build() -> Vec<Arc<Entry>> {
     ufm_entries(RFRACT_UXF, ProgramKind::Transform, "rfract-transform", "Transformation", &mut entries);
     ufm_entries(RFRACT_UFM, ProgramKind::Fractal, "rfract", "RFract", &mut entries);
     ufm_entries(FRACTINT_UFM, ProgramKind::Fractal, "fractint", "FractInt types", &mut entries);
+    ufm_entries(ATTRACTORS_UFM, ProgramKind::Fractal, "rfract-attractor", "Attractors", &mut entries);
     let index: FpIndex = serde_json::from_str(FRACTALPARK_INDEX).unwrap_or(FpIndex { rows: Vec::new() });
     let mut seen: HashMap<String, usize> = HashMap::new();
     for row in index.rows {

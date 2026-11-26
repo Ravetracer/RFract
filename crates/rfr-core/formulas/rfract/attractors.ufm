@@ -1,0 +1,308 @@
+comment {
+  RFract's strange attractors: maps of the plane whose orbits from almost any start settle on
+  a fractal set. Use them in a density layer (mode Attractor): the points of many orbits are
+  counted per pixel. z holds the plotted point (x, y).
+}
+
+Clifford {
+; x' = sin(a·y) + c·cos(a·x), y' = sin(b·x) + d·cos(b·y)
+init:
+  z = #pixel
+loop:
+  float x = real(z)
+  float y = imag(z)
+  z = (sin(@a * y) + @c * cos(@a * x), sin(@b * x) + @d * cos(@b * y))
+bailout:
+  |z| < 1e10
+default:
+  title = "Clifford"
+  center = (0, 0)
+  magn = 0.6
+  maxiter = 1000
+  float param a
+    caption = "a"
+    default = -1.4
+  endparam
+  float param b
+    caption = "b"
+    default = 1.6
+  endparam
+  float param c
+    caption = "c"
+    default = 1.0
+  endparam
+  float param d
+    caption = "d"
+    default = 0.7
+  endparam
+}
+
+DeJong {
+; x' = sin(a·y) − cos(b·x), y' = sin(c·x) − cos(d·y)
+init:
+  z = #pixel
+loop:
+  float x = real(z)
+  float y = imag(z)
+  z = (sin(@a * y) - cos(@b * x), sin(@c * x) - cos(@d * y))
+bailout:
+  |z| < 1e10
+default:
+  title = "de Jong"
+  center = (0, 0)
+  magn = 0.65
+  maxiter = 1000
+  float param a
+    caption = "a"
+    default = 1.4
+  endparam
+  float param b
+    caption = "b"
+    default = -2.3
+  endparam
+  float param c
+    caption = "c"
+    default = 2.4
+  endparam
+  float param d
+    caption = "d"
+    default = -2.1
+  endparam
+}
+
+Hopalong {
+; x' = y − sign(x)·sqrt(|b·x − c|), y' = a − x
+init:
+  z = #pixel
+loop:
+  float x = real(z)
+  float y = imag(z)
+  float s = sqrt(abs(@b * x - @c))
+  if x < 0
+    s = -s
+  endif
+  z = (y - s, @a - x)
+bailout:
+  |z| < 1e10
+default:
+  title = "Hopalong"
+  center = (0, 0)
+  magn = 0.1
+  maxiter = 1000
+  float param a
+    caption = "a"
+    default = 7.17
+  endparam
+  float param b
+    caption = "b"
+    default = 8.44
+  endparam
+  float param c
+    caption = "c"
+    default = 2.56
+  endparam
+}
+
+GumowskiMira {
+; x' = y + a·(1 − b·y²)·y + f(x), y' = −x + f(x') with f(x) = μ·x + 2(1 − μ)·x² / (1 + x²)
+init:
+  z = #pixel
+loop:
+  float x = real(z)
+  float y = imag(z)
+  float fx = @mu * x + 2 * (1 - @mu) * x * x / (1 + x * x)
+  float xn = y + @a * (1 - @b * y * y) * y + fx
+  float fn = @mu * xn + 2 * (1 - @mu) * xn * xn / (1 + xn * xn)
+  z = (xn, -x + fn)
+bailout:
+  |z| < 1e10
+default:
+  title = "Gumowski–Mira"
+  center = (0, 0)
+  magn = 0.08
+  maxiter = 1000
+  float param a
+    caption = "a"
+    default = 0.008
+  endparam
+  float param b
+    caption = "b"
+    default = 0.05
+  endparam
+  float param mu
+    caption = "μ"
+    default = -0.496
+  endparam
+}
+
+Ikeda {
+; t = 0.4 − 6 / (1 + x² + y²), z' = 1 + u·z·e^(i·t)
+init:
+  z = #pixel
+loop:
+  float t = 0.4 - 6 / (1 + |z|)
+  z = 1 + @u * z * (cos(t), sin(t))
+bailout:
+  |z| < 1e10
+default:
+  title = "Ikeda"
+  center = (0.6, -0.8)
+  magn = 0.9
+  maxiter = 1000
+  float param u
+    caption = "u"
+    default = 0.918
+  endparam
+}
+
+Tinkerbell {
+; x' = x² − y² + a·x + b·y, y' = 2·x·y + c·x + d·y
+init:
+  z = #pixel * 0.3 + (-0.72, -0.64)
+loop:
+  float x = real(z)
+  float y = imag(z)
+  z = (x * x - y * y + @a * x + @b * y, 2 * x * y + @c * x + @d * y)
+bailout:
+  |z| < 100
+default:
+  title = "Tinkerbell"
+  center = (-0.4, -0.6)
+  magn = 1.4
+  maxiter = 1000
+  float param a
+    caption = "a"
+    default = 0.9
+  endparam
+  float param b
+    caption = "b"
+    default = -0.6013
+  endparam
+  float param c
+    caption = "c"
+    default = 2.0
+  endparam
+  float param d
+    caption = "d"
+    default = 0.5
+  endparam
+}
+
+Pickover {
+; Three dimensions, seen from above: x' = sin(a·y) − w·cos(b·x), y' = w·sin(c·x) − cos(d·y),
+; w' = sin(x)
+init:
+  z = #pixel
+  float w = 0
+loop:
+  float x = real(z)
+  float y = imag(z)
+  float wn = sin(x)
+  z = (sin(@a * y) - w * cos(@b * x), w * sin(@c * x) - cos(@d * y))
+  w = wn
+bailout:
+  |z| < 1e10
+default:
+  title = "Pickover"
+  center = (0, 0)
+  magn = 0.65
+  maxiter = 1000
+  float param a
+    caption = "a"
+    default = 2.24
+  endparam
+  float param b
+    caption = "b"
+    default = 0.43
+  endparam
+  float param c
+    caption = "c"
+    default = -0.65
+  endparam
+  float param d
+    caption = "d"
+    default = -2.43
+  endparam
+}
+
+Lorenz {
+; The Lorenz system, integrated in small steps, seen from the side (x, z − 25)
+init:
+  float x = real(#pixel) * 10
+  float y = imag(#pixel) * 10
+  float h = 25
+  z = (x, h - 25)
+loop:
+  float dx = @sigma * (y - x)
+  float dy = x * (@rho - h) - y
+  float dh = x * y - @beta * h
+  x = x + dx * @dt
+  y = y + dy * @dt
+  h = h + dh * @dt
+  z = (x, h - 25)
+bailout:
+  |z| < 1e10
+default:
+  title = "Lorenz"
+  center = (0, 0)
+  magn = 0.06
+  maxiter = 5000
+  float param sigma
+    caption = "σ"
+    default = 10
+  endparam
+  float param rho
+    caption = "ρ"
+    default = 28
+  endparam
+  float param beta
+    caption = "β"
+    default = 2.6666667
+  endparam
+  float param dt
+    caption = "Step"
+    default = 0.005
+    hint = "Time step of the integration."
+  endparam
+}
+
+Rossler {
+; The Rössler system, integrated in small steps, seen from above (x, y)
+init:
+  float x = real(#pixel) * 5
+  float y = imag(#pixel) * 5
+  float h = 0
+  z = (x, y)
+loop:
+  float dx = -y - h
+  float dy = x + @a * y
+  float dh = @b + h * (x - @c)
+  x = x + dx * @dt
+  y = y + dy * @dt
+  h = h + dh * @dt
+  z = (x, y)
+bailout:
+  |z| < 1e10
+default:
+  title = "Rössler"
+  center = (0, 0)
+  magn = 0.12
+  maxiter = 5000
+  float param a
+    caption = "a"
+    default = 0.2
+  endparam
+  float param b
+    caption = "b"
+    default = 0.2
+  endparam
+  float param c
+    caption = "c"
+    default = 5.7
+  endparam
+  float param dt
+    caption = "Step"
+    default = 0.01
+    hint = "Time step of the integration."
+  endparam
+}
