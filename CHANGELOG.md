@@ -13,6 +13,15 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
 - RFract's own versions of common standard classes (Mandelbrot, Julia, Pixel, Newton, Smooth,
   Gradient, trap shapes).
 - Color function parameters (merge modes, `@f(color1, color2)`).
+- Arrays of objects (`TrapShape m_Elements[10]`, `setLength`, `length`): objects stored at
+  known indexes, counting loops that make or use objects are unrolled, elements chosen by an
+  index known only while rendering are picked at run time; objects in conditions test for
+  null (`if m_Elements[j]`). Merge classes such as `TransformMerge` and `TrapShapeMerge`
+  compile.
+- Objects chosen while rendering: variables and array elements that refer to different
+  objects depending on conditions, indexes from parameters or the branch a method returns
+  from (was an error).
+- Method calls on array elements as statements (`m_Elements[j].Init(pz)`).
 
 ### Fixed
 

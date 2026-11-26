@@ -8,7 +8,13 @@ that come up along the way.
 - [x] Classes, inheritance, methods, static and base calls, fields, object parameters
       (plugins) with nested parameters, casts; compiled into plain IR (GPU and CPU).
 - [x] RFract's standard classes (`formulas/rfract/standard.ulb`) on top of `common.ulb`.
-- [ ] Arrays of objects / objects made in loops (needs unrolling with known indexes).
+- [x] Arrays of objects, objects made in counting loops (unrolled), elements picked at run time.
+- [x] Objects chosen at run time (tag per object variable): conditions, indexes from
+      parameters, returns from branches.
+- [ ] Object arrays sized by a parameter (`new VectorArray(@nlight)`): unroll to the
+      parameter's maximum with a run-time guard. Loops that change which object a variable
+      refers to.
+- [ ] Assignments inside expressions (`Cast(a[10] = new @f(this))`, `abs(r = random(r))`).
 - [ ] More standard classes (orbit traps, exponential smoothing, direct orbit traps, …).
 - [ ] Image parameters (`Image` class), user functions outside classes.
 - [ ] Optional: Cranelift JIT for the CPU path.

@@ -81,9 +81,16 @@ cargo fmt --all --check
 - Classes (`.ulb`) are compiled away in `check.rs`: every `new` is an instance whose fields are
   locals `o<n>.<field>`, method calls are inlined (`inline`, `pending` statements before the
   using statement, `return` via result/done locals), plugin parameters are `<path>.<name>`.
+  Object arrays are element lists (`<key>[k]` in `objects`): known indexes (`static_int`) pick
+  the element, run-time indexes become `if index == k` chains (`dispatch`), counting `while`
+  loops that make or index objects are unrolled (`try_unroll`). An object variable is an
+  `OVal`: one object or a tag (int local) with candidates; `if` arms, early returns and
+  `dispatch` arms join with `merge` (tags set at the end of each branch), `store_if` stores
+  under a run-time condition, uses become `(condition, object)` alternatives (`obj_alts`).
   `library::class_registry()` holds the classes, `Entry::program_with(params)` compiles per
-  plugin choice. Dev tools: `cargo run -p rfr-core --example check_entry -- <file> <entry>`
-  (compile one entry with its folder's classes, trace orbits), `--example ulb_errors <dir>`.
+  plugin choice. Dev tools: `cargo run -p rfr-core --example check_entry -- <file> <entry>
+  [<param>=<class> …]` (compile one entry with its folder's classes and chosen plugins, trace
+  orbits), `--example ulb_errors <dir>`.
 - Arrays live per sample (`ir::Local::cap`, at most 4096 elements); colors are `Ty::Color`
   (sRGB-encoded RGBA, `ColorOp`), never converted to numbers (`check::color_misuse`).
 - Colorings and transformations are programs of the same IR (`ProgramKind`): colorings run

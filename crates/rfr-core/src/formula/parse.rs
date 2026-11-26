@@ -601,14 +601,15 @@ impl Parser {
                 self.end_of_statement()?;
                 return Ok(Stmt::ObjDecl { class: t, name: n, dims, value, line });
             }
-            // object.field = …, object.Method(…), Class.Method(…), Cast(object).Method(…)
-            let cast_call = matches!(self.peek(), Tok::Ident(_)) && self.is_op_at(1, "(") && {
+            // object.field = …, object.Method(…), Class.Method(…), Cast(object).Method(…),
+            // array[i].Method(…)
+            let cast_call = matches!(self.peek(), Tok::Ident(_)) && (self.is_op_at(1, "(") || self.is_op_at(1, "[")) && {
                 let mut depth = 0usize;
                 let mut k = 1;
                 loop {
                     match self.peek_at(k) {
-                        Tok::Op("(") => depth += 1,
-                        Tok::Op(")") => {
+                        Tok::Op("(" | "[") => depth += 1,
+                        Tok::Op(")" | "]") => {
                             depth -= 1;
                             if depth == 0 {
                                 break;

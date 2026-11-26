@@ -129,7 +129,16 @@ RFract compiles objects away: every `new` becomes a set of variables and every m
 built into the formula, so class formulas render on the graphics card like any other.
 Changing a plugin compiles the formula again.
 
+Arrays of objects (`TrapShape m_Elements[10]`) have a size known while compiling. Counting
+loops that make or use objects (`int j = 0`, `while j < 10`, `j = j + 1`) are unrolled, so
+objects made inside them stay alive.
+
+When the object a variable or an array element refers to depends on the rendering (a
+condition on a parameter, an index from a parameter, a method that returns different objects
+in different branches), the formula keeps all candidates and picks the right one while
+rendering. Each method call on such a variable is built in once per candidate.
+
 !!! note
-    Not supported yet: arrays of objects and objects made in a loop that must all stay alive,
-    a variable that refers to different objects depending on a condition, recursion, image
-    parameters and user functions outside classes. The check lists what fails by frequency.
+    Not supported yet: object arrays sized by a parameter, a loop that changes which object a
+    variable refers to, assignments inside expressions, recursion, image parameters and user
+    functions outside classes. The check lists what fails by frequency.

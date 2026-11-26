@@ -41,8 +41,13 @@ struct Ck<'a> {
     /// Inlined method calls, innermost last.
     scopes: Vec<Scope>,
     /// Object variables (by key) and the object each one refers to (`None`: null).
-    objects: HashMap<String, Option<usize>>,
+    objects: HashMap<String, OVal>,
     obj_vars: HashSet<String>,
+    /// Arrays of objects (by key) and their lengths; element `k` is the object variable
+    /// `<key>[k]` in `objects`.
+    obj_arrays: HashMap<String, usize>,
+    /// Counters of unrolled loops and their values in the iteration being checked.
+    unroll: HashMap<String, i64>,
     /// Statements an expression needs before it (inlined method bodies).
     pending: Vec<Stmt>,
     /// Counter of inlined calls (unique local names).
@@ -75,11 +80,14 @@ struct Scope {
     prefix: String,
     plugin: bool,
     ret: Option<(usize, Ty)>,
-    ret_obj: Option<Option<usize>>,
+    /// The object variable that receives returned objects.
+    ret_obj: Option<String>,
     done: Option<usize>,
 }
 
 const MAX_INLINE_DEPTH: usize = 40;
+/// Iterations a loop over objects may be unrolled to.
+const MAX_UNROLL: usize = 256;
 
 fn conv(e: Expr, ty: Ty) -> Expr {
     if e.ty == ty {
@@ -302,6 +310,13 @@ impl<'a> Ck<'a> {
         let key = self.norm(name);
         if self.arrays.contains_key(&key) {
             return err(line, format!("the array '{name}' needs an index"));
+        }
+        if let Some(&v) = self.unroll.get(&key) {
+            return Ok(Expr { ty: Ty::Int, kind: Kind::Int(v) });
+        }
+        // An object as a value: whether it is not null.
+        if self.obj_vars.contains(&key) {
+            return Ok(truth(&self.oval(&key).alts()));
         }
         if key == "z" {
             return Ok(Expr { ty: Ty::Complex, kind: Kind::Local(Z) });
@@ -533,12 +548,13 @@ impl<'a> Ck<'a> {
                 let key = field_key(id, &f.name);
                 match &f.ty {
                     ast::TypeRef::Class(_) => {
-                        if f.dims.is_some() {
-                            // Arrays of objects: usable only if never touched.
+                        if let Some(d) = &f.dims {
+                            let n = self.obj_array_size(&f.name, d, line)?;
+                            self.declare_obj_array(key, n);
                             continue;
                         }
                         self.obj_vars.insert(key.clone());
-                        self.objects.insert(key, None);
+                        self.objects.insert(key, OVal::One(None));
                     }
                     ast::TypeRef::Builtin(t) => {
                         let ty = match t {
@@ -608,26 +624,519 @@ impl<'a> Ck<'a> {
         Ok(Some(id))
     }
 
-    /// The object an expression refers to (`None`: null).
-    fn object_of(&mut self, e: &ast::Expr, line: usize) -> Result<Option<usize>, Error> {
+    /// Value of an integer known when checking: numbers, counters of unrolled loops, lengths
+    /// of object arrays, and arithmetic on them.
+    fn static_int(&self, e: &ast::Expr) -> Option<i64> {
+        Some(match e {
+            ast::Expr::Num { v, .. } if v.fract() == 0.0 && v.abs() < 9.0e15 => *v as i64,
+            ast::Expr::Ident(n) => *self.unroll.get(&self.norm(n))?,
+            ast::Expr::Unary(UnOp::Neg, a) => -self.static_int(a)?,
+            ast::Expr::Binary(op, a, b) => {
+                let (x, y) = (self.static_int(a)?, self.static_int(b)?);
+                match op {
+                    BinOp::Add => x.checked_add(y)?,
+                    BinOp::Sub => x.checked_sub(y)?,
+                    BinOp::Mul => x.checked_mul(y)?,
+                    BinOp::Div if y != 0 => x / y,
+                    BinOp::Mod if y != 0 => x % y,
+                    _ => return None,
+                }
+            }
+            ast::Expr::Call { name, param: false, args } if name.eq_ignore_ascii_case("length") && args.len() == 1 => match &args[0] {
+                ast::Expr::Ident(a) => *self.obj_arrays.get(&self.norm(a))? as i64,
+                _ => return None,
+            },
+            _ => return None,
+        })
+    }
+
+    /// Value of a condition on integers known when checking (see `static_int`).
+    fn static_cond(&self, e: &ast::Expr) -> Option<bool> {
+        Some(match e {
+            ast::Expr::Bool(b) => *b,
+            ast::Expr::Unary(UnOp::Not, a) => !self.static_cond(a)?,
+            ast::Expr::Binary(BinOp::And, a, b) => self.static_cond(a)? && self.static_cond(b)?,
+            ast::Expr::Binary(BinOp::Or, a, b) => self.static_cond(a)? || self.static_cond(b)?,
+            ast::Expr::Binary(op, a, b) => {
+                let (x, y) = (self.static_int(a)?, self.static_int(b)?);
+                match op {
+                    BinOp::Lt => x < y,
+                    BinOp::Le => x <= y,
+                    BinOp::Gt => x > y,
+                    BinOp::Ge => x >= y,
+                    BinOp::Eq => x == y,
+                    BinOp::Ne => x != y,
+                    _ => return None,
+                }
+            }
+            _ => return None,
+        })
+    }
+
+    /// Length of an object array declared with sizes `dims` (`[]`: empty until `setLength`).
+    fn obj_array_size(&self, name: &str, dims: &[ast::Expr], line: usize) -> Result<usize, Error> {
+        match dims {
+            [] => Ok(0),
+            [d] => match self.static_int(d).map(|v| v as f64).or_else(|| self.const_eval(d)) {
+                Some(n) if (0.0..=ARRAY_MAX as f64).contains(&n) => Ok(n as usize),
+                Some(n) => err(line, format!("the object array '{name}' has {n} elements; at most {ARRAY_MAX} are supported")),
+                None => err(line, format!("the size of the object array '{name}' must be a number")),
+            },
+            _ => err(line, format!("arrays of objects have one dimension ('{name}')")),
+        }
+    }
+
+    /// Declares (or resizes) an object array; new elements are null.
+    fn declare_obj_array(&mut self, key: String, n: usize) {
+        let old = self.obj_arrays.insert(key.clone(), n).unwrap_or(0);
+        for k in n..old {
+            self.objects.remove(&elem_key(&key, k));
+        }
+        for k in old..n {
+            self.objects.insert(elem_key(&key, k), OVal::One(None));
+        }
+    }
+
+    /// The object variable `key` (null when it was never set).
+    fn oval(&self, key: &str) -> OVal {
+        self.objects.get(key).cloned().unwrap_or(OVal::One(None))
+    }
+
+    /// A new tag: an int local that tells which candidate an object variable holds.
+    fn new_tag(&mut self) -> usize {
+        self.site += 1;
+        let k = format!("~{}:~tag", self.site);
+        self.preset.insert(k.clone(), Ty::Int);
+        self.key_local(&k, Ty::Int)
+    }
+
+    /// An int value used several times: a local (computed once) unless it is one already.
+    fn once(&mut self, v: Expr) -> Expr {
+        if matches!(v.kind, Kind::Local(_) | Kind::Int(_)) {
+            return v;
+        }
+        self.site += 1;
+        let k = format!("~{}:~index", self.site);
+        self.preset.insert(k.clone(), Ty::Int);
+        let i = self.key_local(&k, Ty::Int);
+        self.pending.push(Stmt::Assign(i, conv(v, Ty::Int)));
+        Expr { ty: Ty::Int, kind: Kind::Local(i) }
+    }
+
+    /// A value used several times: stored in a local first (statements go to `out`).
+    fn value_once(&mut self, v: Expr, out: &mut Vec<Stmt>) -> Expr {
+        if matches!(v.kind, Kind::Local(_) | Kind::Int(_) | Kind::Real(_) | Kind::Bool(_)) {
+            return v;
+        }
+        self.site += 1;
+        let k = format!("~{}:~value", self.site);
+        self.preset.insert(k.clone(), v.ty);
+        let i = self.key_local(&k, v.ty);
+        out.push(Stmt::Assign(i, v));
+        Expr { ty: self.locals[i].ty, kind: Kind::Local(i) }
+    }
+
+    /// An object value from alternatives: one object, or a new tag set at run time.
+    fn materialize(&mut self, alts: Alts) -> OVal {
+        let mut objs: Vec<Option<usize>> = Vec::new();
+        for (_, o) in &alts {
+            if !objs.contains(o) {
+                objs.push(*o);
+            }
+        }
+        if objs.len() <= 1 {
+            return OVal::One(objs.first().copied().flatten());
+        }
+        let t = self.new_tag();
+        let mut cands = vec![None];
+        cands.extend(objs.into_iter().filter(Option::is_some));
+        let pos = |o: Option<usize>| cands.iter().position(|x| *x == o).unwrap_or(0) as i64;
+        let arms: Vec<(Expr, Vec<Stmt>)> =
+            alts.iter().filter(|(_, o)| o.is_some()).map(|(c, o)| (c.clone(), vec![Stmt::Assign(t, int_e(pos(*o)))])).collect();
+        self.pending.push(Stmt::Assign(t, int_e(0)));
+        self.pending.push(Stmt::If(arms, Vec::new()));
+        OVal::Tag(t, cands)
+    }
+
+    /// Statements that set tag `t` (candidates `cands`) to the object `v` holds.
+    fn remap(t: usize, cands: &[Option<usize>], v: &OVal) -> Vec<Stmt> {
+        let pos = |o: Option<usize>| cands.iter().position(|x| *x == o).unwrap_or(0) as i64;
+        match v {
+            OVal::One(o) => vec![Stmt::Assign(t, int_e(pos(*o)))],
+            OVal::Tag(t2, c2) if *t2 == t && c2 == cands => Vec::new(),
+            OVal::Tag(t2, c2) => {
+                let arms = c2
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, o)| pos(**o) != 0)
+                    .map(|(j, o)| (eq_int(Expr { ty: Ty::Int, kind: Kind::Local(*t2) }, j as i64), vec![Stmt::Assign(t, int_e(pos(*o)))]))
+                    .collect();
+                vec![Stmt::Assign(t, int_e(0)), Stmt::If(arms, Vec::new())]
+            }
+        }
+    }
+
+    /// Joins the object variables after branches (`ends[k]` after `bodies[k]`; exactly one
+    /// branch runs). Variables that differ get a tag, set at the end of every branch.
+    fn merge(&mut self, before: &HashMap<String, OVal>, ends: Vec<HashMap<String, OVal>>, mut bodies: Vec<&mut Vec<Stmt>>) {
+        let mut keys: Vec<String> = ends.iter().flat_map(|e| e.keys().cloned()).collect();
+        keys.sort();
+        keys.dedup();
+        let mut out = HashMap::new();
+        for key in keys {
+            let present: Vec<&OVal> = ends.iter().filter_map(|e| e.get(&key)).collect();
+            // Made in one branch only (objects and locals of that branch).
+            if !before.contains_key(&key) && present.windows(2).all(|w| w[0] == w[1]) {
+                out.insert(key, present[0].clone());
+                continue;
+            }
+            let vals: Vec<OVal> = ends.iter().map(|e| e.get(&key).cloned().unwrap_or(OVal::One(None))).collect();
+            if vals.windows(2).all(|w| w[0] == w[1]) {
+                out.insert(key, vals[0].clone());
+                continue;
+            }
+            let t = self.new_tag();
+            let mut cands = vec![None];
+            for v in &vals {
+                for o in v.cands() {
+                    if !cands.contains(&o) {
+                        cands.push(o);
+                    }
+                }
+            }
+            for (v, b) in vals.iter().zip(bodies.iter_mut()) {
+                b.extend(Self::remap(t, &cands, v));
+            }
+            out.insert(key, OVal::Tag(t, cands));
+        }
+        self.objects = out;
+    }
+
+    /// After a loop body: object variables that held an object before the loop must not
+    /// change (the body was checked with the objects before the first iteration).
+    fn loop_objects(&self, start: &HashMap<String, OVal>, line: usize) -> Result<(), Error> {
+        for (k, v) in start {
+            if *v != OVal::One(None) && self.objects.get(k).is_some_and(|now| now != v) {
+                let name = k.rsplit(['.', ':']).next().unwrap_or(k);
+                return err(line, format!("'{name}' refers to other objects after an iteration of a loop (not supported)"));
+            }
+        }
+        Ok(())
+    }
+
+    /// Variable `key` holds `v` when `cond` holds at run time, else what it held.
+    fn store_if(&mut self, key: &str, cond: Expr, v: OVal) {
+        let old = self.oval(key);
+        if const_bool(&cond) == Some(true) {
+            self.objects.insert(key.to_string(), v);
+            return;
+        }
+        if old == v || const_bool(&cond) == Some(false) {
+            return;
+        }
+        let t = self.new_tag();
+        let mut cands = vec![None];
+        for o in old.cands().into_iter().chain(v.cands()) {
+            if !cands.contains(&o) {
+                cands.push(o);
+            }
+        }
+        let set_old = Self::remap(t, &cands, &old);
+        let set_new = Self::remap(t, &cands, &v);
+        self.pending.extend(set_old);
+        self.pending.push(Stmt::If(vec![(cond, set_new)], Vec::new()));
+        self.objects.insert(key.to_string(), OVal::Tag(t, cands));
+    }
+
+    /// `name[i]` or `object.field[i]` of an object array: the objects it can refer to and
+    /// when. `None` if `e` is no object array.
+    fn obj_array_alts(&mut self, e: &ast::Expr, line: usize) -> Result<Option<Alts>, Error> {
+        let (bases, name, idx): (Vec<(Expr, String)>, &str, &[ast::Expr]) = match e {
+            ast::Expr::Index(name, idx) => (vec![(bool_e(true), self.norm(name))], name, idx),
+            ast::Expr::MemberIndex(o, f, idx) => {
+                let alts = self.obj_alts(o, line)?;
+                let keys: Vec<(Expr, String)> = alts.into_iter().filter_map(|(c, o)| o.map(|i| (c, field_key(i, f)))).collect();
+                if keys.is_empty() {
+                    return err(line, format!("'.{f}' of a null object"));
+                }
+                (keys, f, idx)
+            }
+            _ => return Ok(None),
+        };
+        if !bases.iter().all(|(_, k)| self.obj_arrays.contains_key(k)) {
+            return Ok(None);
+        }
+        let [ix] = idx else { return err(line, format!("arrays of objects have one dimension ('{name}')")) };
+        let mut alts = Vec::new();
+        match self.static_int(ix) {
+            Some(i) => {
+                for (cb, key) in bases {
+                    let n = self.obj_arrays[&key];
+                    let Some(k) = usize::try_from(i).ok().filter(|&k| k < n) else {
+                        return err(line, format!("index {i} is outside of the object array '{name}' ({n} elements)"));
+                    };
+                    alts.extend(self.oval(&elem_key(&key, k)).alts().into_iter().map(|(c, o)| (and_e(cb.clone(), c), o)));
+                }
+            }
+            None => {
+                // The index is computed once; the element is chosen at run time.
+                let v = self.expr(ix, line)?;
+                let v = conv(self.numeric(v), Ty::Int);
+                let sel = self.once(v);
+                for (cb, key) in bases {
+                    for k in 0..self.obj_arrays[&key] {
+                        let ck = and_e(cb.clone(), eq_int(sel.clone(), k as i64));
+                        alts.extend(self.oval(&elem_key(&key, k)).alts().into_iter().map(|(c, o)| (and_e(ck.clone(), c), o)));
+                    }
+                }
+            }
+        }
+        Ok(Some(alts))
+    }
+
+    /// The objects an expression can refer to, each with the condition when.
+    fn obj_alts(&mut self, e: &ast::Expr, line: usize) -> Result<Alts, Error> {
+        match self.obj_array_alts(e, line)? {
+            Some(a) => Ok(a),
+            None => Ok(self.object_of(e, line)?.alts()),
+        }
+    }
+
+    /// Runs `each` for every object the alternatives can give, inside `if condition`.
+    fn dispatch(&mut self, alts: Alts, line: usize, mut each: impl FnMut(&mut Self, usize) -> Result<Called, Error>) -> Result<Called, Error> {
+        let _ = line;
+        // One object: no choice.
+        if let Some((_, Some(inst))) = alts.first()
+            && alts.iter().all(|(_, o)| *o == Some(*inst))
+        {
+            return each(self, *inst);
+        }
+        self.site += 1;
+        let key = format!("~{}:~pick", self.site);
+        let okey = format!("~{}:~pickobj", self.site);
+        self.objects.insert(okey.clone(), OVal::One(None));
+        let before = self.objects.clone();
+        let (mut arms, mut ends, mut res, mut obj) = (Vec::new(), Vec::new(), None, false);
+        for (c, o) in alts {
+            let Some(inst) = o else { continue };
+            self.objects = before.clone();
+            let saved = std::mem::take(&mut self.pending);
+            let called = each(self, inst);
+            let mut body = std::mem::replace(&mut self.pending, saved);
+            match called? {
+                Called::Value(e) => {
+                    let i = *res.get_or_insert_with(|| {
+                        self.preset.entry(key.clone()).or_insert(e.ty);
+                        self.key_local(&key, e.ty)
+                    });
+                    let t = self.locals[i].ty;
+                    if e.ty > t && t != Ty::Bool {
+                        let w = self.widen.entry(key.clone()).or_insert(e.ty);
+                        *w = (*w).max(e.ty);
+                    }
+                    let e = if t == Ty::Bool { e } else { self.numeric(e) };
+                    body.push(Stmt::Assign(i, conv(e, t)));
+                }
+                Called::Object(v) => {
+                    obj = true;
+                    self.objects.insert(okey.clone(), v);
+                }
+                Called::Nothing => {}
+            }
+            ends.push(std::mem::take(&mut self.objects));
+            arms.push((c, body));
+        }
+        let mut els = Vec::new();
+        ends.push(before.clone());
+        let bodies: Vec<&mut Vec<Stmt>> = arms.iter_mut().map(|(_, b)| b).chain(std::iter::once(&mut els)).collect();
+        self.merge(&before, ends, bodies);
+        if !arms.is_empty() {
+            self.pending.push(Stmt::If(arms, els));
+        }
+        let o = self.objects.remove(&okey).unwrap_or(OVal::One(None));
+        Ok(match res {
+            Some(i) => Called::Value(Expr { ty: self.locals[i].ty, kind: Kind::Local(i) }),
+            None if obj => Called::Object(o),
+            None => Called::Nothing,
+        })
+    }
+
+    /// An object in a condition: true when it is not null.
+    fn obj_truth(&mut self, e: &ast::Expr, line: usize) -> Result<Expr, Error> {
+        let alts = self.obj_alts(e, line)?;
+        Ok(truth(&alts))
+    }
+
+    /// `array[index] = object` for an object array.
+    fn assign_element(&mut self, key: &str, name: &str, idx: &[ast::Expr], value: &ast::Expr, line: usize) -> Result<(), Error> {
+        let [ix] = idx else { return err(line, format!("arrays of objects have one dimension ('{name}')")) };
+        let o = self.object_of(value, line)?;
+        let n = self.obj_arrays[key];
+        match self.static_int(ix) {
+            Some(i) if usize::try_from(i).is_ok_and(|i| i < n) => {
+                self.objects.insert(elem_key(key, i as usize), o);
+                Ok(())
+            }
+            Some(i) => err(line, format!("index {i} is outside of the object array '{name}' ({n} elements)")),
+            None => {
+                // Known only when rendering: every element may change.
+                let v = self.expr(ix, line)?;
+                let v = conv(self.numeric(v), Ty::Int);
+                let sel = self.once(v);
+                for k in 0..n {
+                    self.store_if(&elem_key(key, k), eq_int(sel.clone(), k as i64), o.clone());
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Whether a loop body makes objects or uses object arrays (then it is unrolled).
+    fn wants_unroll(&self, body: &[ast::Stmt]) -> bool {
+        let field_arrays: Vec<String> = self.obj_arrays.keys().filter_map(|k| k.rsplit_once('.').map(|(_, f)| f.to_string())).collect();
+        let is_arr = |name: &str, member: bool| {
+            if member { field_arrays.iter().any(|f| f.eq_ignore_ascii_case(name)) } else { self.obj_arrays.contains_key(&self.norm(name)) }
+        };
+        let mut hit = |e: &ast::Expr| match e {
+            ast::Expr::New { .. } => true,
+            ast::Expr::Index(n, _) => is_arr(n, false),
+            ast::Expr::MemberIndex(_, f, _) => is_arr(f, true),
+            _ => false,
+        };
+        let mut hit_target = |t: &Target| match t {
+            Target::Index(n, _) => is_arr(n, false),
+            Target::MemberIndex(_, f, _) => is_arr(f, true),
+            _ => false,
+        };
+        body.iter().any(|s| stmt_any(s, &mut hit, &mut hit_target))
+    }
+
+    /// Whether `stmts` assign the variable with key `key` anywhere.
+    fn assigns(&self, stmts: &[ast::Stmt], key: &str) -> bool {
+        let mut no = |_: &ast::Expr| false;
+        let mut target = |t: &Target| matches!(t, Target::Var(v) | Target::Comp { var: v, .. } if self.norm(v) == key);
+        stmts.iter().any(|s| stmt_any(s, &mut no, &mut target))
+    }
+
+    /// Unrolls a counting `while` loop that makes objects or indexes object arrays, so the
+    /// indexes are known when checking: the counter starts with a known value (its last
+    /// assignment before the loop), changes only in plain statements of the body by known
+    /// amounts, and the condition depends on the counter only. `None`: the loop stays a loop.
+    fn try_unroll(&mut self, before: &[ast::Stmt], cond: &ast::Expr, body: &[ast::Stmt], line: usize) -> Result<Option<Vec<Stmt>>, Error> {
+        if !self.wants_unroll(body) || body.iter().any(contains_return) {
+            return Ok(None);
+        }
+        let ast::Expr::Binary(BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::Ne, a, _) = cond else { return Ok(None) };
+        let ast::Expr::Ident(var) = &**a else { return Ok(None) };
+        let key = self.norm(var);
+        if self.unroll.contains_key(&key) || self.obj_vars.contains(&key) {
+            return Ok(None);
+        }
+        let is_counter = |s: &ast::Stmt, ck: &Self| matches!(s, ast::Stmt::Assign { target: Target::Var(n), .. } if ck.norm(n) == key);
+        // The start value.
+        let mut start = None;
+        for s in before.iter().rev() {
+            match s {
+                ast::Stmt::Decl { name, value: Some(v), .. } | ast::Stmt::Assign { target: Target::Var(name), value: v, .. }
+                    if self.norm(name) == key =>
+                {
+                    start = self.static_int(v);
+                    break;
+                }
+                s if self.assigns(std::slice::from_ref(s), &key) => break,
+                _ => {}
+            }
+        }
+        let Some(start) = start else { return Ok(None) };
+        if body.iter().any(|s| !is_counter(s, self) && self.assigns(std::slice::from_ref(s), &key)) {
+            return Ok(None);
+        }
+        // Count the iterations first (the body's other statements cannot change the counter).
+        self.unroll.insert(key.clone(), start);
+        let mut n = 0;
+        let finite = loop {
+            match self.static_cond(cond) {
+                Some(true) if n < MAX_UNROLL => n += 1,
+                Some(false) => break true,
+                _ => break false,
+            }
+            let mut ok = true;
+            for s in body {
+                if let ast::Stmt::Assign { value, .. } = s
+                    && is_counter(s, self)
+                {
+                    match self.static_int(value) {
+                        Some(v) => {
+                            self.unroll.insert(key.clone(), v);
+                        }
+                        None => ok = false,
+                    }
+                }
+            }
+            if !ok {
+                break false;
+            }
+        };
+        self.unroll.insert(key.clone(), start);
+        if !finite {
+            self.unroll.remove(&key);
+            return Ok(None);
+        }
+        let mut out = Vec::new();
+        let r = (|| {
+            for _ in 0..n {
+                for s in body {
+                    match s {
+                        ast::Stmt::Assign { value, .. } if is_counter(s, self) => {
+                            let v = self.static_int(value).unwrap_or(0);
+                            self.unroll.insert(key.clone(), v);
+                        }
+                        _ => out.extend(self.stmts(std::slice::from_ref(s))?),
+                    }
+                }
+            }
+            Ok(())
+        })();
+        let last = self.unroll.remove(&key).unwrap_or(start);
+        r?;
+        // The counter keeps its final value after the loop.
+        out.push(self.assign(var, Expr { ty: Ty::Int, kind: Kind::Int(last) }, line)?);
+        Ok(Some(out))
+    }
+
+    /// The object (or the run-time choice of objects) an expression refers to.
+    fn object_of(&mut self, e: &ast::Expr, line: usize) -> Result<OVal, Error> {
         match e {
-            ast::Expr::Num { v, .. } if *v == 0.0 => Ok(None),
-            ast::Expr::Ident(n) if n.eq_ignore_ascii_case("this") => Ok(self.scopes.last().and_then(|s| s.this)),
+            ast::Expr::Index(..) | ast::Expr::MemberIndex(..) => match self.obj_array_alts(e, line)? {
+                Some(alts) => Ok(self.materialize(alts)),
+                None => err(line, "expected an object"),
+            },
+            ast::Expr::Num { v, .. } if *v == 0.0 => Ok(OVal::One(None)),
+            ast::Expr::Ident(n) if n.eq_ignore_ascii_case("this") => Ok(OVal::One(self.scopes.last().and_then(|s| s.this))),
             ast::Expr::Ident(n) => {
                 let key = self.norm(n);
                 match self.objects.get(&key) {
-                    Some(o) => Ok(*o),
+                    Some(o) => Ok(o.clone()),
                     None => err(line, format!("'{n}' is not an object")),
                 }
             }
             ast::Expr::Member(o, f) => {
-                let Some(inst) = self.object_of(o, line)? else { return err(line, format!("'.{f}' of a null object")) };
-                match self.objects.get(&field_key(inst, f)) {
-                    Some(o) => Ok(*o),
-                    None => err(line, format!("'{f}' is not an object field")),
+                let base = self.obj_alts(o, line)?;
+                if base.iter().all(|(_, o)| o.is_none()) {
+                    return err(line, format!("'.{f}' of a null object"));
                 }
+                let mut alts = Vec::new();
+                for (c, inst) in base {
+                    let Some(inst) = inst else { continue };
+                    let Some(v) = self.objects.get(&field_key(inst, f)).cloned() else { return err(line, format!("'{f}' is not an object field")) };
+                    if const_bool(&c) == Some(true) {
+                        return Ok(v);
+                    }
+                    alts.extend(v.alts().into_iter().map(|(c2, o)| (and_e(c.clone(), c2), o)));
+                }
+                Ok(self.materialize(alts))
             }
-            ast::Expr::New { class, param, args } => self.instantiate(class, *param, args, line),
+            ast::Expr::New { class, param, args } => Ok(OVal::One(self.instantiate(class, *param, args, line)?)),
             // A cast: Class(object) is the object itself.
             ast::Expr::Call { name, param: false, args } if args.len() == 1 && self.classes.is_some_and(|c| (c.lookup)(name).is_some()) => {
                 self.object_of(&args[0], line)
@@ -644,6 +1153,7 @@ impl<'a> Ck<'a> {
     fn is_object_expr(&self, e: &ast::Expr) -> bool {
         match e {
             ast::Expr::Ident(n) => n.eq_ignore_ascii_case("this") || self.obj_vars.contains(&self.norm(n)),
+            ast::Expr::Index(n, _) => self.obj_arrays.contains_key(&self.norm(n)),
             ast::Expr::Member(..) | ast::Expr::New { .. } => true,
             _ => false,
         }
@@ -664,11 +1174,17 @@ impl<'a> Ck<'a> {
             let this = if m.is_static { None } else { this };
             return self.inline(this, &impl_class, &m, args, line);
         }
-        let inst = self.object_of(obj, line)?.ok_or_else(|| Error { line, msg: format!("'{name}' called on a null object") })?;
-        let class = self.instances[inst].class.clone();
-        let (impl_class, m) =
-            self.find_method(&class, name, line)?.ok_or_else(|| Error { line, msg: format!("'{}' has no method '{name}'", class.name) })?;
-        self.inline(Some(inst), &impl_class, &m, args, line)
+        let call = |ck: &mut Self, inst: usize| {
+            let class = ck.instances[inst].class.clone();
+            let (impl_class, m) =
+                ck.find_method(&class, name, line)?.ok_or_else(|| Error { line, msg: format!("'{}' has no method '{name}'", class.name) })?;
+            ck.inline(Some(inst), &impl_class, &m, args, line)
+        };
+        let alts = self.obj_alts(obj, line)?;
+        if alts.iter().all(|(_, o)| o.is_none()) {
+            return err(line, format!("'{name}' called on a null object"));
+        }
+        self.dispatch(alts, line, call)
     }
 
     /// A method called without an object inside class code (`Init(pz)`, `Formula(pparent)`):
@@ -719,14 +1235,16 @@ impl<'a> Ck<'a> {
         enum Arg {
             Value(Expr),
             Alias(String),
-            Object(Option<usize>),
+            Object(OVal),
         }
         let mut bound = Vec::new();
         for (p, a) in m.params.iter().zip(args) {
             bound.push(match &p.ty {
                 ast::TypeRef::Class(_) => Arg::Object(self.object_of(a, line)?),
                 ast::TypeRef::Builtin(_) => match a {
-                    ast::Expr::Ident(n) if p.by_ref && self.slots.contains_key(&self.norm(n)) => Arg::Alias(self.norm(n)),
+                    ast::Expr::Ident(n) if p.by_ref && self.slots.contains_key(&self.norm(n)) && !self.unroll.contains_key(&self.norm(n)) => {
+                        Arg::Alias(self.norm(n))
+                    }
                     _ => Arg::Value(self.expr(a, line)?),
                 },
             });
@@ -802,7 +1320,13 @@ impl<'a> Ck<'a> {
             }
             _ => None,
         };
-        let ret_obj = matches!(m.ret, Some(ast::TypeRef::Class(_))).then_some(None);
+        // Returned objects go to an object variable, so returns in branches merge like other
+        // assignments; for methods without a declared type only when something is returned.
+        let returns_obj = matches!(m.ret, Some(ast::TypeRef::Class(_)));
+        let ret_obj = (!matches!(m.ret, Some(ast::TypeRef::Builtin(_)))).then(|| local_key("~retobj"));
+        if returns_obj && let Some(k) = &ret_obj {
+            self.objects.insert(k.clone(), OVal::One(None));
+        }
         // A done flag when a return can come before the end.
         let early = m.body.iter().enumerate().any(|(k, s)| contains_return(s) && !(k + 1 == m.body.len() && matches!(s, ast::Stmt::Return(..))));
         let done = early.then(|| {
@@ -818,25 +1342,11 @@ impl<'a> Ck<'a> {
         let scope = self.scopes.pop().unwrap();
         pre.extend(body?);
         self.pending.extend(pre);
-        Ok(match (scope.ret, scope.ret_obj) {
+        Ok(match (scope.ret, scope.ret_obj.and_then(|k| self.objects.remove(&k))) {
             (Some((i, t)), _) => Called::Value(Expr { ty: t, kind: Kind::Local(i) }),
             (None, Some(o)) => Called::Object(o),
             _ => Called::Nothing,
         })
-    }
-
-    /// After the arms of an `if`: object variables must refer to the same objects.
-    fn merge_objects(&mut self, before: &HashMap<String, Option<usize>>, line: usize) -> Result<(), Error> {
-        for (k, v) in &self.objects {
-            if let Some(b) = before.get(k)
-                && b != v
-                && b.is_some()
-                && v.is_some()
-            {
-                return err(line, format!("'{k}' refers to different objects depending on a condition (not supported)"));
-            }
-        }
-        Ok(())
     }
 
     /// `@name` inside a method: the object's own parameter (user parameter for plugin
@@ -938,18 +1448,38 @@ impl<'a> Ck<'a> {
                 }
             }
             ast::Expr::Member(o, f) => {
-                let Some(inst) = self.object_of(o, line)? else { return err(line, format!("'.{f}' of a null object")) };
-                let key = field_key(inst, f);
-                if self.obj_vars.contains(&key) {
-                    return err(line, format!("the object field '{f}' cannot be used as a value"));
+                let field = |ck: &mut Self, inst: usize| {
+                    let key = field_key(inst, f);
+                    if ck.obj_vars.contains(&key) {
+                        return Ok(Called::Value(truth(&ck.oval(&key).alts())));
+                    }
+                    let i = ck.key_local(&key, Ty::Complex);
+                    Ok(Called::Value(Expr { ty: ck.locals[i].ty, kind: Kind::Local(i) }))
+                };
+                let alts = self.obj_alts(o, line)?;
+                if alts.iter().all(|(_, o)| o.is_none()) {
+                    return err(line, format!("'.{f}' of a null object"));
                 }
-                let i = self.key_local(&key, Ty::Complex);
-                Expr { ty: self.locals[i].ty, kind: Kind::Local(i) }
+                let called = self.dispatch(alts, line, field)?;
+                match called {
+                    Called::Value(e) => e,
+                    _ => return err(line, format!("'.{f}' of a null object")),
+                }
             }
             ast::Expr::MemberIndex(o, f, idx) => {
-                let Some(inst) = self.object_of(o, line)? else { return err(line, format!("'.{f}' of a null object")) };
-                let (slot, i) = self.array_index_key(&field_key(inst, f), f, idx, line)?;
-                Expr { ty: self.locals[slot].ty, kind: Kind::Index(slot, Box::new(i)) }
+                let alts = self.obj_alts(o, line)?;
+                let Some(first) = alts.iter().find_map(|(_, o)| *o) else { return err(line, format!("'.{f}' of a null object")) };
+                if self.obj_arrays.contains_key(&field_key(first, f)) {
+                    return self.obj_truth(e, line);
+                }
+                let element = |ck: &mut Self, inst: usize| {
+                    let (slot, i) = ck.array_index_key(&field_key(inst, f), f, idx, line)?;
+                    Ok(Called::Value(Expr { ty: ck.locals[slot].ty, kind: Kind::Index(slot, Box::new(i)) }))
+                };
+                match self.dispatch(alts, line, element)? {
+                    Called::Value(e) => e,
+                    _ => return err(line, format!("'.{f}' of a null object")),
+                }
             }
             ast::Expr::Method(o, name, args) => match self.method_call(o, name, args, line)? {
                 Called::Value(e) => e,
@@ -971,6 +1501,7 @@ impl<'a> Ck<'a> {
                 }
                 None => return err(line, format!("unknown parameter '@{name}'")),
             },
+            ast::Expr::Index(name, _) if self.obj_arrays.contains_key(&self.norm(name)) => self.obj_truth(e, line)?,
             ast::Expr::Index(name, idx) => {
                 let (slot, i) = self.array_index(name, idx, line)?;
                 Expr { ty: self.locals[slot].ty, kind: Kind::Index(slot, Box::new(i)) }
@@ -1026,8 +1557,14 @@ impl<'a> Ck<'a> {
         }
         // Objects compared with 0 (null) or with each other: known when checking.
         if matches!(op, BinOp::Eq | BinOp::Ne) && (self.is_object_expr(a) || self.is_object_expr(b)) {
-            let (x, y) = (self.object_of(a, line)?, self.object_of(b, line)?);
-            return Ok(Expr { ty: Ty::Bool, kind: Kind::Bool((x == y) == (op == BinOp::Eq)) });
+            // Compared with null: also for elements chosen at run time.
+            if let (o, ast::Expr::Num { v: 0.0, .. }) | (ast::Expr::Num { v: 0.0, .. }, o) = (a, b) {
+                let set = self.obj_truth(o, line)?;
+                return Ok(if op == BinOp::Ne { set } else { Expr { ty: Ty::Bool, kind: Kind::Not(Box::new(set)) } });
+            }
+            let (x, y) = (self.obj_alts(a, line)?, self.obj_alts(b, line)?);
+            let same = obj_eq(&x, &y);
+            return Ok(if op == BinOp::Eq { same } else { Expr { ty: Ty::Bool, kind: Kind::Not(Box::new(same)) } });
         }
         if op == BinOp::Pow {
             let base = {
@@ -1193,9 +1730,13 @@ impl<'a> Ck<'a> {
         let lower = name.to_ascii_lowercase();
         if lower == "length"
             && let [ast::Expr::Ident(a)] = args
-            && let Some((_, dims)) = self.arrays.get(&self.norm(a))
         {
-            return Ok(Expr { ty: Ty::Int, kind: Kind::Local(dims[0]) });
+            if let Some((_, dims)) = self.arrays.get(&self.norm(a)) {
+                return Ok(Expr { ty: Ty::Int, kind: Kind::Local(dims[0]) });
+            }
+            if let Some(&n) = self.obj_arrays.get(&self.norm(a)) {
+                return Ok(Expr { ty: Ty::Int, kind: Kind::Int(n as i64) });
+            }
         }
         let lname = if self.dialect == Dialect::Frm { name.to_string() } else { lower.clone() };
         let mut vals = Vec::new();
@@ -1354,7 +1895,13 @@ impl<'a> Ck<'a> {
         for (k, s) in list.iter().enumerate() {
             let before = std::mem::take(&mut self.pending);
             let mut produced = Vec::new();
-            self.stmt(s, &mut produced)?;
+            match s {
+                ast::Stmt::While { cond, body, line } => match self.try_unroll(&list[..k], cond, body, *line)? {
+                    Some(u) => produced = u,
+                    None => self.stmt(s, &mut produced)?,
+                },
+                _ => self.stmt(s, &mut produced)?,
+            }
             let pre = std::mem::replace(&mut self.pending, before);
             out.extend(pre);
             out.extend(produced);
@@ -1363,10 +1910,14 @@ impl<'a> Ck<'a> {
                 && contains_return(s)
                 && k + 1 < list.len()
             {
-                let rest = self.stmts(&list[k + 1..])?;
-                if !rest.is_empty() {
+                let start = self.objects.clone();
+                let mut rest = self.stmts(&list[k + 1..])?;
+                let end = std::mem::replace(&mut self.objects, start.clone());
+                let mut skipped = Vec::new();
+                self.merge(&start, vec![end, start.clone()], vec![&mut rest, &mut skipped]);
+                if !rest.is_empty() || !skipped.is_empty() {
                     let not_done = Expr { ty: Ty::Bool, kind: Kind::Not(Box::new(Expr { ty: Ty::Bool, kind: Kind::Local(d) })) };
-                    out.push(Stmt::If(vec![(not_done, rest)], Vec::new()));
+                    out.push(Stmt::If(vec![(not_done, rest)], skipped));
                 }
                 break;
             }
@@ -1390,27 +1941,50 @@ impl<'a> Ck<'a> {
                     let key = self.norm(name);
                     self.objects.insert(key, o);
                 }
+                ast::Stmt::Assign { target: Target::Index(name, idx), value, line } if self.obj_arrays.contains_key(&self.norm(name)) => {
+                    let key = self.norm(name);
+                    self.assign_element(&key, name, idx, value, *line)?;
+                }
                 ast::Stmt::Assign { target: Target::Member(obj, field), value, line } => {
-                    let Some(inst) = self.object_of(obj, *line)? else { return err(*line, format!("'.{field}' of a null object")) };
-                    let key = field_key(inst, field);
-                    if self.obj_vars.contains(&key) {
+                    let alts: Vec<(Expr, usize)> = self.obj_alts(obj, *line)?.into_iter().filter_map(|(c, o)| o.map(|i| (c, i))).collect();
+                    let Some(&(_, first)) = alts.first() else { return err(*line, format!("'.{field}' of a null object")) };
+                    if self.obj_vars.contains(&field_key(first, field)) {
                         let o = self.object_of(value, *line)?;
-                        self.objects.insert(key, o);
+                        for (c, inst) in alts {
+                            self.store_if(&field_key(inst, field), c, o.clone());
+                        }
                     } else {
                         let v = self.expr(value, *line)?;
-                        let i = self.key_local(&key, v.ty);
-                        let t = self.locals[i].ty;
-                        let v = if t == Ty::Bool { v } else { self.numeric(v) };
-                        out.push(Stmt::Assign(i, conv(v, t)));
+                        let v = if v.ty == Ty::Bool { v } else { self.numeric(v) };
+                        // Several objects: the value is computed once, stored where it applies.
+                        let v = if alts.len() > 1 { self.value_once(v, out) } else { v };
+                        for (c, inst) in alts {
+                            let i = self.key_local(&field_key(inst, field), v.ty);
+                            let t = self.locals[i].ty;
+                            let set = Stmt::Assign(i, conv(v.clone(), t));
+                            out.push(if const_bool(&c) == Some(true) { set } else { Stmt::If(vec![(c, vec![set])], Vec::new()) });
+                        }
                     }
                 }
                 ast::Stmt::Assign { target: Target::MemberIndex(obj, field, idx), value, line } => {
-                    let Some(inst) = self.object_of(obj, *line)? else { return err(*line, format!("'.{field}' of a null object")) };
+                    let alts: Vec<(Expr, usize)> = self.obj_alts(obj, *line)?.into_iter().filter_map(|(c, o)| o.map(|i| (c, i))).collect();
+                    let Some(&(_, first)) = alts.first() else { return err(*line, format!("'.{field}' of a null object")) };
+                    let key = field_key(first, field);
+                    if self.obj_arrays.contains_key(&key) {
+                        if alts.len() > 1 {
+                            return err(*line, format!("objects are stored in '{field}' of an object chosen only when rendering (not supported)"));
+                        }
+                        return self.assign_element(&key, field, idx, value, *line);
+                    }
                     let v = self.expr(value, *line)?;
-                    let (slot, i) = self.array_index_key(&field_key(inst, field), field, idx, *line)?;
-                    let t = self.locals[slot].ty;
-                    let v = if t == Ty::Bool { v } else { self.numeric(v) };
-                    out.push(Stmt::SetIndex(slot, i, conv(v, t)));
+                    let v = if v.ty == Ty::Bool { v } else { self.numeric(v) };
+                    let v = if alts.len() > 1 { self.value_once(v, out) } else { v };
+                    for (c, inst) in alts {
+                        let (slot, i) = self.array_index_key(&field_key(inst, field), field, idx, *line)?;
+                        let t = self.locals[slot].ty;
+                        let set = Stmt::SetIndex(slot, i, conv(v.clone(), t));
+                        out.push(if const_bool(&c) == Some(true) { set } else { Stmt::If(vec![(c, vec![set])], Vec::new()) });
+                    }
                 }
                 ast::Stmt::Assign { target, value, line } => {
                     let v = self.expr(value, *line)?;
@@ -1480,7 +2054,9 @@ impl<'a> Ck<'a> {
                 ast::Stmt::If { arms, els, line } => {
                     // Conditions that need statements (inlined calls) split the chain: later
                     // conditions run only when the earlier ones failed.
-                    let mut parts = Vec::new();
+                    // Object variables are tracked per branch and joined afterwards.
+                    let start = self.objects.clone();
+                    let (mut parts, mut ends, mut always) = (Vec::new(), Vec::new(), false);
                     for (c, b) in arms {
                         let (pre, v) = self.cexpr(c, *line)?;
                         let c = self.cond(v);
@@ -1489,14 +2065,27 @@ impl<'a> Ck<'a> {
                         if pre.is_empty() && const_bool(&c) == Some(false) {
                             continue;
                         }
-                        let snapshot = self.objects.clone();
+                        let at_cond = self.objects.clone();
                         let body = self.stmts(b)?;
-                        self.merge_objects(&snapshot, *line)?;
+                        ends.push(std::mem::replace(&mut self.objects, at_cond));
+                        let known = pre.is_empty() && const_bool(&c) == Some(true);
                         parts.push((pre, c, body));
+                        // A branch known to be taken: the later ones never run.
+                        if known {
+                            always = true;
+                            break;
+                        }
                     }
-                    let snapshot = self.objects.clone();
-                    let mut tail = self.stmts(els)?;
-                    self.merge_objects(&snapshot, *line)?;
+                    let mut tail = Vec::new();
+                    if !always {
+                        tail = self.stmts(els)?;
+                        ends.push(std::mem::take(&mut self.objects));
+                    }
+                    let mut bodies: Vec<&mut Vec<Stmt>> = parts.iter_mut().map(|(_, _, b)| b).collect();
+                    if !always {
+                        bodies.push(&mut tail);
+                    }
+                    self.merge(&start, ends, bodies);
                     let mut arms_ir: Vec<(Expr, Vec<Stmt>)> = Vec::new();
                     for (k, (pre, c, body)) in parts.into_iter().enumerate().rev() {
                         arms_ir.insert(0, (c, body));
@@ -1509,9 +2098,11 @@ impl<'a> Ck<'a> {
                     out.extend(tail);
                 }
                 ast::Stmt::While { cond, body, line } => {
+                    let start = self.objects.clone();
                     let (pre, v) = self.cexpr(cond, *line)?;
                     let mut c = self.cond(v);
                     let mut b = self.stmts(body)?;
+                    self.loop_objects(&start, *line)?;
                     b.extend(pre.iter().cloned());
                     if let Some(d) = self.scopes.last().and_then(|s| s.done)
                         && body.iter().any(contains_return)
@@ -1523,14 +2114,17 @@ impl<'a> Ck<'a> {
                     out.push(Stmt::While(c, b));
                 }
                 ast::Stmt::ObjDecl { class, name, dims, value, line } => {
-                    if dims.is_some() {
-                        return err(*line, format!("arrays of objects ('{class} {name}[]') are not supported yet"));
-                    }
                     let key = self.norm(name);
+                    if let Some(d) = dims {
+                        let _ = class;
+                        let n = self.obj_array_size(name, d, *line)?;
+                        self.declare_obj_array(key, n);
+                        return Ok(());
+                    }
                     self.obj_vars.insert(key.clone());
                     let o = match value {
                         Some(v) => self.object_of(v, *line)?,
-                        None => None,
+                        None => OVal::One(None),
                     };
                     self.objects.insert(key, o);
                 }
@@ -1544,19 +2138,17 @@ impl<'a> Ck<'a> {
                 },
                 ast::Stmt::Return(value, line) => {
                     let Some(scope) = self.scopes.last() else { return err(*line, "'return' outside of a method") };
-                    let (ret, done, is_obj) = (scope.ret, scope.done, scope.ret_obj.is_some() || scope.ret.is_none());
+                    let (ret, done, ret_obj) = (scope.ret, scope.done, scope.ret_obj.clone());
                     match (value, ret) {
                         (Some(v), Some((slot, t))) => {
                             let e = self.expr(v, *line)?;
                             let e = if t == Ty::Bool { e } else { self.numeric(e) };
                             out.push(Stmt::Assign(slot, conv(e, t)));
                         }
-                        (Some(v), None) if is_obj => {
-                            let o = self.object_of(v, *line)?;
-                            let scope = self.scopes.last_mut().unwrap();
-                            match scope.ret_obj {
-                                Some(Some(prev)) if Some(prev) != o => return err(*line, "a method returns different objects (not supported)"),
-                                _ => scope.ret_obj = Some(o),
+                        (Some(v), None) => {
+                            if let Some(k) = ret_obj {
+                                let o = self.object_of(v, *line)?;
+                                self.objects.insert(k, o);
                             }
                         }
                         _ => {}
@@ -1568,6 +2160,16 @@ impl<'a> Ck<'a> {
                 ast::Stmt::Seq(list) => out.extend(self.stmts(list)?),
                 ast::Stmt::ArrayDecl { ty, name, dims, line } => self.declare_array(*ty, name, dims, *line, out)?,
                 ast::Stmt::Call { name, args, line } => match (name.to_ascii_lowercase().as_str(), args.as_slice()) {
+                    ("setlength", [ast::Expr::Ident(a), n]) if self.obj_arrays.contains_key(&self.norm(a)) => {
+                        let Some(len) = self.static_int(n).and_then(|v| usize::try_from(v).ok()).filter(|&v| v <= ARRAY_MAX) else {
+                            return err(
+                                *line,
+                                format!("the length of the object array '{a}' must be known when checking (a number or a counting loop)"),
+                            );
+                        };
+                        let key = self.norm(a);
+                        self.declare_obj_array(key, len);
+                    }
                     ("setlength", [ast::Expr::Ident(a), n]) => {
                         let Some((_, dims)) = self.arrays.get(&self.norm(a)).cloned() else { return err(*line, format!("'{a}' is not an array")) };
                         let e = self.expr(n, *line)?;
@@ -1581,7 +2183,9 @@ impl<'a> Ck<'a> {
                     },
                 },
                 ast::Stmt::Repeat { body, cond, line } => {
+                    let start = self.objects.clone();
                     let mut b = self.stmts(body)?;
+                    self.loop_objects(&start, *line)?;
                     let (pre, v) = self.cexpr(cond, *line)?;
                     let mut c = self.cond(v);
                     b.extend(pre);
@@ -1614,8 +2218,127 @@ pub fn param_ty(kind: ParamKind) -> Ty {
 /// What an inlined call gives.
 enum Called {
     Value(Expr),
-    Object(Option<usize>),
+    Object(OVal),
     Nothing,
+}
+
+/// What an object variable holds: one object (or null), or one of several candidates chosen
+/// at run time by a tag (an int local holding the candidate's position; candidate 0 is null).
+#[derive(Clone, Debug, PartialEq)]
+enum OVal {
+    One(Option<usize>),
+    Tag(usize, Vec<Option<usize>>),
+}
+
+/// The objects an expression can refer to, each with the run-time condition when.
+type Alts = Vec<(Expr, Option<usize>)>;
+
+impl OVal {
+    fn alts(&self) -> Alts {
+        match self {
+            OVal::One(o) => vec![(bool_e(true), *o)],
+            OVal::Tag(t, c) => c.iter().enumerate().map(|(j, o)| (eq_int(Expr { ty: Ty::Int, kind: Kind::Local(*t) }, j as i64), *o)).collect(),
+        }
+    }
+
+    fn cands(&self) -> Vec<Option<usize>> {
+        match self {
+            OVal::One(o) => vec![*o],
+            OVal::Tag(_, c) => c.clone(),
+        }
+    }
+}
+
+fn bool_e(b: bool) -> Expr {
+    Expr { ty: Ty::Bool, kind: Kind::Bool(b) }
+}
+
+fn int_e(i: i64) -> Expr {
+    Expr { ty: Ty::Int, kind: Kind::Int(i) }
+}
+
+fn eq_int(a: Expr, k: i64) -> Expr {
+    Expr { ty: Ty::Bool, kind: Kind::Cmp(Cmp::Eq, Box::new(a), Box::new(int_e(k))) }
+}
+
+fn and_e(a: Expr, b: Expr) -> Expr {
+    match (const_bool(&a), const_bool(&b)) {
+        (Some(true), _) => b,
+        (_, Some(true)) => a,
+        (Some(false), _) | (_, Some(false)) => bool_e(false),
+        _ => Expr { ty: Ty::Bool, kind: Kind::And(Box::new(a), Box::new(b)) },
+    }
+}
+
+fn or_e(a: Expr, b: Expr) -> Expr {
+    match (const_bool(&a), const_bool(&b)) {
+        (Some(false), _) => b,
+        (_, Some(false)) => a,
+        (Some(true), _) | (_, Some(true)) => bool_e(true),
+        _ => Expr { ty: Ty::Bool, kind: Kind::Or(Box::new(a), Box::new(b)) },
+    }
+}
+
+/// Whether the object is not null.
+fn truth(alts: &Alts) -> Expr {
+    alts.iter().filter(|(_, o)| o.is_some()).fold(bool_e(false), |acc, (c, _)| or_e(acc, c.clone()))
+}
+
+/// Whether two objects are the same.
+fn obj_eq(a: &Alts, b: &Alts) -> Expr {
+    let mut acc = bool_e(false);
+    for (ca, oa) in a {
+        for (cb, ob) in b {
+            if oa == ob {
+                acc = or_e(acc, and_e(ca.clone(), cb.clone()));
+            }
+        }
+    }
+    acc
+}
+
+/// The object variable holding element `k` of the object array `key`.
+fn elem_key(key: &str, k: usize) -> String {
+    format!("{key}[{k}]")
+}
+
+/// Whether `s` (at any depth) contains an expression for which `pe` holds or an assignment
+/// target for which `pt` holds (declarations count as assignments to `Target::Var`).
+fn stmt_any(s: &ast::Stmt, pe: &mut dyn FnMut(&ast::Expr) -> bool, pt: &mut dyn FnMut(&Target) -> bool) -> bool {
+    fn expr_any(e: &ast::Expr, pe: &mut dyn FnMut(&ast::Expr) -> bool) -> bool {
+        if pe(e) {
+            return true;
+        }
+        match e {
+            ast::Expr::Complex(a, b) | ast::Expr::Binary(_, a, b) => expr_any(a, pe) || expr_any(b, pe),
+            ast::Expr::Unary(_, a) | ast::Expr::Mag(a) | ast::Expr::Member(a, _) => expr_any(a, pe),
+            ast::Expr::Call { args, .. } | ast::Expr::Index(_, args) | ast::Expr::New { args, .. } => args.iter().any(|a| expr_any(a, pe)),
+            ast::Expr::MemberIndex(o, _, args) | ast::Expr::Method(o, _, args) => expr_any(o, pe) || args.iter().any(|a| expr_any(a, pe)),
+            _ => false,
+        }
+    }
+    let list = |b: &[ast::Stmt], pe: &mut dyn FnMut(&ast::Expr) -> bool, pt: &mut dyn FnMut(&Target) -> bool| b.iter().any(|s| stmt_any(s, pe, pt));
+    match s {
+        ast::Stmt::Assign { target, value, .. } => {
+            pt(target)
+                || expr_any(value, pe)
+                || match target {
+                    Target::Index(_, idx) => idx.iter().any(|a| expr_any(a, pe)),
+                    Target::Member(o, _) => expr_any(o, pe),
+                    Target::MemberIndex(o, _, idx) => expr_any(o, pe) || idx.iter().any(|a| expr_any(a, pe)),
+                    _ => false,
+                }
+        }
+        ast::Stmt::Decl { name, value, .. } => pt(&Target::Var(name.clone())) || value.as_ref().is_some_and(|v| expr_any(v, pe)),
+        ast::Stmt::ObjDecl { dims, value, .. } => dims.iter().flatten().any(|d| expr_any(d, pe)) || value.as_ref().is_some_and(|v| expr_any(v, pe)),
+        ast::Stmt::ArrayDecl { dims, .. } => dims.iter().any(|d| expr_any(d, pe)),
+        ast::Stmt::If { arms, els, .. } => arms.iter().any(|(c, b)| expr_any(c, pe) || list(b, pe, pt)) || list(els, pe, pt),
+        ast::Stmt::While { cond, body, .. } | ast::Stmt::Repeat { body, cond, .. } => expr_any(cond, pe) || list(body, pe, pt),
+        ast::Stmt::Seq(body) => list(body, pe, pt),
+        ast::Stmt::Call { args, .. } => args.iter().any(|a| expr_any(a, pe)),
+        ast::Stmt::Eval(e, _) => expr_any(e, pe),
+        ast::Stmt::Return(v, _) => v.as_ref().is_some_and(|v| expr_any(v, pe)),
+    }
 }
 
 /// The key of field `name` of object `inst`.
@@ -1747,6 +2470,8 @@ pub fn check_with(ast: &FormulaAst, kind: ProgramKind, classes: Option<&ClassCtx
             scopes: Vec::new(),
             objects: HashMap::new(),
             obj_vars: HashSet::new(),
+            obj_arrays: HashMap::new(),
+            unroll: HashMap::new(),
             pending: Vec::new(),
             site: 0,
         };
@@ -1880,6 +2605,57 @@ mod tests {
         let mut f = k.frame();
         f.pixel = C64::new(1.0, 0.0);
         assert_eq!(k.run(&mut f, 200).iter, 2);
+    }
+
+    #[test]
+    fn object_arrays_unroll_and_dispatch() {
+        use super::super::cpu::Compiled;
+        use crate::math::complex::C64;
+        let lib = "class Step {\npublic:\n  func Step(float pk)\n    m_k = pk\n  endfunc\n  complex func Apply(complex pz)\n    return pz * m_k\n  endfunc\nprotected:\n  float m_k\n}\n\nclass Merge {\npublic:\n  func Merge()\n    int j = 0\n    while j < length(m_s)\n      m_s[j] = new Step(j + 1)\n      j = j + 1\n    endwhile\n  endfunc\n  complex func Apply(complex pz)\n    int j = 0\n    while j < 3\n      if m_s[j]\n        pz = m_s[j].Apply(pz)\n      endif\n      j = j + 1\n    endwhile\n    return pz\n  endfunc\n  complex func Pick(complex pz, int n)\n    if m_s[n] != 0\n      return m_s[n].Apply(pz)\n    endif\n    return pz\n  endfunc\nprotected:\n  Step m_s[3]\n}\n";
+        let classes: Vec<_> = crate::formula::parse::parse_classes(lib).into_iter().map(|(_, c)| std::sync::Arc::new(c.unwrap())).collect();
+        let lookup = |n: &str| classes.iter().find(|c| c.name.eq_ignore_ascii_case(n)).cloned();
+        let src = "T {\nglobal:\n  Merge m = new Merge()\n  Step extra[2]\ninit:\n  z = m.Apply(#pixel)\n  if extra[@which - 1]\n    z = 0\n  endif\nloop:\n  z = m.Pick(z, @which)\nbailout:\n  |z| < 1e20\ndefault:\n  int param which\n    default = 2\n  endparam\n}\n";
+        let e = split_entries(src);
+        let ast = parse_ufm_entry(&e[0]).unwrap();
+        let choices = BTreeMap::new();
+        let ctx = ClassCtx { lookup: &lookup, choices: &choices };
+        let p = check_with(&ast, ProgramKind::Fractal, Some(&ctx)).unwrap();
+        // Three objects with factors 1, 2, 3: the init multiplies by 6, every iteration by
+        // the factor the parameter picks at run time.
+        for (which, factor) in [(0, 1.0), (1, 2.0), (2, 3.0)] {
+            let k = Compiled::<f64>::new(&p, &[ast::ParamValue::Int(which)]);
+            let mut f = k.frame();
+            f.pixel = C64::new(1.0, 0.0);
+            let o = k.run(&mut f, 3);
+            assert!((o.z.re - 6.0 * factor * factor * factor).abs() < 1e-9, "which {which}: {:?}", o.z);
+        }
+    }
+
+    #[test]
+    fn objects_chosen_at_run_time() {
+        use super::super::cpu::Compiled;
+        use crate::math::complex::C64;
+        let lib = "class Step {\npublic:\n  func Step(float pk)\n    m_k = pk\n  endfunc\n  complex func Apply(complex pz)\n    return pz * m_k\n  endfunc\n  Step func Bigger(Step po)\n    if po.m_k > m_k\n      return po\n    endif\n    return this\n  endfunc\nprotected:\n  float m_k\n}\n";
+        let classes: Vec<_> = crate::formula::parse::parse_classes(lib).into_iter().map(|(_, c)| std::sync::Arc::new(c.unwrap())).collect();
+        let lookup = |n: &str| classes.iter().find(|c| c.name.eq_ignore_ascii_case(n)).cloned();
+        let choices = BTreeMap::new();
+        let ctx = ClassCtx { lookup: &lookup, choices: &choices };
+        // Stored at an index from a parameter, chosen by a condition, returned from branches.
+        let src = "T {\nglobal:\n  Step s[2]\n  s[0] = new Step(2)\n  s[1] = new Step(3)\n  s[@which] = new Step(5)\n  Step t\n  if @which == 0\n    t = new Step(7)\n  else\n    t = s[0]\n  endif\n  Step u = s[0].Bigger(s[1])\ninit:\n  z = #pixel\nloop:\n  z = t.Apply(u.Apply(s[1].Apply(z)))\nbailout:\n  |z| < 1e30\ndefault:\n  int param which\n    default = 0\n  endparam\n}\n";
+        let ast = parse_ufm_entry(&split_entries(src)[0]).unwrap();
+        let p = check_with(&ast, ProgramKind::Fractal, Some(&ctx)).unwrap();
+        // which = 0: s = [5, 3], t = 7, u = 5 → 105; which = 1: s = [2, 5], t = s[0] = 2, u = 5 → 50.
+        for (which, factor) in [(0, 105.0), (1, 50.0)] {
+            let k = Compiled::<f64>::new(&p, &[ast::ParamValue::Int(which)]);
+            let mut f = k.frame();
+            f.pixel = C64::new(1.0, 0.0);
+            let o = k.run(&mut f, 1);
+            assert!((o.z.re - factor).abs() < 1e-9, "which {which}: {:?}", o.z);
+        }
+        // A loop that changes which object a variable refers to is refused.
+        let src = "T {\nglobal:\n  Step a = new Step(2)\n  int i = 0\n  while i < @which\n    a.Apply(1)\n    a = new Step(3)\n    i = i + 1\n  endwhile\ninit:\n  z = 0\nloop:\n  z = z\nbailout:\n  |z| < 4\ndefault:\n  int param which\n    default = 0\n  endparam\n}\n";
+        let ast = parse_ufm_entry(&split_entries(src)[0]).unwrap();
+        assert!(check_with(&ast, ProgramKind::Fractal, Some(&ctx)).is_err());
     }
 
     #[test]
