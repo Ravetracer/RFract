@@ -2096,6 +2096,7 @@ dependencies = [
 name = "rfr-core"
 version = "0.4.1"
 dependencies = [
+ "dashu-base",
  "dashu-float",
  "dashu-int",
  "image",
