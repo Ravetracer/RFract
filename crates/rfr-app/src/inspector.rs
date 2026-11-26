@@ -29,6 +29,8 @@ pub enum Action {
     Select(Selection),
     /// Open the formula editor on this library entry.
     EditFormula(String),
+    /// Fit the view to the selected layer's IFS attractor.
+    FitIfs,
 }
 
 /// Function names offered for function parameters.
@@ -394,6 +396,11 @@ fn transforms_ui(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
 }
 
 fn fractal_sections(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
+    // IFS density layers do not use their formula.
+    if l.kind == LayerKind::Density && l.density.mode == rfr_core::doc::DensityMode::Ifs {
+        density_section(ui, l, actions);
+        return;
+    }
     let lib = library();
     let entry = lib.get(&l.formula);
     let sec = widgets::section(ui, "Formula", true);
@@ -546,6 +553,54 @@ fn fractal_sections(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
     }
 }
 
+/// The maps of an IFS density layer: coefficients, weight, variation; presets and fitting.
+fn ifs_maps(ui: &mut Ui, d: &mut rfr_core::doc::Density, actions: &mut Vec<Action>) {
+    use rfr_core::doc::{IfsMap, Variation};
+    ui.horizontal(|ui| {
+        egui::ComboBox::from_id_salt("ifs-preset").selected_text("Presets").show_ui(ui, |ui| {
+            for (name, maps) in rfr_core::doc::ifs_presets() {
+                if ui.selectable_label(false, name).on_hover_text(format!("Replace the maps with the {name}")).clicked() {
+                    d.ifs = maps;
+                    actions.push(Action::FitIfs);
+                }
+            }
+        });
+        if ui.button("Fit view").on_hover_text("Fit the view and the start region to the attractor").clicked() {
+            actions.push(Action::FitIfs);
+        }
+        if ui.button(format!("{} Map", icons::PLUS)).on_hover_text("Add a map (half size, no shift)").clicked() {
+            d.ifs.push(IfsMap::default());
+        }
+    });
+    let mut remove = None;
+    for (k, m) in d.ifs.iter_mut().enumerate() {
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(format!("Map {}", k + 1)).strong());
+            egui::ComboBox::from_id_salt(("ifs-var", k)).selected_text(m.variation.label()).show_ui(ui, |ui| {
+                for v in Variation::ALL {
+                    ui.selectable_value(&mut m.variation, v, v.label());
+                }
+            });
+            ui.add(egui::DragValue::new(&mut m.weight).range(0.0..=100.0).speed(0.01).prefix("weight "))
+                .on_hover_text("Share of the steps that use this map");
+            if ui.small_button(icons::TRASH).on_hover_text("Remove this map").clicked() {
+                remove = Some(k);
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            for (j, name) in ["a", "b", "c", "d", "e", "f"].iter().enumerate() {
+                ui.add(egui::DragValue::new(&mut m.coefs[j]).speed(0.005).max_decimals(4).prefix(format!("{name} ")))
+                    .on_hover_text("x' = a·x + b·y + e, y' = c·x + d·y + f");
+            }
+        });
+    }
+    if let Some(k) = remove {
+        d.ifs.remove(k);
+    }
+    ui.separator();
+}
+
 /// Settings of a density layer: which orbits, where they start, how the counts look.
 fn density_section(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
     use rfr_core::doc::{Density, DensityMode};
@@ -564,8 +619,12 @@ fn density_section(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
             (DensityMode::Escaping, "Escaping", "Paths of the points that escape (Buddhabrot)"),
             (DensityMode::Captive, "Captive", "Paths of the points that stay (anti-Buddhabrot)"),
             (DensityMode::Attractor, "Attractor", "Every orbit after a warm-up: strange attractors (formulas of the Attractors family)"),
+            (DensityMode::Ifs, "IFS", "The chaos game over the affine maps below (iterated function systems; the formula is not used)"),
         ],
     );
+    if d.mode == DensityMode::Ifs {
+        ifs_maps(ui, d, actions);
+    }
     let def = Density::default();
     widgets::grid(ui, "density-grid", |ui| {
         if d.mode == DensityMode::Escaping {
@@ -578,7 +637,7 @@ fn density_section(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
                 def.min_iter,
             );
         }
-        if d.mode == DensityMode::Attractor {
+        if matches!(d.mode, DensityMode::Attractor | DensityMode::Ifs) {
             widgets::slider_u32(
                 ui,
                 "Warm-up",

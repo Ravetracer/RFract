@@ -313,6 +313,19 @@ fn gpu_density_matches_the_cpu() {
     a.layers[0].density.orbits = 2000;
     a.layers[0].outside.gradient = rfr_core::gradient::preset("Ember").unwrap();
     cases.push(("clifford", a));
+    let mut f = Document::for_formula("rfract:Mandelbrot");
+    f.view.center = ["0".into(), "0".into()];
+    f.view.radius = 1.2.into();
+    f.layers[0].kind = rfr_core::doc::LayerKind::Density;
+    f.layers[0].density.mode = rfr_core::doc::DensityMode::Ifs;
+    f.layers[0].density.orbits = 2000;
+    f.layers[0].max_iter = 200;
+    f.layers[0].outside.gradient = rfr_core::gradient::preset("Ember").unwrap();
+    cases.push(("sierpinski", f.clone()));
+    let mut v = f.clone();
+    v.layers[0].density.ifs[0].variation = rfr_core::doc::Variation::Swirl;
+    v.layers[0].density.ifs[1].variation = rfr_core::doc::Variation::Spherical;
+    cases.push(("ifs variations", v));
     let (w, h, s) = (96, 64, 8);
     for (name, doc) in cases {
         let plan = Plan::sized(&doc, w, h).unwrap();

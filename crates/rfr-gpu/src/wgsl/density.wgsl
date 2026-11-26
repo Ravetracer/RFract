@@ -28,6 +28,57 @@ fn d_plot(z: Cx, mask: u32) {
     }
 }
 
+// An IFS map's variation (rfr_core::doc::Variation::apply), theta = atan2(x, y).
+fn d_var(v: u32, x: f32, y: f32) -> vec2<f32> {
+    let r2 = x * x + y * y;
+    let r = sqrt(r2);
+    let th = atan2(x, y);
+    let pi = 3.141592653589793;
+    switch v {
+        case 1u: { return vec2<f32>(sin(x), sin(y)); }
+        case 2u: { return vec2<f32>(x, y) / (r2 + 1e-12); }
+        case 3u: { return vec2<f32>(x * sin(r2) - y * cos(r2), x * cos(r2) + y * sin(r2)); }
+        case 4u: { return vec2<f32>((x - y) * (x + y), 2.0 * x * y) / (r + 1e-12); }
+        case 5u: { return vec2<f32>(th / pi, r - 1.0); }
+        case 6u: { return vec2<f32>(r * sin(th + r), r * cos(th - r)); }
+        case 7u: { return vec2<f32>(r * sin(th * r), -r * cos(th * r)); }
+        case 8u: { return vec2<f32>(th / pi * sin(pi * r), th / pi * cos(pi * r)); }
+        case 9u: { return vec2<f32>(cos(th) + sin(r), sin(th) - cos(r)) / (r + 1e-12); }
+        default: { return vec2<f32>(x, y); }
+    }
+}
+
+// The chaos game over the maps in `bla` (rfr_core::render::density::ifs_orbit): a map per step
+// by the cumulative shares, the same hashed random numbers as the CPU.
+fn d_ifs(i: u32, start: vec2<f32>) {
+    let n = U.densx.w;
+    if n == 0u {
+        return;
+    }
+    var p = start;
+    var rnd = hash(i ^ hash(U.densn.w ^ 0xA511E9B3u));
+    for (var it = 0u; it < U.densx.y; it = it + 1u) {
+        rnd = hash(rnd);
+        let u = f32(rnd) / 4294967296.0;
+        var k = n - 1u;
+        for (var j = 0u; j < n; j = j + 1u) {
+            if u < bla[2u * j + 1u].z {
+                k = j;
+                break;
+            }
+        }
+        let m0 = bla[2u * k];
+        let m1 = bla[2u * k + 1u];
+        p = d_var(u32(m1.w), m0.x * p.x + m0.y * p.y + m1.x, m0.z * p.x + m0.w * p.y + m1.y);
+        if !(abs(p.x) < 1e30 && abs(p.y) < 1e30) {
+            return;
+        }
+        if it >= U.densi.z {
+            d_plot(c_f(p.x, p.y), 1u);
+        }
+    }
+}
+
 @compute @workgroup_size(64)
 fn scatter(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
@@ -40,6 +91,10 @@ fn scatter(@builtin(global_invocation_id) gid: vec3<u32>) {
     let su = f32(ha) / 4294967296.0;
     let sv = f32(hb) / 4294967296.0;
     let start = vec2<f32>(U.dens.x + (U.dens.z - U.dens.x) * su, U.dens.y + (U.dens.w - U.dens.y) * sv);
+    if U.densi.x == 3u {
+        d_ifs(i, start);
+        return;
+    }
     let x = 0u;
     let y = 0u;
     let ismand = U.iter.y == 0u;

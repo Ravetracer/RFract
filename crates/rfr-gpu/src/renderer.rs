@@ -672,7 +672,7 @@ impl GpuRenderer {
             // Density layers: fresh counts for every plan (the view decides where points go).
             let (hist, density) = match &lp.density {
                 Some(d) => {
-                    let channels = if d.nebula { 3 } else { 1 };
+                    let channels = rfr_core::render::density::channels(d) as u32;
                     let pixels = plan.frame.width * plan.frame.height;
                     let hist = device.create_buffer(&wgpu::BufferDescriptor {
                         label: Some("density counts"),
@@ -683,7 +683,7 @@ impl GpuRenderer {
                     uni.dens = d.region.map(|v| v as f32);
                     uni.densi = [d.mode.index(), d.min_iter, d.warmup, d.orbits.max(1)];
                     uni.densn = [d.nebula_iter[0], d.nebula_iter[1], d.nebula_iter[2], 0];
-                    uni.densx = [channels, rfr_core::render::density::max_iter(lp, d), d.nebula as u32, 0];
+                    uni.densx = [channels, rfr_core::render::density::max_iter(lp, d), (channels == 3) as u32, d.ifs.len() as u32];
                     uni.densb = [d.brightness as f32, d.gamma as f32, 0.0, 0.0];
                     let uniform = device.create_buffer(&wgpu::BufferDescriptor {
                         label: Some("density"),
@@ -694,6 +694,15 @@ impl GpuRenderer {
                     (hist, Some(DensityRes { uniform, orbits: d.orbits.max(1), pixels }))
                 }
                 None => (self.empty_rw.clone(), None),
+            };
+            // IFS mode: the maps take binding 6 (density layers have no linear steps).
+            let bla = match &lp.density {
+                Some(d) if d.mode == rfr_core::doc::DensityMode::Ifs => device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("ifs maps"),
+                    contents: bytemuck::cast_slice(&rfr_core::render::density::ifs_words(d)),
+                    usage: wgpu::BufferUsages::STORAGE,
+                }),
+                _ => bla,
             };
             let (params, lut) = match prev {
                 Some(r) => (r.params, r.lut),

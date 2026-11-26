@@ -2,6 +2,7 @@
 
 //! Files: documents (`.rfr`) and PNG images that carry their document.
 
+pub mod ifs;
 pub mod par;
 pub mod png;
 pub mod upr;
@@ -19,14 +20,19 @@ pub struct ImportedImage {
     pub notes: Vec<String>,
 }
 
-/// Whether `path` is a parameter file (`.upr` or `.par`).
+/// Whether `path` is a parameter file (`.upr`, `.par` or `.ifs`).
 pub fn is_parameter_file(path: &Path) -> bool {
-    path.extension().is_some_and(|e| e.eq_ignore_ascii_case("upr") || e.eq_ignore_ascii_case("par"))
+    path.extension().is_some_and(|e| ["upr", "par", "ifs"].iter().any(|x| e.eq_ignore_ascii_case(x)))
 }
 
-/// The images of a parameter file (`.upr` or `.par`).
+/// The images of a parameter file (`.upr`, `.par` or `.ifs`).
 pub fn read_parameter_file(path: &Path) -> Result<Vec<ImportedImage>, String> {
-    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("par")) { par::read(path) } else { upr::read(path) }
+    let ext = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    match ext.as_str() {
+        "par" => par::read(path),
+        "ifs" => ifs::read(path),
+        _ => upr::read(path),
+    }
 }
 
 /// Text of a file, Latin-1 when it is not UTF-8 (older parameter and formula files).

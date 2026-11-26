@@ -163,7 +163,7 @@ enum KernelF {
 impl Kernel {
     fn new(lp: &LayerPlan, plan: &Plan) -> Kernel {
         if let Some(d) = &lp.density {
-            let channels = if d.nebula { 3 } else { 1 };
+            let channels = density::channels(d);
             return Kernel::Density(Box::new(DensityK {
                 fractal: Compiled::new(&lp.fractal.program, &lp.fractal.values),
                 hist: density::Histogram::new(plan.frame.width, plan.frame.height, channels),

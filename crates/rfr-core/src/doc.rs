@@ -233,6 +233,145 @@ pub enum DensityMode {
     Captive,
     /// Every orbit from random starts in the region after a warm-up (strange attractors).
     Attractor,
+    /// The chaos game over the layer's affine maps (iterated function systems).
+    Ifs,
+}
+
+/// A nonlinear function applied after an IFS map's affine part (as in fractal flames).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Variation {
+    #[default]
+    Linear,
+    Sinusoidal,
+    Spherical,
+    Swirl,
+    Horseshoe,
+    Polar,
+    Handkerchief,
+    Heart,
+    Disc,
+    Spiral,
+}
+
+impl Variation {
+    pub const ALL: [Variation; 10] = [
+        Variation::Linear,
+        Variation::Sinusoidal,
+        Variation::Spherical,
+        Variation::Swirl,
+        Variation::Horseshoe,
+        Variation::Polar,
+        Variation::Handkerchief,
+        Variation::Heart,
+        Variation::Disc,
+        Variation::Spiral,
+    ];
+
+    pub fn index(self) -> u32 {
+        Variation::ALL.iter().position(|v| *v == self).unwrap_or(0) as u32
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Variation::Linear => "Linear",
+            Variation::Sinusoidal => "Sinusoidal",
+            Variation::Spherical => "Spherical",
+            Variation::Swirl => "Swirl",
+            Variation::Horseshoe => "Horseshoe",
+            Variation::Polar => "Polar",
+            Variation::Handkerchief => "Handkerchief",
+            Variation::Heart => "Heart",
+            Variation::Disc => "Disc",
+            Variation::Spiral => "Spiral",
+        }
+    }
+
+    /// The variation at (x, y) (`theta = atan2(x, y)` as in fractal flames).
+    pub fn apply(self, x: f64, y: f64) -> (f64, f64) {
+        let r2 = x * x + y * y;
+        let r = r2.sqrt();
+        let th = x.atan2(y);
+        let pi = std::f64::consts::PI;
+        match self {
+            Variation::Linear => (x, y),
+            Variation::Sinusoidal => (x.sin(), y.sin()),
+            Variation::Spherical => {
+                let k = 1.0 / (r2 + 1e-12);
+                (x * k, y * k)
+            }
+            Variation::Swirl => {
+                let (s, c) = r2.sin_cos();
+                (x * s - y * c, x * c + y * s)
+            }
+            Variation::Horseshoe => {
+                let k = 1.0 / (r + 1e-12);
+                ((x - y) * (x + y) * k, 2.0 * x * y * k)
+            }
+            Variation::Polar => (th / pi, r - 1.0),
+            Variation::Handkerchief => (r * (th + r).sin(), r * (th - r).cos()),
+            Variation::Heart => (r * (th * r).sin(), -r * (th * r).cos()),
+            Variation::Disc => (th / pi * (pi * r).sin(), th / pi * (pi * r).cos()),
+            Variation::Spiral => {
+                let k = 1.0 / (r + 1e-12);
+                (k * (th.cos() + r.sin()), k * (th.sin() - r.cos()))
+            }
+        }
+    }
+}
+
+/// One map of an iterated function system: `x' = a·x + b·y + e`, `y' = c·x + d·y + f` (the
+/// coefficients a…f in that order), then its variation; `weight` is its share of the steps.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct IfsMap {
+    pub coefs: [f64; 6],
+    pub weight: f64,
+    pub variation: Variation,
+}
+
+impl Default for IfsMap {
+    fn default() -> Self {
+        IfsMap { coefs: [0.5, 0.0, 0.0, 0.5, 0.0, 0.0], weight: 1.0, variation: Variation::Linear }
+    }
+}
+
+impl IfsMap {
+    pub fn new(coefs: [f64; 6], weight: f64) -> IfsMap {
+        IfsMap { coefs, weight, variation: Variation::Linear }
+    }
+
+    pub fn apply(&self, x: f64, y: f64) -> (f64, f64) {
+        let c = &self.coefs;
+        self.variation.apply(c[0] * x + c[1] * y + c[4], c[2] * x + c[3] * y + c[5])
+    }
+}
+
+/// Named iterated function systems for the inspector.
+pub fn ifs_presets() -> Vec<(&'static str, Vec<IfsMap>)> {
+    vec![
+        ("Sierpinski triangle", sierpinski()),
+        (
+            "Barnsley fern",
+            vec![
+                IfsMap::new([0.0, 0.0, 0.0, 0.16, 0.0, 0.0], 0.01),
+                IfsMap::new([0.85, 0.04, -0.04, 0.85, 0.0, 1.6], 0.85),
+                IfsMap::new([0.2, -0.26, 0.23, 0.22, 0.0, 1.6], 0.07),
+                IfsMap::new([-0.15, 0.28, 0.26, 0.24, 0.0, 0.44], 0.07),
+            ],
+        ),
+        ("Heighway dragon", vec![IfsMap::new([0.5, -0.5, 0.5, 0.5, 0.0, 0.0], 0.5), IfsMap::new([-0.5, -0.5, 0.5, -0.5, 1.0, 0.0], 0.5)]),
+        ("Lévy C curve", vec![IfsMap::new([0.5, -0.5, 0.5, 0.5, 0.0, 0.0], 0.5), IfsMap::new([0.5, 0.5, -0.5, 0.5, 0.5, 0.5], 0.5)]),
+    ]
+}
+
+/// The Sierpinski triangle (the default IFS).
+pub fn sierpinski() -> Vec<IfsMap> {
+    vec![
+        IfsMap::new([0.5, 0.0, 0.0, 0.5, -0.5, -0.5], 1.0),
+        IfsMap::new([0.5, 0.0, 0.0, 0.5, 0.5, -0.5], 1.0),
+        IfsMap::new([0.5, 0.0, 0.0, 0.5, 0.0, 0.5], 1.0),
+    ]
 }
 
 impl DensityMode {
@@ -241,6 +380,7 @@ impl DensityMode {
             DensityMode::Escaping => 0,
             DensityMode::Captive => 1,
             DensityMode::Attractor => 2,
+            DensityMode::Ifs => 3,
         }
     }
 }
@@ -264,6 +404,8 @@ pub struct Density {
     pub warmup: u32,
     pub brightness: f64,
     pub gamma: f64,
+    /// The maps of the IFS mode.
+    pub ifs: Vec<IfsMap>,
 }
 
 impl Default for Density {
@@ -278,6 +420,7 @@ impl Default for Density {
             warmup: 20,
             brightness: 1.0,
             gamma: 1.5,
+            ifs: sierpinski(),
         }
     }
 }

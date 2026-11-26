@@ -68,6 +68,29 @@ pub fn pixel_of(f: &ViewFrame, z: C64) -> Option<(u32, u32)> {
     if px >= 0.0 && py >= 0.0 && px < f.width as f64 && py < f.height as f64 { Some((px as u32, py as u32)) } else { None }
 }
 
+/// Count channels: 3 for a Nebulabrot (not in IFS mode), else 1.
+pub fn channels(d: &Density) -> usize {
+    if d.nebula && d.mode != DensityMode::Ifs { 3 } else { 1 }
+}
+
+/// The IFS maps for the GPU: per map (a, b, c, d) and (e, f, cumulative share of the steps,
+/// variation index).
+pub fn ifs_words(d: &Density) -> Vec<[f32; 4]> {
+    let total: f64 = d.ifs.iter().map(|m| m.weight.max(0.0)).sum();
+    let mut acc = 0.0;
+    let mut out = Vec::new();
+    for m in &d.ifs {
+        acc += m.weight.max(0.0);
+        let c = m.coefs;
+        out.push([c[0] as f32, c[1] as f32, c[2] as f32, c[3] as f32]);
+        out.push([c[4] as f32, c[5] as f32, if total > 0.0 { (acc / total) as f32 } else { 0.0 }, m.variation.index() as f32]);
+    }
+    if out.is_empty() {
+        out.push([0.0; 4]);
+    }
+    out
+}
+
 /// The iteration limit of the orbits (Nebulabrot: the largest channel limit).
 pub fn max_iter(lp: &LayerPlan, d: &Density) -> u32 {
     if d.nebula { d.nebula_iter.iter().copied().max().unwrap_or(1).max(1) } else { lp.max_iter }
@@ -98,7 +121,43 @@ impl Scatter<'_> {
     }
 }
 
+/// The chaos game: orbit `i` of the pass picks a map per step by weight (the same hashed random
+/// numbers as the GPU) and counts its points after the warm-up.
+fn ifs_orbit(s: &Scatter, i: u32) {
+    let d = s.density;
+    let total: f64 = d.ifs.iter().map(|m| m.weight.max(0.0)).sum();
+    if d.ifs.is_empty() || total <= 0.0 {
+        return;
+    }
+    let start = start_point(d, s.pass, i);
+    let (mut x, mut y) = (start.re, start.im);
+    let mut rnd = hash(i ^ hash(s.pass ^ 0xA511_E9B3));
+    let plane = (s.hist.width * s.hist.height) as usize;
+    for it in 0..s.lp.max_iter {
+        rnd = hash(rnd);
+        let u = rnd as f64 / 4294967296.0 * total;
+        let mut acc = 0.0;
+        let map = d.ifs.iter().find(|m| {
+            acc += m.weight.max(0.0);
+            u < acc
+        });
+        let m = map.unwrap_or(&d.ifs[d.ifs.len() - 1]);
+        (x, y) = m.apply(x, y);
+        if !(x.is_finite() && y.is_finite()) {
+            return;
+        }
+        if it >= d.warmup
+            && let Some((px, py)) = pixel_of(s.frame, C64::new(x, y))
+        {
+            s.hist.counts[(py * s.hist.width + px) as usize % plane].fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
 fn scatter_orbit(s: &Scatter, f: &mut Frame<f64>, i: u32) {
+    if s.density.mode == DensityMode::Ifs {
+        return ifs_orbit(s, i);
+    }
     let Scatter { fractal: k, lp, density: d, frame, hist, pass } = *s;
     let start = start_point(d, pass, i);
     let maxit = max_iter(lp, d);

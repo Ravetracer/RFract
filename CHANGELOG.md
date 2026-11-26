@@ -12,6 +12,8 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
   on the GPU and the CPU. New bundled family *Attractors* (Clifford, de Jong, Hopalong,
   Gumowski–Mira, Ikeda, Tinkerbell, Pickover, Lorenz, Rössler) and the gradients *Ember* and
   *Starlight*.
+- IFS density layers: the chaos game over affine maps with weights and variations (as in
+  fractal flames), presets, view fitting, FractInt `.ifs` import.
 - *Lyapunov* formula (Markus–Lyapunov sequences) with the *Lyapunov exponent* coloring;
   bundled formulas can suggest their coloring.
 - Fill and image layers (layer menu): solid fill, gradient fill (new *Gradient fill*
