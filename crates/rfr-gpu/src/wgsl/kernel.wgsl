@@ -31,6 +31,14 @@ struct Uni {
     blend: vec4<u32>,
     // opacity, unused…
     opacity: vec4<f32>,
+    // Perturbation: plane units per pixel (mantissa), view center minus reference point
+    // (complex floatexp parts), unused
+    pert: vec4<f32>,
+    // Perturbation: plane units per pixel (power of two), reference orbit length, the center
+    // offset's power of two, unused
+    perti: vec4<i32>,
+    // Perturbation: the reference point (f32), unused…
+    pref: vec4<f32>,
 }
 
 struct Params {
@@ -45,6 +53,8 @@ struct Params {
 // Images of image parameters (rfr_core::images::pack): per image a header (width, height,
 // pixel offset, original width << 16 | original height), then packed sRGB RGBA8 pixels.
 @group(0) @binding(4) var<storage, read> images: array<u32>;
+// The reference orbit of a deep zoom: the state variables per iteration (rfr_core RefOrbit).
+@group(0) @binding(5) var<storage, read> refo: array<vec2<f32>>;
 
 const LUT_SIZE: u32 = 1024u;
 //@RNG_DECL

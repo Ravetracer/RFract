@@ -678,9 +678,11 @@ impl App {
                 ui.ctx().request_repaint_after(Duration::from_secs(1));
             } else if self.viewport.hovered {
                 ui.label(
-                    RichText::new("Drag: move · Wheel: zoom · Shift/right-drag: box zoom · Ctrl-drag: rotate · Double-click: zoom in · Alt-click: Julia")
-                        .size(theme::fs(11.5))
-                        .color(theme::TEXT_MUTED),
+                    RichText::new(
+                        "Drag: move · Wheel: zoom · Shift/right-drag: box zoom · Ctrl-drag: rotate · Double-click: zoom in · Alt-click: Julia",
+                    )
+                    .size(theme::fs(11.5))
+                    .color(theme::TEXT_MUTED),
                 );
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -695,10 +697,13 @@ impl App {
                     ui.separator();
                     ui.label(small(&format!("{:.10}, {:.10}", h[0], h[1]))).on_hover_text("Plane coordinate under the cursor");
                 }
-                if self.viewport.beyond_precision() {
+                if self.viewport.beyond_precision() && !self.viewport.unperturbed.is_empty() {
                     ui.separator();
                     ui.label(RichText::new(format!("{} beyond double precision", icons::WARNING)).size(theme::fs(11.5)).color(theme::WARN))
-                        .on_hover_text("This view is deeper than double precision reaches (pixels below about 2e-15 of the coordinates): rounding steps show. Deeper zooms come with the deep zoom stage.");
+                        .on_hover_text(format!(
+                            "This view is deeper than double precision reaches. These layers cannot use perturbation and show rounding steps:\n{}",
+                            self.viewport.unperturbed.join("\n")
+                        ));
                 }
             });
         });

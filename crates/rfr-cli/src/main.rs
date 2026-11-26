@@ -120,7 +120,13 @@ fn render(args: &[String]) -> Result<(), String> {
     let t = Instant::now();
     let plan = rfr_core::render::Plan::sized(&doc, w, h)?;
     if plan.precision() == rfr_core::render::Precision::Beyond {
-        eprintln!("note: the view is deeper than double precision reaches; the CPU renders it by perturbation (--cpu)");
+        for lp in plan.layers() {
+            if let Err(e) = rfr_core::formula::perturb::Perturbation::new(&lp.fractal.program, &lp.fractal.values, !lp.julia, lp.seed) {
+                eprintln!("note: deeper than double precision; {} cannot use perturbation ({e}) and shows rounding steps", lp.fractal.id);
+            } else if !lp.transforms.is_empty() {
+                eprintln!("note: deeper than double precision; {} has transformations and shows rounding steps", lp.fractal.id);
+            }
+        }
     }
     let mut how = "on the CPU".to_string();
     let mut rgba = None;

@@ -44,6 +44,9 @@ pub struct Viewport {
     /// The view before switching to Julia mode (restored when switching back).
     mandel_view: Option<View>,
     precision: Option<Precision>,
+    /// Deep views: the formulas of layers that cannot be perturbed (and show rounding steps),
+    /// with the reason.
+    pub unperturbed: Vec<String>,
     /// Color cycling: the gradients turn in the view (the document keeps its offsets).
     pub cycling: bool,
     /// Gradient turns per second.
@@ -104,6 +107,7 @@ impl Viewport {
             picking_julia: false,
             mandel_view: None,
             precision: None,
+            unperturbed: Vec::new(),
             cycling: false,
             cycle_speed: 0.1,
             phase: 0.0,
@@ -126,6 +130,7 @@ impl Viewport {
             Some(Mode::Plain) => "f32",
             Some(Mode::Dual) => "f32 + derivatives",
             Some(Mode::Df64) => "double-float",
+            Some(Mode::Pert) => "perturbation",
             None => "",
         };
         let done = self.converged_after.map(|d| format!(" · done in {:.1} s", d.as_secs_f64())).unwrap_or_default();
@@ -317,6 +322,21 @@ impl Viewport {
                         plan.shift_colors(self.phase);
                     }
                     self.precision = Some(plan.precision());
+                    self.unperturbed = if plan.precision() == Precision::Beyond {
+                        plan.layers()
+                            .iter()
+                            .filter_map(|lp| {
+                                if !lp.transforms.is_empty() {
+                                    return Some(format!("{}: has transformations", lp.fractal.id));
+                                }
+                                rfr_core::formula::perturb::Perturbation::new(&lp.fractal.program, &lp.fractal.values, !lp.julia, lp.seed)
+                                    .err()
+                                    .map(|e| format!("{}: {e}", lp.fractal.id))
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
                     gpu.set_plan(&plan);
                     self.plan_error = None;
                 }

@@ -9,6 +9,7 @@ use std::fmt::Write;
 use std::hash::{Hash, Hasher};
 
 use rfr_core::formula::ir::*;
+use rfr_core::formula::perturb::{PE, Perturbation};
 use rfr_core::formula::{ParamKind, ParamValue};
 use rfr_core::render::{LayerPlan, Prog};
 
@@ -21,10 +22,13 @@ pub enum Mode {
     Dual,
     /// Double-float (two f32 per value, about 48 bits): deep views.
     Df64,
+    /// Perturbation against a reference orbit (deeper than double precision).
+    Pert,
 }
 
 const SCALAR_F32: &str = include_str!("wgsl/scalar_f32.wgsl");
 const SCALAR_DUAL: &str = include_str!("wgsl/scalar_dual.wgsl");
+const PERTURB: &str = include_str!("wgsl/perturb.wgsl");
 const SCALAR_DF64: &str = include_str!("wgsl/scalar_df64.wgsl");
 const CSTD: &str = include_str!("wgsl/cstd.wgsl");
 const KERNEL: &str = include_str!("wgsl/kernel.wgsl");
@@ -434,6 +438,149 @@ fn locals(g: &Gen, out: &mut String, pad: &str, first: Option<&str>) {
     }
 }
 
+/// The fractal of a layer lowered for perturbation (`None`: it cannot be perturbed).
+pub fn perturbation(lp: &LayerPlan) -> Option<Perturbation> {
+    if !lp.transforms.is_empty() {
+        return None;
+    }
+    Perturbation::new(&lp.fractal.program, &lp.fractal.values, !lp.julia, lp.seed).ok()
+}
+
+/// WGSL for perturbation expressions: reference values (`vec2<f32>`) and deltas (`Cf`) in
+/// temporaries (rfr_core::formula::perturb::Perturbation::eval_delta, step for step).
+struct PertGen {
+    out: String,
+    n: usize,
+    pad: &'static str,
+}
+
+impl PertGen {
+    fn tmp(&mut self, r: String, d: String) -> (String, String) {
+        self.n += 1;
+        let k = self.n;
+        let _ = writeln!(self.out, "{}let q{k}r = {r};", self.pad);
+        let _ = writeln!(self.out, "{}let q{k}d = {d};", self.pad);
+        (format!("q{k}r"), format!("q{k}d"))
+    }
+
+    fn expr(&mut self, e: &PE) -> (String, String) {
+        match e {
+            PE::Const(c) => (format!("vec2<f32>({}, {})", lit(c.re), lit(c.im)), "CF0".into()),
+            PE::Local(i) => (format!("pr{i}"), format!("pd{i}")),
+            PE::Pixel => ("pcen".into(), "dpix".into()),
+            PE::Add(a, b) => {
+                let ((ra, da), (rb, db)) = (self.expr(a), self.expr(b));
+                self.tmp(format!("{ra} + {rb}"), format!("cf_add({da}, {db})"))
+            }
+            PE::Sub(a, b) => {
+                let ((ra, da), (rb, db)) = (self.expr(a), self.expr(b));
+                self.tmp(format!("{ra} - {rb}"), format!("cf_sub({da}, {db})"))
+            }
+            PE::Mul(a, b) => {
+                let ((ra, da), (rb, db)) = (self.expr(a), self.expr(b));
+                self.tmp(
+                    format!("v2_mul({ra}, {rb})"),
+                    format!("cf_add(cf_add(cf_mul(cf_v2({ra}), {db}), cf_mul({da}, cf_v2({rb}))), cf_mul({da}, {db}))"),
+                )
+            }
+            PE::Div(a, b) => {
+                let ((ra, da), (rb, db)) = (self.expr(a), self.expr(b));
+                self.tmp(
+                    format!("v2_div({ra}, {rb})"),
+                    format!("cf_div(cf_sub(cf_mul({da}, cf_v2({rb})), cf_mul(cf_v2({ra}), {db})), cf_mul(cf_v2({rb}), cf_add(cf_v2({rb}), {db})))"),
+                )
+            }
+            PE::Neg(a) => {
+                let (r, d) = self.expr(a);
+                self.tmp(format!("-{r}"), format!("cf_neg({d})"))
+            }
+            PE::PowI(a, n) => {
+                let (r, d) = self.expr(a);
+                let (mut pr, mut pd) = (r.clone(), d.clone());
+                for _ in 1..*n {
+                    let next_d = format!("cf_add(cf_add(cf_mul(cf_v2({pr}), {d}), cf_mul({pd}, cf_v2({r}))), cf_mul({pd}, {d}))");
+                    (pr, pd) = self.tmp(format!("v2_mul({pr}, {r})"), next_d);
+                }
+                (pr, pd)
+            }
+            PE::Conj(a) => {
+                let (r, d) = self.expr(a);
+                self.tmp(format!("vec2<f32>({r}.x, -{r}.y)"), format!("cf_conj({d})"))
+            }
+            PE::Abs(a) => {
+                let (r, d) = self.expr(a);
+                self.tmp(format!("abs({r})"), format!("cf_absd({r}, {d})"))
+            }
+            PE::Re(a) => {
+                let (r, d) = self.expr(a);
+                self.tmp(format!("vec2<f32>({r}.x, 0.0)"), format!("cf_re({d})"))
+            }
+            PE::Im(a) => {
+                let (r, d) = self.expr(a);
+                self.tmp(format!("vec2<f32>({r}.y, 0.0)"), format!("cf_im({d})"))
+            }
+            PE::Flip(a) => {
+                let (r, d) = self.expr(a);
+                self.tmp(format!("{r}.yx"), format!("cf_flip({d})"))
+            }
+            PE::MakeC(a, b) => {
+                let ((ra, da), (rb, db)) = (self.expr(a), self.expr(b));
+                self.tmp(format!("vec2<f32>({ra}.x, {rb}.x)"), format!("cf_makec(cf_re({da}), cf_re({db}))"))
+            }
+        }
+    }
+
+    fn assign(&mut self, list: &[(usize, PE)]) {
+        for (i, e) in list {
+            let (r, d) = self.expr(e);
+            let _ = writeln!(self.out, "{}pr{i} = {r};", self.pad);
+            let _ = writeln!(self.out, "{}pd{i} = {d};", self.pad);
+        }
+    }
+}
+
+/// The fractal's init and loop by perturbation (rfr_core Perturbation::start, step and full):
+/// deltas iterate against the reference orbit in `refo`; the locals `l<i>` get the full values
+/// for the bailout, the colorings and `final`.
+fn pert_code(p: &Perturbation, prog: &Program, init: &mut String, body: &mut String) {
+    let ns = p.state.len();
+    let kz = p.state.iter().position(|&s| s == Z).unwrap_or(0);
+    let write_full = |out: &mut String, pad: &str| {
+        for (k, &s) in p.state.iter().enumerate() {
+            let _ = writeln!(out, "{pad}let f{s} = refo[pm * {ns}u + {k}u] + cf_f(pd{s});");
+            let v = if prog.locals[s].ty == Ty::Complex { format!("c_f(f{s}.x, f{s}.y)") } else { format!("s_c(f{s}.x)") };
+            let _ = writeln!(out, "{pad}l{s} = {v};");
+        }
+    };
+    let mut g = PertGen { out: String::new(), n: 0, pad: "        " };
+    for &s in &p.state {
+        let _ = writeln!(g.out, "        var pr{s} = vec2<f32>(0.0);\n        var pd{s} = CF0;");
+    }
+    g.assign(&p.init);
+    let _ = writeln!(g.out, "        var pm = 0u;\n        let plen = u32(max(U.perti.y, 1));");
+    write_full(&mut g.out, "        ");
+    *init = std::mem::take(&mut g.out);
+    g.pad = "            ";
+    for (k, &s) in p.state.iter().enumerate() {
+        let _ = writeln!(g.out, "            pr{s} = refo[pm * {ns}u + {k}u];");
+    }
+    g.assign(&p.body);
+    let _ = writeln!(g.out, "            pm = pm + 1u;");
+    let _ = writeln!(g.out, "            let fz = cf_add(cf_v2(refo[min(pm, plen - 1u) * {ns}u + {kz}u]), pd{});", Z);
+    let _ = writeln!(g.out, "            if pm + 1u >= plen || cf_lt(cf_norm(fz), cf_norm(pd{})) {{", Z);
+    let _ = writeln!(g.out, "                let at = min(pm, plen - 1u);");
+    for (k, &s) in p.state.iter().enumerate() {
+        let _ = writeln!(g.out, "                pd{s} = cf_sub(cf_add(cf_v2(refo[at * {ns}u + {k}u]), pd{s}), cf_v2(refo[{k}u]));");
+    }
+    let _ = writeln!(g.out, "                pm = 0u;\n            }}");
+    {
+        let mut w = String::new();
+        write_full(&mut w, "            ");
+        g.out.push_str(&w);
+    }
+    *body = g.out;
+}
+
 /// The complete kernel shader of a layer.
 pub fn kernel(lp: &LayerPlan, mode: Mode) -> String {
     fn gen_for<'a>(prog: &'a Prog, prefix: String, base: &mut usize, img: &mut usize) -> Gen<'a> {
@@ -473,15 +620,21 @@ pub fn kernel(lp: &LayerPlan, mode: Mode) -> String {
         locals(g, &mut loc, "        ", None);
     }
     let mut init = String::new();
-    fractal.stmts(&fractal.prog.init, &mut init, 2, &mut counter);
+    let mut body = String::new();
+    let pert = if mode == Mode::Pert { perturbation(lp) } else { None };
+    match &pert {
+        Some(p) => pert_code(p, &lp.fractal.program, &mut init, &mut body),
+        None => {
+            fractal.stmts(&fractal.prog.init, &mut init, 2, &mut counter);
+            fractal.stmts(&fractal.prog.body, &mut body, 3, &mut counter);
+        }
+    }
     let mut color_init = String::new();
     let mut color_loop = String::new();
     for g in outside.iter().chain(inside.iter()) {
         g.stmts(&g.prog.init, &mut color_init, 2, &mut counter);
         g.stmts(&g.prog.body, &mut color_loop, 3, &mut counter);
     }
-    let mut body = String::new();
-    fractal.stmts(&fractal.prog.body, &mut body, 3, &mut counter);
     let mut fin = String::new();
     fractal.stmts(&fractal.prog.fin, &mut fin, 2, &mut counter);
     let final_of = |g: &Option<Gen>, inside: bool, counter: &mut usize| -> String {
@@ -519,6 +672,15 @@ pub fn kernel(lp: &LayerPlan, mode: Mode) -> String {
                 .to_string()
         }
         Mode::Df64 => "    var pixel = Cx(dd_add(dd(U.view.x, U.lo.x), dd_f(off.x)), dd_add(dd(U.view.y, U.lo.y), dd_f(off.y)));".to_string(),
+        // The offset from the reference point in pixels, scaled with an extended exponent.
+        Mode::Pert => concat!(
+            "    let pxo = vec2<f32>(f32(x) + ju - w * 0.5, -(f32(y) + jv - h * 0.5));\n",
+            "    let pxr = vec2<f32>(pxo.x * U.rot.x - pxo.y * U.rot.y, pxo.x * U.rot.y + pxo.y * U.rot.x);\n",
+            "    let dpix = cf_add(cf_make(pxr.x * U.pert.x, pxr.y * U.pert.x, U.perti.x), cf_make(U.pert.y, U.pert.z, U.perti.z));\n",
+            "    let pcen = U.pref.xy;\n",
+            "    var pixel = c_f(pcen.x, pcen.y);"
+        )
+        .to_string(),
     };
     let mut mode_init = if mode == Mode::Df64 { "    dd_one = U.rot.w;\n".to_string() } else { String::new() };
     // One random stream per program (render::cpu seeds the same way).
@@ -548,6 +710,7 @@ pub fn kernel(lp: &LayerPlan, mode: Mode) -> String {
         .replace("//@IN_FINAL", in_final.trim_end());
     let scalar = match mode {
         Mode::Plain => SCALAR_F32,
+        Mode::Pert => &format!("{SCALAR_F32}\n{PERTURB}"),
         Mode::Dual => SCALAR_DUAL,
         Mode::Df64 => SCALAR_DF64,
     };
@@ -574,6 +737,10 @@ pub fn signature(lp: &LayerPlan, mode: Mode) -> u64 {
     lp.inside.formula().is_some().hash(&mut h);
     lp.transforms.len().hash(&mut h);
     mode.hash(&mut h);
+    // Perturbation code has the parameter values folded in.
+    if mode == Mode::Pert {
+        format!("{:?}", perturbation(lp)).hash(&mut h);
+    }
     h.finish()
 }
 

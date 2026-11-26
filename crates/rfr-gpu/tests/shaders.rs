@@ -33,9 +33,17 @@ fn every_library_program_gives_valid_wgsl() {
         }
     };
     let all = [Mode::Plain, Mode::Dual, Mode::Df64];
+    let mut perturbable = 0;
     for e in library().usable() {
-        check(&e.title, &Document::for_formula(&e.id), &all);
+        let doc = Document::for_formula(&e.id);
+        check(&e.title, &doc, &all);
+        // Deep zooms: the perturbation kernel of every formula that allows it.
+        if codegen::perturbation(&first_layer(&doc)).is_some() {
+            perturbable += 1;
+            check(&e.title, &doc, &[Mode::Pert]);
+        }
     }
+    assert!(perturbable >= 10, "only {perturbable} formulas can be perturbed");
     for e in library().colorings() {
         let mut d = Document::default();
         d.layers[0].outside_method = OutsideMethod::Formula;
@@ -52,6 +60,30 @@ fn every_library_program_gives_valid_wgsl() {
     }
     assert!(validate(&codegen::composite_shader()).is_ok(), "composite shader");
     assert!(failures.is_empty(), "{} shaders fail:\n{}", failures.len(), failures.iter().take(4).cloned().collect::<Vec<_>>().join("\n\n"));
+}
+
+/// Mean absolute difference of the 8 × 8 block averages of two 8-bit images (0..255): the
+/// structure, not the noise of single pixels in chaotic regions.
+fn block_diff(a: &[u8], b: &[u8], w: usize, h: usize) -> f64 {
+    let avg = |img: &[u8], bx: usize, by: usize, c: usize| {
+        let mut s = 0.0;
+        for y in by * 8..(by * 8 + 8).min(h) {
+            for x in bx * 8..(bx * 8 + 8).min(w) {
+                s += img[(y * w + x) * 4 + c] as f64;
+            }
+        }
+        s / 64.0
+    };
+    let (mut total, mut n) = (0.0, 0.0);
+    for by in 0..h / 8 {
+        for bx in 0..w / 8 {
+            for c in 0..3 {
+                total += (avg(a, bx, by, c) - avg(b, bx, by, c)).abs();
+                n += 1.0;
+            }
+        }
+    }
+    total / n
 }
 
 /// Mean absolute difference of two 8-bit images (0..255).
@@ -185,4 +217,46 @@ fn gpu_matches_the_cpu_renderer() {
         assert!(d < limit, "{name}: mean difference {d:.2} of 255\n{}", report.join("\n"));
     }
     eprintln!("{}", report.join("\n"));
+}
+
+#[test]
+fn gpu_perturbation_matches_the_cpu() {
+    let Ok(ctx) = rfr_gpu::GpuContext::new_headless() else {
+        eprintln!("no GPU: skipped");
+        return;
+    };
+    // 1e-22 on the seahorse spiral: far below double precision; both renderers perturb.
+    let mut d = Document::for_formula("rfract:Mandelbrot");
+    d.view.center = ["-0.743643887037158704752191506114774".into(), "0.131825904205311970493132056385139".into()];
+    d.view.radius = rfr_core::math::fx::Fx::parse("1e-22").unwrap();
+    d.layers[0].max_iter = 12000;
+    let (w, h, s) = (80, 48, 2);
+    let plan = Plan::sized(&d, w, h).unwrap();
+    assert_eq!(rfr_gpu::renderer::renderer_mode(&plan), Mode::Pert);
+    let cpu = rfr_core::render::cpu::render(&d, w, h, s).unwrap().rgba8();
+    let gpu = rfr_core::render::cpu::rgba8(&rfr_gpu::render_blocking(ctx, &plan, s, |_| true).unwrap());
+    assert!(cpu.chunks(4).any(|p| p[0] > 100) && cpu.chunks(4).any(|p| p[0] < 30), "the view shows structure");
+    let diff = block_diff(&cpu, &gpu, w as usize, h as usize);
+    assert!(diff < 4.0, "perturbation: block difference {diff:.2} of 255");
+
+    // Moving the view keeps the reference orbit (the samples add the offset); the image
+    // matches a render with a fresh orbit at the new center.
+    let mut moved = d.clone();
+    moved.view.pan([0.6, -0.4]);
+    moved.view.radius *= 0.8;
+    let plan2 = Plan::sized(&moved, w, h).unwrap();
+    let ctx2 = rfr_gpu::GpuContext::new_headless().unwrap();
+    let mut r = rfr_gpu::renderer::GpuRenderer::new(ctx2.clone());
+    r.set_band_target(std::time::Duration::from_millis(40));
+    for p in [&plan, &plan2] {
+        r.set_plan(p);
+        r.wait_for_pipeline().unwrap();
+        while r.samples() < s {
+            r.work(std::time::Duration::from_millis(200), s);
+        }
+    }
+    let reused = rfr_core::render::cpu::rgba8(&r.read_linear().unwrap());
+    let fresh = rfr_core::render::cpu::rgba8(&rfr_gpu::render_blocking(ctx2, &plan2, s, |_| true).unwrap());
+    let diff = block_diff(&reused, &fresh, w as usize, h as usize);
+    assert!(diff < 3.0, "reused reference orbit: block difference {diff:.2} of 255");
 }

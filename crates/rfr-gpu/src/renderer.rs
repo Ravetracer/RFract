@@ -77,6 +77,9 @@ struct Uni {
     lo: [f32; 4],
     blend: [u32; 4],
     opacity: [f32; 4],
+    pert: [f32; 4],
+    perti: [i32; 4],
+    pref: [f32; 4],
 }
 
 /// Compositing uniforms (composite.wgsl `Op`).
@@ -106,6 +109,7 @@ pub fn layer_mode(plan: &Plan, lp: &LayerPlan) -> Mode {
     match plan.precision() {
         Precision::Single if lp.needs_derivative() => Mode::Dual,
         Precision::Single => Mode::Plain,
+        Precision::Beyond if codegen::perturbation(lp).is_some() => Mode::Pert,
         _ => Mode::Df64,
     }
 }
@@ -113,7 +117,9 @@ pub fn layer_mode(plan: &Plan, lp: &LayerPlan) -> Mode {
 /// The mode of the plan's most demanding layer (status display, tests).
 pub fn renderer_mode(plan: &Plan) -> Mode {
     let modes: Vec<Mode> = plan.layers().iter().map(|l| layer_mode(plan, l)).collect();
-    if modes.contains(&Mode::Df64) {
+    if modes.contains(&Mode::Pert) {
+        Mode::Pert
+    } else if modes.contains(&Mode::Df64) {
         Mode::Df64
     } else if modes.contains(&Mode::Dual) {
         Mode::Dual
@@ -139,6 +145,9 @@ fn layer_uni(plan: &Plan, lp: &LayerPlan) -> Uni {
         lo: [(f.center[0] - f.center[0] as f32 as f64) as f32, (f.center[1] - f.center[1] as f32 as f64) as f32, 0.0, 0.0],
         blend: [0; 4],
         opacity: [1.0, 0.0, 0.0, 0.0],
+        pert: [0.0; 4],
+        perti: [0; 4],
+        pref: [0.0; 4],
     }
 }
 
@@ -245,7 +254,22 @@ struct LayerRes {
     /// The layer's images (`rfr_core::images::pack`) and what they were made from.
     images: wgpu::Buffer,
     image_src: Vec<Option<Arc<rfr_core::images::ImageData>>>,
+    /// The reference orbit of a deep zoom (binding 5) and what it was computed for.
+    orbit: wgpu::Buffer,
+    orbit_key: u64,
+    orbit_ref: Option<OrbitRef>,
     uni: Uni,
+}
+
+/// Where a reference orbit was computed.
+#[derive(Clone)]
+struct OrbitRef {
+    /// The reference point (decimal text).
+    point: [String; 2],
+    bits: usize,
+    len: i32,
+    /// The reference point as `f32`.
+    center: [f32; 2],
 }
 
 /// GPU resources of one operation.
@@ -302,6 +326,7 @@ impl GpuRenderer {
                 entry(2, buffer(wgpu::BufferBindingType::Storage { read_only: true })),
                 entry(3, buffer(wgpu::BufferBindingType::Storage { read_only: false })),
                 entry(4, buffer(wgpu::BufferBindingType::Storage { read_only: true })),
+                entry(5, buffer(wgpu::BufferBindingType::Storage { read_only: true })),
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -436,6 +461,69 @@ impl GpuRenderer {
                     })
                 }
             };
+            // Deep zooms: the reference orbit, computed again only when the view, the
+            // iterations or the formula change.
+            let mut uni = layer_uni(plan, lp);
+            let pert = if mode == Mode::Pert { codegen::perturbation(lp) } else { None };
+            let orbit_key = pert.as_ref().map_or(0, |p| {
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                use std::hash::{Hash, Hasher};
+                lp.max_iter.hash(&mut h);
+                format!("{p:?}").hash(&mut h);
+                signature.hash(&mut h);
+                h.finish()
+            });
+            // The reference is kept while it stays near the view and precise enough for its
+            // depth (navigation does not wait for a new orbit); samples add the view center's
+            // offset from it.
+            let need_bits = rfr_core::math::big::bits_for(plan.frame.pixel_size_fx());
+            let reusable = |r: &LayerRes| -> Option<[rfr_core::math::fx::Fx; 2]> {
+                let o = r.orbit_ref.as_ref()?;
+                if r.orbit_key != orbit_key || o.bits < need_bits {
+                    return None;
+                }
+                let bits = need_bits + 64;
+                let off = [0, 1].map(|k| {
+                    let d = rfr_core::math::big::parse(&plan.center_text[k], bits) - rfr_core::math::big::parse(&o.point[k], bits);
+                    rfr_core::math::big::to_fx(&d)
+                });
+                let reach = plan.frame.radius_fx * 4.0;
+                (off[0].abs() <= reach && off[1].abs() <= reach).then_some(off)
+            };
+            let (orbit, orbit_ref, off) = match (&prev, &pert) {
+                (Some(r), Some(_)) if let Some(off) = reusable(r) => (r.orbit.clone(), r.orbit_ref.clone(), off),
+                (_, Some(p)) => {
+                    let k = rfr_core::formula::cpu::Compiled::<f64>::new(&lp.fractal.program, &lp.fractal.values);
+                    // A margin of bits: zooming in reuses the orbit for a while.
+                    let bits = need_bits + 128;
+                    let o = k.reference_orbit(p, &plan.center_text, bits, lp.max_iter);
+                    let data: Vec<[f32; 2]> = o.values.iter().map(|c| [c.re as f32, c.im as f32]).collect();
+                    let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("reference orbit"),
+                        contents: bytemuck::cast_slice(&data),
+                        usage: wgpu::BufferUsages::STORAGE,
+                    });
+                    let info =
+                        OrbitRef { point: plan.center_text.clone(), bits, len: o.len as i32, center: [o.center.re as f32, o.center.im as f32] };
+                    (buf, Some(info), [rfr_core::math::fx::Fx::ZERO; 2])
+                }
+                _ => (
+                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("reference orbit"),
+                        contents: bytemuck::cast_slice(&[0f32; 4]),
+                        usage: wgpu::BufferUsages::STORAGE,
+                    }),
+                    None,
+                    [rfr_core::math::fx::Fx::ZERO; 2],
+                ),
+            };
+            if let Some(o) = &orbit_ref {
+                let s = plan.frame.radius_fx / (plan.frame.height as f64 * 0.5);
+                let off = rfr_core::math::fx::Cfx::from_fx(off[0], off[1]);
+                uni.pert = [s.m as f32, off.re as f32, off.im as f32, 0.0];
+                uni.perti = [s.e, o.len, off.e, 0];
+                uni.pref = [o.center[0], o.center[1], 0.0, 0.0];
+            }
             let (params, lut) = match prev {
                 Some(r) => (r.params, r.lut),
                 None => (
@@ -458,7 +546,7 @@ impl GpuRenderer {
             l.extend_from_slice(&lp.inside.lut);
             self.ctx.queue.write_buffer(&lut, 0, bytemuck::cast_slice(&l));
             self.request_pipeline(signature, lp, mode);
-            res.push(LayerRes { signature, params, lut, images, image_src, uni: layer_uni(plan, lp) });
+            res.push(LayerRes { signature, params, lut, images, image_src, orbit, orbit_key, orbit_ref, uni });
         }
         self.layers = res;
         let (ops, slots) = schedule(plan);
@@ -613,6 +701,7 @@ impl GpuRenderer {
                             wgpu::BindGroupEntry { binding: 2, resource: l.lut.as_entire_binding() },
                             wgpu::BindGroupEntry { binding: 3, resource: scratch.as_entire_binding() },
                             wgpu::BindGroupEntry { binding: 4, resource: l.images.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 5, resource: l.orbit.as_entire_binding() },
                         ],
                     });
                     steps.push((p, bind));
