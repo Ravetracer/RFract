@@ -3,25 +3,20 @@
 The stages and their scope are in PLAN.md. This file holds the next concrete steps and wishes
 that come up along the way.
 
-## Stage 3b – UFM classes
+## Stage 3b – UFM classes (done, v0.4.1)
 
-- [x] Classes, inheritance, methods, static and base calls, fields, object parameters
-      (plugins) with nested parameters, casts; compiled into plain IR (GPU and CPU).
-- [x] RFract's standard classes (`formulas/rfract/standard.ulb`) on top of `common.ulb`.
-- [x] Arrays of objects, objects made in counting loops (unrolled), elements picked at run time.
-- [x] Objects chosen at run time (tag per object variable): conditions, indexes from
-      parameters, returns from branches.
-- [x] Object arrays sized by a parameter with a maximum (`new VectorArray(@nlight)`), loops
-      up to it unrolled with a run-time guard.
-- Not planned for now: loops that change which object a variable refers to (no entry in the
-  database needs it), object lists of the ray tracers (`new SphereArray(50000000)`).
-- [x] Assignments inside expressions (`Cast(a[10] = new @f(this))`, `abs(r = random(r))`).
-- [x] More standard classes (orbit traps, direct orbit traps, trap mode, trap shapes,
-      default, exponential smoothing, distance estimator, height transfer).
-- [x] Image parameters (`Image` class, `getColor`/`getPixel`/…), the *Image* coloring.
-- [x] Arithmetic on colors (channel by channel).
-- [x] User functions outside classes (formula functions).
-- [x] Copying whole arrays (`complex points[n] = startpts`).
+- Classes, inheritance, methods, static and base calls, fields, object parameters (plugins)
+  with nested parameters, casts, compiled into plain IR (GPU and CPU); arrays of objects,
+  counting loops unrolled (also up to a parameter's maximum), objects chosen at run time
+  (tags), image parameters and the *Image* coloring, arithmetic on colors, assignments inside
+  expressions, formula functions, array copies, RFract's standard classes on top of
+  `common.ulb` (formulas, colorings, orbit traps, trap shapes, transfers).
+- Local database (default plugins): 97.9 % of all entries compile and render (was 97.3 %);
+  class colorings 65 of 80 (was 35), class fractal formulas 43 of 48 (was 36); classic
+  fractal formulas 98.9 %, colorings 90.4 %, transformations 97.9 %.
+- Open: `#skew`, `#calculationpurpose`, `srand`, image-sized arrays (whole-image
+  accumulation), class libraries that are not in the database (`JLB_SwitchCombo`, …), the
+  ray tracers' huge object lists, loops that change which object a variable refers to.
 - [ ] Optional: Cranelift JIT for the CPU path.
 
 ## Done in stage 3 (v0.4.0)
