@@ -135,7 +135,8 @@ impl Viewport {
         };
         let done = self.converged_after.map(|d| format!(" · done in {:.1} s", d.as_secs_f64())).unwrap_or_default();
         let compiling = if g.compiling() { " · compiling shader…" } else { "" };
-        format!("{} × {} · {} spp · {mode}{done}{compiling}", self.render_size.0, self.render_size.1, g.samples())
+        let orbit = if g.orbit_pending() { " · reference orbit…" } else { "" };
+        format!("{} × {} · {} spp · {mode}{done}{compiling}{orbit}", self.render_size.0, self.render_size.1, g.samples())
     }
 
     /// The view is deeper than double precision reaches.

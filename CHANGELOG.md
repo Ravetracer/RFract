@@ -19,6 +19,9 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
 - Bilinear approximation (BLA) for deep zooms: linear steps derived from the formula skip
   hundreds to thousands of iterations where the difference to the reference stays small
   (about 20× faster at 1e-30 with 50 000 iterations).
+- New reference orbits are computed in the background while the old one keeps rendering
+  (status bar: *reference orbit…*); a reference shorter than the iteration limit stays usable
+  (rebasing), so changing the iterations does not wait either.
 
 ## [0.4.1] - 2026-11-26
 

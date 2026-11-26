@@ -51,7 +51,9 @@ Beyond double precision RFract renders by **perturbation**: one reference orbit 
 center is computed with as many digits as the depth needs, and every pixel follows only its
 small difference to it, with numbers whose exponent goes far beyond 10⁻³⁰⁸. There is no
 depth limit: views at 10⁻¹⁰⁰⁰ work like any other. While you navigate, the reference orbit
-stays the same as long as it is near and precise enough, so zooming does not wait for it.
+stays the same as long as it is near and precise enough, so zooming does not wait for it;
+when you move far away, a new one is computed in the background (the status bar shows
+*reference orbit…*) while the old one keeps rendering.
 
 Deep views need many iterations: raise *Iterations* until the black regions show detail (the
 center of a spiral often needs tens of thousands). Most of them are skipped: where the

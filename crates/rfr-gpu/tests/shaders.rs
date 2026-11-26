@@ -256,7 +256,28 @@ fn gpu_perturbation_matches_the_cpu() {
         }
     }
     let reused = rfr_core::render::cpu::rgba8(&r.read_linear().unwrap());
-    let fresh = rfr_core::render::cpu::rgba8(&rfr_gpu::render_blocking(ctx2, &plan2, s, |_| true).unwrap());
+    let fresh = rfr_core::render::cpu::rgba8(&rfr_gpu::render_blocking(ctx2.clone(), &plan2, s, |_| true).unwrap());
     let diff = block_diff(&reused, &fresh, w as usize, h as usize);
     assert!(diff < 3.0, "reused reference orbit: block difference {diff:.2} of 255");
+
+    // Far away: a new orbit computes in the background; once it is there the image matches a
+    // fresh render.
+    let mut far = moved.clone();
+    far.view.pan([10.0, 6.0]);
+    let plan3 = Plan::sized(&far, w, h).unwrap();
+    r.set_plan(&plan3);
+    assert!(r.orbit_pending(), "a new reference orbit is computing");
+    let t = std::time::Instant::now();
+    while r.orbit_pending() && t.elapsed() < std::time::Duration::from_secs(20) {
+        r.work(std::time::Duration::from_millis(50), s);
+    }
+    assert!(!r.orbit_pending());
+    r.wait_for_pipeline().unwrap();
+    while r.samples() < s {
+        r.work(std::time::Duration::from_millis(200), s);
+    }
+    let after = rfr_core::render::cpu::rgba8(&r.read_linear().unwrap());
+    let fresh = rfr_core::render::cpu::rgba8(&rfr_gpu::render_blocking(ctx2, &plan3, s, |_| true).unwrap());
+    let diff = block_diff(&after, &fresh, w as usize, h as usize);
+    assert!(diff < 3.0, "background reference orbit: block difference {diff:.2} of 255");
 }

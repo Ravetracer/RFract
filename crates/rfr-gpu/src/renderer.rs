@@ -254,16 +254,84 @@ struct LayerRes {
     /// The layer's images (`rfr_core::images::pack`) and what they were made from.
     images: wgpu::Buffer,
     image_src: Vec<Option<Arc<rfr_core::images::ImageData>>>,
-    /// The reference orbit of a deep zoom (binding 5) and what it was computed for.
+    /// The reference orbit of a deep zoom (binding 5).
     orbit: wgpu::Buffer,
-    orbit_key: u64,
-    orbit_ref: Option<OrbitRef>,
-    /// Linear steps of the reference orbit (binding 6), the largest |δc| they allow and their
-    /// level count (0: none).
+    /// Linear steps of the reference orbit (binding 6).
+    bla: wgpu::Buffer,
+    orbit_state: Option<OrbitState>,
+    orbit_job: Option<OrbitJob>,
+    uni: Uni,
+}
+
+/// A reference orbit on the GPU and where it was computed.
+struct OrbitState {
+    key: u64,
+    orbit: Arc<rfr_core::formula::perturb::RefOrbit>,
+    /// The reference point (decimal text), its precision and iteration limit.
+    point: [String; 2],
+    bits: usize,
+    maxit: u32,
+    buf: wgpu::Buffer,
+    /// Linear steps, the largest |δc| they allow and their level count (0: none).
     bla: wgpu::Buffer,
     bla_dc: rfr_core::math::fx::Fx,
     bla_levels: i32,
-    uni: Uni,
+}
+
+impl OrbitState {
+    fn new(
+        device: &wgpu::Device,
+        key: u64,
+        orbit: Arc<rfr_core::formula::perturb::RefOrbit>,
+        point: [String; 2],
+        bits: usize,
+        maxit: u32,
+    ) -> OrbitState {
+        let data: Vec<[f32; 2]> = orbit.values.iter().map(|c| [c.re as f32, c.im as f32]).collect();
+        let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("reference orbit"),
+            contents: bytemuck::cast_slice(&data),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        OrbitState { key, orbit, point, bits, maxit, buf, bla: empty_storage(device), bla_dc: rfr_core::math::fx::Fx::ZERO, bla_levels: 0 }
+    }
+}
+
+/// A reference orbit being computed in the background.
+struct OrbitJob {
+    key: u64,
+    point: [String; 2],
+    bits: usize,
+    maxit: u32,
+    rx: Receiver<Arc<rfr_core::formula::perturb::RefOrbit>>,
+    done: Option<Arc<rfr_core::formula::perturb::RefOrbit>>,
+}
+
+impl OrbitJob {
+    fn start(key: u64, lp: &LayerPlan, pert: rfr_core::formula::perturb::Perturbation, point: [String; 2], bits: usize) -> OrbitJob {
+        let (tx, rx) = channel();
+        let (program, values, maxit) = (lp.fractal.program.clone(), lp.fractal.values.clone(), lp.max_iter);
+        let at = point.clone();
+        std::thread::spawn(move || {
+            let k = rfr_core::formula::cpu::Compiled::<f64>::new(&program, &values);
+            let _ = tx.send(Arc::new(k.reference_orbit(&pert, &at, bits, maxit)));
+        });
+        OrbitJob { key, point, bits, maxit, rx, done: None }
+    }
+}
+
+/// The view center minus `point` (decimal text), as floatexp.
+fn offset_fx(plan: &Plan, point: &[String; 2], bits: usize) -> [rfr_core::math::fx::Fx; 2] {
+    [0, 1].map(|k| {
+        let d = rfr_core::math::big::parse(&plan.center_text[k], bits) - rfr_core::math::big::parse(&point[k], bits);
+        rfr_core::math::big::to_fx(&d)
+    })
+}
+
+/// Whether `point` lies within `reach` of the view center (both axes).
+fn offset_within(plan: &Plan, point: &[String; 2], reach: rfr_core::math::fx::Fx) -> bool {
+    let bits = rfr_core::math::big::bits_for(plan.frame.pixel_size_fx()) + 64;
+    offset_fx(plan, point, bits).iter().all(|o| o.abs() <= reach)
 }
 
 /// A small storage buffer for bindings a layer does not use.
@@ -287,17 +355,6 @@ fn pack_bla(t: &rfr_core::formula::perturb::BlaTable) -> Vec<[f32; 4]> {
         }
     }
     out
-}
-
-/// Where a reference orbit was computed.
-#[derive(Clone)]
-struct OrbitRef {
-    /// The reference point (decimal text).
-    point: [String; 2],
-    bits: usize,
-    len: i32,
-    /// The reference point as `f32`.
-    center: [f32; 2],
 }
 
 /// GPU resources of one operation.
@@ -336,6 +393,10 @@ pub struct GpuRenderer {
     dirty_display: bool,
     generation: u64,
     ready: bool,
+    /// A small storage buffer for bindings a layer does not use.
+    empty: wgpu::Buffer,
+    /// The plan last set (installs reference orbits finished in the background).
+    last_plan: Option<Plan>,
 }
 
 /// Most bytes of scratch slots (the band height is limited by it).
@@ -404,8 +465,16 @@ impl GpuRenderer {
             dirty_display: false,
             generation: 0,
             ready: false,
+            empty: empty_storage(device),
+            last_plan: None,
             ctx,
         }
+    }
+
+    /// A reference orbit of a deep zoom is being computed in the background (the view renders
+    /// with the previous one meanwhile).
+    pub fn orbit_pending(&self) -> bool {
+        self.layers.iter().any(|l| l.orbit_job.is_some())
     }
 
     pub fn context(&self) -> &GpuContext {
@@ -442,6 +511,7 @@ impl GpuRenderer {
     /// Sets what to render. Restarts the accumulation; compiles shaders (in the background) only
     /// for layers whose programs or modes changed.
     pub fn set_plan(&mut self, plan: &Plan) {
+        self.last_plan = Some(plan.clone());
         let device = self.ctx.device.clone();
         let layers = plan.layers();
         self.plan_mode = Some(renderer_mode(plan));
@@ -454,7 +524,7 @@ impl GpuRenderer {
             if codegen::param_programs(lp).iter().map(|p| p.program.params.len()).sum::<usize>() > MAX_PARAMS {
                 self.error = Some(format!("{}: too many parameters for one layer", lp.fractal.id));
             }
-            let prev = old.next();
+            let mut prev = old.next();
             // Images: uploaded again only when they change (they can be large).
             let image_src: Vec<_> = codegen::layer_images(lp)
                 .into_iter()
@@ -490,100 +560,79 @@ impl GpuRenderer {
                     })
                 }
             };
-            // Deep zooms: the reference orbit, computed again only when the view, the
-            // iterations or the formula change.
+            // Deep zooms: the reference orbit. It is kept while it stays near the view and
+            // precise enough (samples add the center's offset from it); a new one is computed in
+            // the background while the old one keeps rendering.
             let mut uni = layer_uni(plan, lp);
             let pert = if mode == Mode::Pert { codegen::perturbation(lp) } else { None };
             let orbit_key = pert.as_ref().map_or(0, |p| {
                 let mut h = std::collections::hash_map::DefaultHasher::new();
                 use std::hash::{Hash, Hasher};
-                lp.max_iter.hash(&mut h);
                 format!("{p:?}").hash(&mut h);
                 signature.hash(&mut h);
                 h.finish()
             });
-            // The reference is kept while it stays near the view and precise enough for its
-            // depth (navigation does not wait for a new orbit); samples add the view center's
-            // offset from it.
-            let need_bits = rfr_core::math::big::bits_for(plan.frame.pixel_size_fx());
-            let reusable = |r: &LayerRes| -> Option<[rfr_core::math::fx::Fx; 2]> {
-                let o = r.orbit_ref.as_ref()?;
-                if r.orbit_key != orbit_key || o.bits < need_bits {
-                    return None;
+            let mut state = prev.as_mut().and_then(|r| r.orbit_state.take()).filter(|s| s.key == orbit_key);
+            let mut job = prev.as_mut().and_then(|r| r.orbit_job.take()).filter(|j| j.key == orbit_key);
+            if let Some(p) = &pert {
+                let need_bits = rfr_core::math::big::bits_for(plan.frame.pixel_size_fx());
+                if let Some(o) = job.as_mut().and_then(|j| j.done.take()) {
+                    let j = job.take().unwrap();
+                    state = Some(OrbitState::new(&device, orbit_key, o, j.point, j.bits, j.maxit));
                 }
-                let bits = need_bits + 64;
-                let off = [0, 1].map(|k| {
-                    let d = rfr_core::math::big::parse(&plan.center_text[k], bits) - rfr_core::math::big::parse(&o.point[k], bits);
-                    rfr_core::math::big::to_fx(&d)
-                });
-                let reach = plan.frame.radius_fx * 4.0;
-                (off[0].abs() <= reach && off[1].abs() <= reach).then_some(off)
-            };
-            let (orbit, orbit_ref, off, fresh) = match (&prev, &pert) {
-                (Some(r), Some(_)) if let Some(off) = reusable(r) => (r.orbit.clone(), r.orbit_ref.clone(), off, None),
-                (_, Some(p)) => {
-                    let k = rfr_core::formula::cpu::Compiled::<f64>::new(&lp.fractal.program, &lp.fractal.values);
-                    // A margin of bits: zooming in reuses the orbit for a while.
-                    let bits = need_bits + 128;
-                    let o = k.reference_orbit(p, &plan.center_text, bits, lp.max_iter);
-                    let data: Vec<[f32; 2]> = o.values.iter().map(|c| [c.re as f32, c.im as f32]).collect();
-                    let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("reference orbit"),
-                        contents: bytemuck::cast_slice(&data),
-                        usage: wgpu::BufferUsages::STORAGE,
-                    });
-                    let info =
-                        OrbitRef { point: plan.center_text.clone(), bits, len: o.len as i32, center: [o.center.re as f32, o.center.im as f32] };
-                    (buf, Some(info), [rfr_core::math::fx::Fx::ZERO; 2], Some(o))
-                }
-                _ => (
-                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("reference orbit"),
-                        contents: bytemuck::cast_slice(&[0f32; 4]),
-                        usage: wgpu::BufferUsages::STORAGE,
-                    }),
-                    None,
-                    [rfr_core::math::fx::Fx::ZERO; 2],
-                    None,
-                ),
-            };
-            // Linear steps: built for the largest |δc| the reference can still see (the view and
-            // its reach), so navigating near it keeps them.
-            let need_dc = plan.frame.max_offset_fx() + off[0].abs() + off[1].abs();
-            let want_bla = pert.as_ref().is_some_and(|p| p.bla_possible() && !lp.coloring_loops());
-            let (bla, bla_dc, bla_levels) = match (&prev, want_bla) {
-                (Some(r), true) if fresh.is_none() && r.bla_levels > 0 && need_dc <= r.bla_dc => (r.bla.clone(), r.bla_dc, r.bla_levels),
-                (_, true) => {
-                    let dc = plan.frame.max_offset_fx() * 1.5 + plan.frame.radius_fx * 6.0;
-                    let p = pert.as_ref().unwrap();
-                    // The orbit just computed, or the kept one again (the view grew past its steps).
-                    let o = fresh.unwrap_or_else(|| {
-                        let k = rfr_core::formula::cpu::Compiled::<f64>::new(&lp.fractal.program, &lp.fractal.values);
-                        let r = orbit_ref.as_ref().unwrap();
-                        k.reference_orbit(p, &r.point, r.bits, lp.max_iter)
-                    });
-                    match p.bla_table(&o, dc, rfr_core::formula::perturb::BLA_EPS_GPU) {
-                        Some(t) => {
-                            let words = pack_bla(&t);
-                            let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                                label: Some("bla"),
-                                contents: bytemuck::cast_slice(&words),
-                                usage: wgpu::BufferUsages::STORAGE,
-                            });
-                            (buf, dc, t.levels.len() as i32)
+                let near = |point: &[String; 2], bits: usize| bits >= need_bits && offset_within(plan, point, plan.frame.radius_fx * 4.0);
+                let st = match state.take() {
+                    Some(s) => {
+                        let good = near(&s.point, s.bits) && (s.maxit >= lp.max_iter || s.orbit.len <= s.maxit as usize);
+                        if good {
+                            job = None;
+                        } else if !job.as_ref().is_some_and(|j| near(&j.point, j.bits) && j.maxit >= lp.max_iter) {
+                            job = Some(OrbitJob::start(orbit_key, lp, p.clone(), plan.center_text.clone(), need_bits + 128));
                         }
-                        None => (empty_storage(&device), rfr_core::math::fx::Fx::ZERO, 0),
+                        s
                     }
+                    // The first orbit of a layer: computed right away.
+                    None => {
+                        let k = rfr_core::formula::cpu::Compiled::<f64>::new(&lp.fractal.program, &lp.fractal.values);
+                        let o = k.reference_orbit(p, &plan.center_text, need_bits + 128, lp.max_iter);
+                        OrbitState::new(&device, orbit_key, Arc::new(o), plan.center_text.clone(), need_bits + 128, lp.max_iter)
+                    }
+                };
+                let off = offset_fx(plan, &st.point, st.bits.max(need_bits) + 64);
+                // Linear steps: built for the largest |δc| the reference can still see (the
+                // view and its reach), so navigating near it keeps them.
+                let mut st = st;
+                if p.bla_possible() && !lp.coloring_loops() {
+                    let need_dc = plan.frame.max_offset_fx() + off[0].abs() + off[1].abs();
+                    if st.bla_levels == 0 || need_dc > st.bla_dc {
+                        let dc = need_dc * 1.5 + plan.frame.radius_fx * 6.0;
+                        match p.bla_table(&st.orbit, dc, rfr_core::formula::perturb::BLA_EPS_GPU) {
+                            Some(t) => {
+                                st.bla = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                    label: Some("bla"),
+                                    contents: bytemuck::cast_slice(&pack_bla(&t)),
+                                    usage: wgpu::BufferUsages::STORAGE,
+                                });
+                                st.bla_dc = dc;
+                                st.bla_levels = t.levels.len() as i32;
+                            }
+                            None => st.bla_levels = 0,
+                        }
+                    }
+                } else {
+                    st.bla_levels = 0;
                 }
-                _ => (empty_storage(&device), rfr_core::math::fx::Fx::ZERO, 0),
-            };
-            if let Some(o) = &orbit_ref {
                 let s = plan.frame.radius_fx / (plan.frame.height as f64 * 0.5);
                 let off = rfr_core::math::fx::Cfx::from_fx(off[0], off[1]);
                 uni.pert = [s.m as f32, off.re as f32, off.im as f32, 0.0];
-                uni.perti = [s.e, o.len, off.e, bla_levels];
-                uni.pref = [o.center[0], o.center[1], 0.0, 0.0];
+                uni.perti = [s.e, st.orbit.len as i32, off.e, st.bla_levels];
+                uni.pref = [st.orbit.center.re as f32, st.orbit.center.im as f32, 0.0, 0.0];
+                state = Some(st);
             }
+            let (orbit, bla) = match &state {
+                Some(s) => (s.buf.clone(), s.bla.clone()),
+                None => (self.empty.clone(), self.empty.clone()),
+            };
             let (params, lut) = match prev {
                 Some(r) => (r.params, r.lut),
                 None => (
@@ -606,7 +655,7 @@ impl GpuRenderer {
             l.extend_from_slice(&lp.inside.lut);
             self.ctx.queue.write_buffer(&lut, 0, bytemuck::cast_slice(&l));
             self.request_pipeline(signature, lp, mode);
-            res.push(LayerRes { signature, params, lut, images, image_src, orbit, orbit_key, orbit_ref, bla, bla_dc, bla_levels, uni });
+            res.push(LayerRes { signature, params, lut, images, image_src, orbit, bla, orbit_state: state, orbit_job: job, uni });
         }
         self.layers = res;
         let (ops, slots) = schedule(plan);
@@ -735,6 +784,20 @@ impl GpuRenderer {
     /// Renders bands until `budget` is used up or `max_samples` passes are complete. Returns
     /// whether anything was rendered.
     pub fn work(&mut self, budget: Duration, max_samples: u32) -> bool {
+        // A reference orbit finished in the background: set the plan again to use it.
+        let mut finished = false;
+        for l in &mut self.layers {
+            if let Some(j) = l.orbit_job.as_mut()
+                && j.done.is_none()
+                && let Ok(o) = j.rx.try_recv()
+            {
+                j.done = Some(o);
+                finished = true;
+            }
+        }
+        if finished && let Some(plan) = self.last_plan.clone() {
+            self.set_plan(&plan);
+        }
         if !self.ready {
             self.update_ready();
         }
