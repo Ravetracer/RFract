@@ -83,7 +83,9 @@ cargo fmt --all --check
   using statement, `return` via result/done locals), plugin parameters are `<path>.<name>`.
   Object arrays are element lists (`<key>[k]` in `objects`): known indexes (`static_int`) pick
   the element, run-time indexes become `if index == k` chains (`dispatch`), counting `while`
-  loops that make or index objects are unrolled (`try_unroll`). An object variable is an
+  loops that make or index objects are unrolled (`try_unroll`; loops up to a bounded value,
+  `bound_int`, unroll to the bound with a run-time guard per iteration; `setLength` with such a
+  value keeps the length in a local, `obj_len`). An object variable is an
   `OVal`: one object or a tag (int local) with candidates; `if` arms, early returns and
   `dispatch` arms join with `merge` (tags set at the end of each branch), `store_if` stores
   under a run-time condition, uses become `(condition, object)` alternatives (`obj_alts`).

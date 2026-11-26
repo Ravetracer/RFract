@@ -48,6 +48,12 @@ struct Ck<'a> {
     obj_arrays: HashMap<String, usize>,
     /// Counters of unrolled loops and their values in the iteration being checked.
     unroll: HashMap<String, i64>,
+    /// Upper bounds of int locals whose values are known only when rendering (method
+    /// arguments from parameters with a maximum).
+    bounds: HashMap<String, i64>,
+    /// Object arrays sized when rendering: the local holding their length (the array has
+    /// room for the bound).
+    obj_len: HashMap<String, usize>,
     /// Statements an expression needs before it (inlined method bodies).
     pending: Vec<Stmt>,
     /// Counter of inlined calls (unique local names).
@@ -701,6 +707,33 @@ impl<'a> Ck<'a> {
                 }
             }
             ast::Expr::Call { name, param: false, args } if name.eq_ignore_ascii_case("length") && args.len() == 1 => match &args[0] {
+                ast::Expr::Ident(a) if !self.obj_len.contains_key(&self.norm(a)) => *self.obj_arrays.get(&self.norm(a))? as i64,
+                _ => return None,
+            },
+            _ => return None,
+        })
+    }
+
+    /// An upper bound of an int value known only when rendering: parameters with a maximum,
+    /// locals with a recorded bound, lengths of object arrays sized when rendering, sums.
+    fn bound_int(&self, e: &ast::Expr) -> Option<i64> {
+        if let Some(v) = self.static_int(e) {
+            return Some(v);
+        }
+        Some(match e {
+            ast::Expr::Param(n) => {
+                let prefix = self.scopes.last().map_or(String::new(), |s| s.prefix.clone());
+                let i = self.param_index(&format!("{prefix}{n}")).or_else(|| self.param_index(n))?;
+                let p = &self.params[i];
+                if p.kind != ParamKind::Int {
+                    return None;
+                }
+                p.max?.floor() as i64
+            }
+            ast::Expr::Ident(n) => *self.bounds.get(&self.norm(n))?,
+            ast::Expr::Binary(BinOp::Add, a, b) => self.bound_int(a)?.checked_add(self.bound_int(b)?)?,
+            ast::Expr::Binary(BinOp::Sub, a, b) => self.bound_int(a)?.checked_sub(self.static_int(b)?)?,
+            ast::Expr::Call { name, param: false, args } if name.eq_ignore_ascii_case("length") && args.len() == 1 => match &args[0] {
                 ast::Expr::Ident(a) => *self.obj_arrays.get(&self.norm(a))? as i64,
                 _ => return None,
             },
@@ -1109,11 +1142,21 @@ impl<'a> Ck<'a> {
         if body.iter().any(|s| !is_counter(s, self) && self.assigns(std::slice::from_ref(s), &key)) {
             return Ok(None);
         }
+        // A limit known only when rendering but bounded (`i < @count` with a maximum): the
+        // loop unrolls up to the bound; every iteration runs only while the condition holds.
+        let bounded = match cond {
+            ast::Expr::Binary(op @ (BinOp::Lt | BinOp::Le), _, x) if self.static_int(x).is_none() => self.bound_int(x).map(|b| (*op, b)),
+            _ => None,
+        };
+        let holds = |ck: &Self| match bounded {
+            Some((op, b)) => ck.unroll.get(&key).map(|&i| if op == BinOp::Lt { i < b } else { i <= b }),
+            None => ck.static_cond(cond),
+        };
         // Count the iterations first (the body's other statements cannot change the counter).
         self.unroll.insert(key.clone(), start);
         let mut n = 0;
         let finite = loop {
-            match self.static_cond(cond) {
+            match holds(self) {
                 Some(true) if n < MAX_UNROLL => n += 1,
                 Some(false) => break true,
                 _ => break false,
@@ -1140,16 +1183,37 @@ impl<'a> Ck<'a> {
             self.unroll.remove(&key);
             return Ok(None);
         }
+        let slot = self.local(var, Ty::Int);
         let mut out = Vec::new();
         let r = (|| {
             for _ in 0..n {
+                // Bounded loops: the condition with this iteration's counter, checked when
+                // rendering.
+                let guard = if bounded.is_some() { Some(self.cexpr(cond, line)?) } else { None };
+                let start_objects = self.objects.clone();
+                let mut iter = Vec::new();
                 for s in body {
                     match s {
                         ast::Stmt::Assign { value, .. } if is_counter(s, self) => {
                             let v = self.static_int(value).unwrap_or(0);
                             self.unroll.insert(key.clone(), v);
+                            if bounded.is_some() {
+                                // Guarded iterations keep the counter at run time.
+                                let t = self.locals[slot].ty;
+                                iter.push(Stmt::Assign(slot, conv(Expr { ty: Ty::Int, kind: Kind::Int(v) }, t)));
+                            }
                         }
-                        _ => out.extend(self.stmts(std::slice::from_ref(s))?),
+                        _ => iter.extend(self.stmts(std::slice::from_ref(s))?),
+                    }
+                }
+                match guard {
+                    None => out.extend(iter),
+                    Some((pre, c)) => {
+                        let end = std::mem::replace(&mut self.objects, start_objects.clone());
+                        let mut skipped = Vec::new();
+                        self.merge(&start_objects, vec![end, start_objects.clone()], vec![&mut iter, &mut skipped]);
+                        out.extend(pre);
+                        out.push(Stmt::If(vec![(self.cond(c), iter)], skipped));
                     }
                 }
             }
@@ -1157,8 +1221,10 @@ impl<'a> Ck<'a> {
         })();
         let last = self.unroll.remove(&key).unwrap_or(start);
         r?;
-        // The counter keeps its final value after the loop.
-        out.push(self.assign(var, Expr { ty: Ty::Int, kind: Kind::Int(last) }, line)?);
+        if bounded.is_none() {
+            // The counter keeps its final value after the loop.
+            out.push(self.assign(var, Expr { ty: Ty::Int, kind: Kind::Int(last) }, line)?);
+        }
         Ok(Some(out))
     }
 
@@ -1392,7 +1458,7 @@ impl<'a> Ck<'a> {
         let local_key = |n: &str| format!("~{site}:{}", n.to_ascii_lowercase());
         // Arguments in the caller's scope.
         enum Arg {
-            Value(Expr),
+            Value(Expr, Option<i64>),
             Alias(String),
             Object(OVal),
         }
@@ -1406,7 +1472,11 @@ impl<'a> Ck<'a> {
                     ast::Expr::Ident(n) if p.by_ref && self.slots.contains_key(&self.norm(n)) && !self.unroll.contains_key(&self.norm(n)) => {
                         Arg::Alias(self.norm(n))
                     }
-                    _ => Arg::Value(self.expr(a, line)?),
+                    _ => {
+                        // Values known only when rendering keep their bound (array sizes).
+                        let bound = if self.static_int(a).is_none() { self.bound_int(a) } else { None };
+                        Arg::Value(self.expr(a, line)?, bound)
+                    }
                 },
             });
         }
@@ -1441,7 +1511,7 @@ impl<'a> Ck<'a> {
                     self.obj_vars.insert(k.clone());
                     self.objects.insert(k, o);
                 }
-                Arg::Value(v) => {
+                Arg::Value(v, bound) => {
                     let k = local_key(&l);
                     names.insert(l, k.clone());
                     let ty = match &p.ty {
@@ -1457,6 +1527,9 @@ impl<'a> Ck<'a> {
                     let t = self.locals[i].ty;
                     let v = if t == Ty::Bool { v } else { self.numeric(v) };
                     pre.push(Stmt::Assign(i, conv(v, t)));
+                    if let Some(b) = bound {
+                        self.bounds.insert(k.clone(), b);
+                    }
                 }
             }
         }
@@ -1924,6 +1997,9 @@ impl<'a> Ck<'a> {
             if let Some((_, dims)) = self.arrays.get(&self.norm(a)) {
                 return Ok(Expr { ty: Ty::Int, kind: Kind::Local(dims[0]) });
             }
+            if let Some(&slot) = self.obj_len.get(&self.norm(a)) {
+                return Ok(Expr { ty: Ty::Int, kind: Kind::Local(slot) });
+            }
             if let Some(&n) = self.obj_arrays.get(&self.norm(a)) {
                 return Ok(Expr { ty: Ty::Int, kind: Kind::Int(n as i64) });
             }
@@ -2370,14 +2446,25 @@ impl<'a> Ck<'a> {
                 ast::Stmt::ArrayDecl { ty, name, dims, line } => self.declare_array(*ty, name, dims, *line, out)?,
                 ast::Stmt::Call { name, args, line } => match (name.to_ascii_lowercase().as_str(), args.as_slice()) {
                     ("setlength", [ast::Expr::Ident(a), n]) if self.obj_arrays.contains_key(&self.norm(a)) => {
-                        let Some(len) = self.static_int(n).and_then(|v| usize::try_from(v).ok()).filter(|&v| v <= ARRAY_MAX) else {
+                        let key = self.norm(a);
+                        if let Some(len) = self.static_int(n).and_then(|v| usize::try_from(v).ok()).filter(|&v| v <= ARRAY_MAX) {
+                            self.obj_len.remove(&key);
+                            self.declare_obj_array(key, len);
+                        } else if let Some(cap) = self.bound_int(n).and_then(|v| usize::try_from(v).ok()).filter(|&v| v <= ARRAY_MAX) {
+                            // Sized when rendering: room for the bound, the length in a local.
+                            self.declare_obj_array(key.clone(), cap);
+                            let slot = self.key_local(&format!("#len:{key}"), Ty::Int);
+                            let v = self.expr(n, *line)?;
+                            out.push(Stmt::Assign(slot, conv(self.numeric(v), Ty::Int)));
+                            self.obj_len.insert(key, slot);
+                        } else {
                             return err(
                                 *line,
-                                format!("the length of the object array '{a}' must be known when checking (a number or a counting loop)"),
+                                format!(
+                                    "the length of the object array '{a}' must be known when checking (a number, a counting loop or an int parameter with a maximum)"
+                                ),
                             );
-                        };
-                        let key = self.norm(a);
-                        self.declare_obj_array(key, len);
+                        }
                     }
                     ("setlength", [ast::Expr::Ident(a), n]) => {
                         let Some((_, dims)) = self.arrays.get(&self.norm(a)).cloned() else { return err(*line, format!("'{a}' is not an array")) };
@@ -2705,6 +2792,8 @@ pub fn check_with(ast: &FormulaAst, kind: ProgramKind, classes: Option<&ClassCtx
             obj_vars: HashSet::new(),
             obj_arrays: HashMap::new(),
             unroll: HashMap::new(),
+            bounds: HashMap::new(),
+            obj_len: HashMap::new(),
             pending: Vec::new(),
             site: 0,
             formula_class: (!ast.funcs.is_empty()).then(|| {
@@ -2935,6 +3024,27 @@ mod tests {
         let k = Compiled::<f64>::new(&p, &[ast::ParamValue::Int(1)]);
         let mut f = k.frame();
         assert_eq!(k.run(&mut f, 1).z.re, 1.0);
+    }
+
+    #[test]
+    fn object_arrays_sized_by_a_parameter() {
+        use super::super::cpu::Compiled;
+        use crate::math::complex::C64;
+        let lib = "class Step {\npublic:\n  func Step(float pk)\n    m_k = pk\n  endfunc\n  complex func Apply(complex pz)\n    return pz * m_k\n  endfunc\nprotected:\n  float m_k\n}\n\nclass Holder {\npublic:\n  func Holder(int plength)\n    setLength(m_e, plength)\n  endfunc\n  Step m_e[]\n}\n";
+        let classes: Vec<_> = crate::formula::parse::parse_classes(lib).into_iter().map(|(_, c)| std::sync::Arc::new(c.unwrap())).collect();
+        let lookup = |n: &str| classes.iter().find(|c| c.name.eq_ignore_ascii_case(n)).cloned();
+        let choices = BTreeMap::new();
+        let ctx = ClassCtx { lookup: &lookup, choices: &choices };
+        // count objects with factors 1, 2, …; z = #pixel * count!.
+        let src = "T {\nglobal:\n  Holder h = new Holder(@count)\n  int i = 0\n  while i < @count\n    h.m_e[i] = new Step(i + 1)\n    i = i + 1\n  endwhile\ninit:\n  z = #pixel\n  int j = 0\n  while j < @count\n    z = h.m_e[j].Apply(z)\n    j = j + 1\n  endwhile\nloop:\n  z = z\nbailout:\n  |z| < 1e9\ndefault:\n  int param count\n    default = 2\n    min = 1\n    max = 4\n  endparam\n}\n";
+        let ast = parse_ufm_entry(&split_entries(src)[0]).unwrap();
+        let p = check_with(&ast, ProgramKind::Fractal, Some(&ctx)).unwrap();
+        for (count, want) in [(1, 1.0), (2, 2.0), (3, 6.0), (4, 24.0)] {
+            let k = Compiled::<f64>::new(&p, &[ast::ParamValue::Int(count)]);
+            let mut f = k.frame();
+            f.pixel = C64::new(1.0, 0.0);
+            assert_eq!(k.run(&mut f, 1).z.re, want, "count {count}");
+        }
     }
 
     #[test]

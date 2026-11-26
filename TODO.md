@@ -11,9 +11,10 @@ that come up along the way.
 - [x] Arrays of objects, objects made in counting loops (unrolled), elements picked at run time.
 - [x] Objects chosen at run time (tag per object variable): conditions, indexes from
       parameters, returns from branches.
-- [ ] Object arrays sized by a parameter (`new VectorArray(@nlight)`): unroll to the
-      parameter's maximum with a run-time guard. Loops that change which object a variable
-      refers to.
+- [x] Object arrays sized by a parameter with a maximum (`new VectorArray(@nlight)`), loops
+      up to it unrolled with a run-time guard.
+- Not planned for now: loops that change which object a variable refers to (no entry in the
+  database needs it), object lists of the ray tracers (`new SphereArray(50000000)`).
 - [x] Assignments inside expressions (`Cast(a[10] = new @f(this))`, `abs(r = random(r))`).
 - [x] More standard classes (orbit traps, direct orbit traps, trap mode, trap shapes,
       default, exponential smoothing, distance estimator, height transfer).

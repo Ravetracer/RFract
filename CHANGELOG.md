@@ -19,6 +19,8 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
   index known only while rendering are picked at run time; objects in conditions test for
   null (`if m_Elements[j]`). Merge classes such as `TransformMerge` and `TrapShapeMerge`
   compile.
+- Object arrays sized by an int parameter with a maximum; loops up to such a parameter unroll
+  to the maximum and check the condition while rendering.
 - Objects chosen while rendering: variables and array elements that refer to different
   objects depending on conditions, indexes from parameters or the branch a method returns
   from (was an error).

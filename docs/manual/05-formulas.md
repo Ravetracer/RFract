@@ -138,9 +138,11 @@ RFract compiles objects away: every `new` becomes a set of variables and every m
 built into the formula, so class formulas render on the graphics card like any other.
 Changing a plugin compiles the formula again.
 
-Arrays of objects (`TrapShape m_Elements[10]`) have a size known while compiling. Counting
-loops that make or use objects (`int j = 0`, `while j < 10`, `j = j + 1`) are unrolled, so
-objects made inside them stay alive.
+Arrays of objects (`TrapShape m_Elements[10]`) have a size known while compiling, or one set
+with `setLength` from an int parameter that has a maximum (the array gets room for the
+maximum). Counting loops that make or use objects (`int j = 0`, `while j < 10`, `j = j + 1`)
+are unrolled, so objects made inside them stay alive; a loop up to such a parameter
+(`while j < @count`) unrolls to its maximum and checks the condition while rendering.
 
 When the object a variable or an array element refers to depends on the rendering (a
 condition on a parameter, an index from a parameter, a method that returns different objects
@@ -159,5 +161,6 @@ larger than 4096 × 4096 pixels are scaled down; they render on the graphics car
 everything else.
 
 !!! note
-    Not supported yet: object arrays sized by a parameter, a loop that changes which object a
-    variable refers to and recursion. The check lists what fails by frequency.
+    Not supported yet: object arrays sized by a value without a known maximum (such as the
+    large object lists of ray tracers), a loop that changes which object a variable refers to,
+    and recursion. The check lists what fails by frequency.
