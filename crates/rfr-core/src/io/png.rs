@@ -52,7 +52,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("t.png");
         let mut doc = Document::default();
-        doc.view.radius = 0.0123;
+        doc.view.radius = 0.0123.into();
         write_rgba8(&path, 2, 1, &[1, 2, 3, 255, 4, 5, 6, 255], Some(&doc)).unwrap();
         assert_eq!(read_document(&path).unwrap(), doc);
         std::fs::remove_dir_all(&dir).ok();

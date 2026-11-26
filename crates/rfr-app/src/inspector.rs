@@ -549,7 +549,7 @@ fn view_and_image(ui: &mut Ui, doc: &mut Document, sel: &Selection) {
         if let Some((f, julia)) = formula
             && let Some(e) = library().get(&f)
         {
-            doc.view.radius = if julia { 1.6 } else { e.view.radius };
+            doc.view.radius = if julia { 1.6 } else { e.view.radius }.into();
             doc.view.set_center(if julia { [0.0, 0.0] } else { e.view.center });
             doc.view.rotation = 0.0;
         }
@@ -567,13 +567,18 @@ fn view_and_image(ui: &mut Ui, doc: &mut Document, sel: &Selection) {
                 ui.end_row();
             }
             widgets::label(ui, "Zoom", "Magnification: 1 shows about ±1.5 vertically");
-            let mut zoom = 1.5 / doc.view.radius;
-            let speed = zoom * 0.01;
-            let r = ui.add(egui::DragValue::new(&mut zoom).speed(speed).range(1e-6..=1e300).custom_formatter(|v, _| format!("{v:.4e}×")));
-            if r.changed() && zoom > 0.0 {
-                doc.view.radius = 1.5 / zoom;
+            // Magnification as text: any depth (1e-1000 and beyond).
+            let id = egui::Id::new("view-zoom-text");
+            let shown = doc.view.magnification().to_string();
+            let mut text: String = ui.data_mut(|d| d.get_temp::<(String, String)>(id)).filter(|(s, _)| *s == shown).map_or(shown.clone(), |(_, t)| t);
+            let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(f32::INFINITY).font(egui::TextStyle::Monospace));
+            if r.changed() {
+                if let Some(z) = rfr_core::math::fx::Fx::parse(&text).filter(|z| z.m > 0.0) {
+                    doc.view.radius = rfr_core::math::fx::Fx::from_f64(1.5) / z;
+                }
+                ui.data_mut(|d| d.insert_temp(id, (doc.view.magnification().to_string(), text.clone())));
             }
-            r.on_hover_text("Magnification (drag to change; the wheel in the view zooms at the cursor)");
+            r.on_hover_text("Magnification (type a number such as 1e250; the wheel in the view zooms at the cursor)");
             ui.end_row();
             let mut rot = if doc.view.rotation > 180.0 { doc.view.rotation - 360.0 } else { doc.view.rotation };
             if widgets::slider(ui, "Rotation", "Rotation of the view in degrees (Ctrl-drag in the view)", &mut rot, -180.0..=180.0, 0.0).changed() {

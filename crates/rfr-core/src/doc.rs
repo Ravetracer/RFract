@@ -39,8 +39,8 @@ pub struct Image {
 pub struct View {
     /// Center of the view as decimal strings (exact at any depth).
     pub center: [String; 2],
-    /// Half the height of the view in plane units.
-    pub radius: f64,
+    /// Half the height of the view in plane units (any depth: floatexp).
+    pub radius: crate::math::fx::Fx,
     /// Rotation in degrees (counterclockwise).
     pub rotation: f64,
 }
@@ -50,7 +50,29 @@ impl View {
         [self.center[0].trim().parse().unwrap_or(0.0), self.center[1].trim().parse().unwrap_or(0.0)]
     }
     pub fn set_center(&mut self, c: [f64; 2]) {
-        self.center = [format_coord(c[0], self.radius), format_coord(c[1], self.radius)];
+        self.center = [format_coord(c[0], self.radius.to_f64()), format_coord(c[1], self.radius.to_f64())];
+    }
+
+    /// Moves the center by `d` (in units of the radius), exactly at any depth.
+    pub fn pan(&mut self, d: [f64; 2]) {
+        let scale = self.radius * 1e-3;
+        for (c, d) in self.center.iter_mut().zip(d) {
+            if d != 0.0 {
+                *c = crate::math::big::add(c, self.radius * d, scale);
+            }
+        }
+    }
+
+    /// Zooms by `factor` (< 1: in) keeping the point at offset `at` from the center (in units
+    /// of the radius) in place.
+    pub fn zoom_at(&mut self, at: [f64; 2], factor: f64) {
+        self.pan([at[0] * (1.0 - factor), at[1] * (1.0 - factor)]);
+        self.radius *= factor;
+    }
+
+    /// Magnification relative to the default view (radius 1.5).
+    pub fn magnification(&self) -> crate::math::fx::Fx {
+        crate::math::fx::Fx::from_f64(1.5) / self.radius
     }
 }
 
@@ -372,7 +394,7 @@ impl Default for Image {
 
 impl Default for View {
     fn default() -> Self {
-        View { center: ["-0.5".into(), "0".into()], radius: 1.4, rotation: 0.0 }
+        View { center: ["-0.5".into(), "0".into()], radius: 1.4.into(), rotation: 0.0 }
     }
 }
 
@@ -440,7 +462,7 @@ impl Document {
     pub fn for_formula(id: &str) -> Document {
         let mut d = Document::default();
         if let Some(e) = crate::formula::library::library().get(id) {
-            d.view.radius = e.view.radius;
+            d.view.radius = e.view.radius.into();
             d.view.set_center(e.view.center);
             let l = &mut d.layers[0];
             l.formula = id.to_string();

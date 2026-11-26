@@ -91,6 +91,16 @@ impl UprPicker {
     }
 }
 
+/// A magnification with four significant digits at any size (`1.234e250`).
+fn fmt_zoom(z: rfr_core::math::fx::Fx) -> String {
+    let l = z.log10();
+    if !l.is_finite() {
+        return "0".into();
+    }
+    let e = l.floor();
+    format!("{:.3}e{}", 10f64.powf(l - e), e as i64)
+}
+
 fn is_upr(p: &Path) -> bool {
     rfr_core::io::is_parameter_file(p)
 }
@@ -456,10 +466,10 @@ impl App {
                     let v = &mut self.doc.doc.view;
                     v.rotation = 0.0;
                     if julia {
-                        v.radius = 1.6;
+                        v.radius = 1.6.into();
                         v.set_center([0.0, 0.0]);
                     } else {
-                        v.radius = e.view.radius;
+                        v.radius = e.view.radius.into();
                         v.set_center(e.view.center);
                     }
                     self.notify("View reset to the formula's suggested view");
@@ -680,7 +690,7 @@ impl App {
                 ui.separator();
                 ui.label(small(&self.viewport.status())).on_hover_text("Preview size, samples per pixel and the arithmetic the shader uses");
                 ui.separator();
-                ui.label(small(&format!("zoom {:.3e}×", 1.5 / self.doc.doc.view.radius))).on_hover_text("Magnification of the view");
+                ui.label(small(&format!("zoom {}×", fmt_zoom(self.doc.doc.view.magnification())))).on_hover_text("Magnification of the view");
                 if let Some(h) = self.viewport.hover {
                     ui.separator();
                     ui.label(small(&format!("{:.10}, {:.10}", h[0], h[1]))).on_hover_text("Plane coordinate under the cursor");

@@ -104,14 +104,14 @@ mod tests {
     #[test]
     fn undo_and_redo_steps() {
         let mut d = Doc::new(Document::default());
-        d.doc.view.radius = 0.5;
+        d.doc.view.radius = 0.5.into();
         d.commit();
-        d.doc.view.radius = 0.25;
+        d.doc.view.radius = 0.25.into();
         d.commit();
         assert!(d.undo());
-        assert_eq!(d.doc.view.radius, 0.5);
+        assert_eq!(d.doc.view.radius.to_f64(), 0.5);
         assert!(d.redo());
-        assert_eq!(d.doc.view.radius, 0.25);
+        assert_eq!(d.doc.view.radius.to_f64(), 0.25);
         assert!(d.modified());
     }
 }

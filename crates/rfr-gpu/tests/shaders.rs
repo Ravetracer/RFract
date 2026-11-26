@@ -159,7 +159,7 @@ fn gpu_matches_the_cpu_renderer() {
         [("deep seahorse 1e-9", [-0.743643887037151, 0.131825904205330], 2e-9), ("deep elephant 1e-11", [0.2925755, -0.0149977], 3e-11)]
     {
         let mut d = Document::for_formula("rfract:Mandelbrot");
-        d.view.radius = r;
+        d.view.radius = r.into();
         d.view.set_center(c);
         d.layers[0].max_iter = 3000;
         assert_eq!(rfr_gpu::renderer::renderer_mode(&Plan::sized(&d, 16, 9).unwrap()), Mode::Df64, "{name} needs double-float");

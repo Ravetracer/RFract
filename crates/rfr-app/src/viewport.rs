@@ -66,11 +66,19 @@ fn fit(avail: Rect, aspect: f32) -> Rect {
 /// Plane coordinate of screen position `p` inside the image rectangle `rect`.
 fn plane_at(view: &View, rect: Rect, p: Pos2) -> [f64; 2] {
     let c = view.center_f64();
-    let s = 2.0 * view.radius / rect.height() as f64;
+    let r = view.radius.to_f64();
+    let o = offset_at(view, rect, p);
+    [c[0] + o[0] * r, c[1] + o[1] * r]
+}
+
+/// Offset of screen position `p` from the view center in units of the radius (rotation
+/// applied): exact at any depth when added to the center with `View::pan`.
+fn offset_at(view: &View, rect: Rect, p: Pos2) -> [f64; 2] {
+    let s = 2.0 / rect.height() as f64;
     let dx = (p.x - rect.center().x) as f64 * s;
     let dy = -((p.y - rect.center().y) as f64) * s;
     let (sin, cos) = view.rotation.to_radians().sin_cos();
-    [c[0] + dx * cos - dy * sin, c[1] + dx * sin + dy * cos]
+    [dx * cos - dy * sin, dx * sin + dy * cos]
 }
 
 impl Viewport {
@@ -154,7 +162,7 @@ impl Viewport {
                 }
                 layer.julia = true;
                 layer.seed = s;
-                doc.view = View { center: ["0".into(), "0".into()], radius: 1.6, rotation: 0.0 };
+                doc.view = View { center: ["0".into(), "0".into()], radius: 1.6.into(), rotation: 0.0 };
                 Some(format!("Julia set of ({:.6}, {:.6}) (J or Alt-click again goes back)", s[0], s[1]))
             }
             None => {
@@ -183,10 +191,8 @@ impl Viewport {
             && let Some(p) = pointer
         {
             let f = (-scroll as f64 * 0.003).exp();
-            let at = plane_at(&doc.view, rect, p);
-            let c = doc.view.center_f64();
-            doc.view.radius *= f;
-            doc.view.set_center([at[0] + (c[0] - at[0]) * f, at[1] + (c[1] - at[1]) * f]);
+            let at = offset_at(&doc.view, rect, p);
+            doc.view.zoom_at(at, f);
             touched = true;
         }
         let boxing = mods.shift || resp.dragged_by(egui::PointerButton::Secondary);
@@ -215,10 +221,8 @@ impl Viewport {
             } else if resp.dragged_by(egui::PointerButton::Primary) {
                 let d = resp.drag_delta();
                 if d != Vec2::ZERO {
-                    let a = plane_at(&doc.view, rect, rect.center());
-                    let b = plane_at(&doc.view, rect, rect.center() + d);
-                    let c = doc.view.center_f64();
-                    doc.view.set_center([c[0] - (b[0] - a[0]), c[1] - (b[1] - a[1])]);
+                    let b = offset_at(&doc.view, rect, rect.center() + d);
+                    doc.view.pan([-b[0], -b[1]]);
                     touched = true;
                 }
             }
@@ -227,10 +231,10 @@ impl Viewport {
             if let (Some(s), Some(e)) = (self.box_start.take(), resp.interact_pointer_pos()) {
                 let b = Rect::from_two_pos(s, e);
                 if b.width() > 4.0 && b.height() > 4.0 {
-                    let c = plane_at(&doc.view, rect, b.center());
+                    let c = offset_at(&doc.view, rect, b.center());
                     let h = (b.width() * rect.height() / rect.width()).max(b.height());
+                    doc.view.pan(c);
                     doc.view.radius *= (h / rect.height()) as f64;
-                    doc.view.set_center(c);
                     touched = true;
                 }
             }
@@ -246,8 +250,8 @@ impl Viewport {
                 message = if julia_on && !picking { self.set_julia(doc, sel, None) } else { self.set_julia(doc, sel, Some(at)) };
                 touched = true;
             } else if resp.double_clicked() {
+                doc.view.pan(offset_at(&doc.view, rect, p));
                 doc.view.radius *= 0.5;
-                doc.view.set_center(at);
                 touched = true;
             } else if resp.secondary_clicked() {
                 doc.view.radius *= 2.0;

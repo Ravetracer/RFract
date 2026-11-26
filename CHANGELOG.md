@@ -4,6 +4,12 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
 
 ## [Unreleased]
 
+### Added
+
+- Views at any depth: the zoom is kept as a number with an extended exponent and the center
+  as exact decimal text; panning and zooming stay exact below 1e-308. The *Zoom* field takes
+  text such as `1e500`.
+
 ## [0.4.1] - 2026-11-26
 
 ### Added

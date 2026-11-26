@@ -465,7 +465,8 @@ fn render_check(prog: rfr_core::formula::Program, kind: rfr_core::formula::Progr
     // CPU: a small render of the layer (panics count as failures).
     let doc_free = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let plan = rfr_core::render::Plan {
-            frame: rfr_core::render::ViewFrame { width: 4, height: 3, center: [-0.5, 0.0], radius: 1.5, cos: 1.0, sin: 0.0 },
+            frame: rfr_core::render::ViewFrame { width: 4, height: 3, center: [-0.5, 0.0], radius: 1.5, radius_fx: 1.5.into(), cos: 1.0, sin: 0.0 },
+            center_text: ["-0.5".into(), "0".into()],
             background: [0.0, 0.0, 0.0, 1.0],
             nodes: vec![rfr_core::render::Node::Layer {
                 layer: Box::new(lp),

@@ -178,7 +178,7 @@ fn convert(lib: &Library, name: &str, secs: &[Section]) -> UprImage {
         let magn = bottom.num("magn").unwrap_or(1.0).max(1e-300);
         // Magnification 1 shows a 4 × 3 region, fitted into the image.
         let aspect = doc.image.height as f64 / doc.image.width.max(1) as f64;
-        doc.view.radius = (1.5f64).max(2.0 * aspect) / magn;
+        doc.view.radius = ((1.5f64).max(2.0 * aspect) / magn).into();
         doc.view.center = [cx, cy];
         doc.view.rotation = bottom.num("angle").unwrap_or(0.0);
         if bottom.num("stretch").is_some_and(|s| (s - 1.0).abs() > 1e-9) || bottom.num("skew").is_some_and(|s| s.abs() > 1e-9) {
@@ -501,7 +501,7 @@ gradient:
         let d = &im.doc;
         assert_eq!((d.image.width, d.image.height), (800, 600));
         assert_eq!(d.view.center, ["-0.75".to_string(), "0.1".to_string()]);
-        assert!((d.view.radius - 1.5 / 4.0).abs() < 1e-12);
+        assert!((d.view.radius.to_f64() - 1.5 / 4.0).abs() < 1e-12);
         assert_eq!(d.view.rotation, 30.0);
         // Bottom layer first.
         assert_eq!(d.layers[0].name, "Background");

@@ -311,7 +311,7 @@ fn convert(lib: &Library, name: &str, items: &[(String, String)], dir: Option<&P
         let wv = [br[0] - bl[0], br[1] - bl[1]];
         let hv = [tl[0] - bl[0], tl[1] - bl[1]];
         let (w, h) = (wv[0].hypot(wv[1]), hv[0].hypot(hv[1]));
-        doc.view.radius = (h / 2.0).max(1e-300);
+        doc.view.radius = (h / 2.0).max(1e-300).into();
         doc.view.set_center([(tl[0] + br[0]) / 2.0, (tl[1] + br[1]) / 2.0]);
         doc.view.rotation = wv[1].atan2(wv[0]).to_degrees();
         if w > 0.0 {
@@ -321,7 +321,7 @@ fn convert(lib: &Library, name: &str, items: &[(String, String)], dir: Option<&P
             notes.push("Skewed views are not supported; the view is rotated only.".into());
         }
     } else if let Some(c) = get(items, "center-mag").map(nums).filter(|c| c.len() >= 3) {
-        doc.view.radius = 1.0 / c[2].max(1e-300);
+        doc.view.radius = (1.0 / c[2].max(1e-300)).into();
         doc.view.set_center([c[0], c[1]]);
         if let Some(&x) = c.get(3)
             && (x - 1.0).abs() > 1e-9
@@ -450,7 +450,7 @@ mod tests {
         assert_eq!(l.params.get("p2"), Some(&ParamValue::Complex([1.0, 0.0])));
         assert_eq!(l.params.get("fn1"), Some(&ParamValue::Func("recip".into())));
         assert_eq!(l.params.get("fn2"), Some(&ParamValue::Func("sqr".into())));
-        assert!((d.view.radius - 0.45).abs() < 1e-12);
+        assert!((d.view.radius.to_f64() - 0.45).abs() < 1e-12);
         assert_eq!((d.image.width, d.image.height), (1024, 768));
         assert_eq!(l.outside_method, OutsideMethod::Iterations);
         // The continued palette line: black, white, 3 blends, red, green.
@@ -460,6 +460,6 @@ mod tests {
         assert_eq!(j.formula, "rfract:Mandelbrot");
         assert!(j.julia);
         assert_eq!(j.seed, [-0.8, 0.156]);
-        assert!((images[1].doc.view.radius - 2.0).abs() < 1e-12);
+        assert!((images[1].doc.view.radius.to_f64() - 2.0).abs() < 1e-12);
     }
 }

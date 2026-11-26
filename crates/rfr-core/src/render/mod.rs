@@ -139,12 +139,19 @@ pub struct ViewFrame {
     pub width: u32,
     pub height: u32,
     pub center: [f64; 2],
+    /// Half the height in plane units (`f64`; 0 below its range, see `radius_fx`).
     pub radius: f64,
+    pub radius_fx: crate::math::fx::Fx,
     pub cos: f64,
     pub sin: f64,
 }
 
 impl ViewFrame {
+    /// Size of one pixel in plane units at any depth.
+    pub fn pixel_size_fx(&self) -> crate::math::fx::Fx {
+        self.radius_fx * (2.0 / self.height as f64)
+    }
+
     /// Plane coordinate of image position (x, y) (pixels, y down, fractional).
     pub fn plane(&self, x: f64, y: f64) -> C64 {
         let s = self.radius / (self.height as f64 * 0.5);
@@ -220,6 +227,8 @@ pub enum Node {
 #[derive(Clone, Debug)]
 pub struct Plan {
     pub frame: ViewFrame,
+    /// The view center as exact decimal text (reference orbits for deep zooms).
+    pub center_text: [String; 2],
     /// Linear RGB and alpha below all layers.
     pub background: [f32; 4],
     /// Bottom first.
@@ -265,10 +274,12 @@ impl Plan {
                 width: width.max(1),
                 height: height.max(1),
                 center: doc.view.center_f64(),
-                radius: doc.view.radius,
+                radius: doc.view.radius.to_f64(),
+                radius_fx: doc.view.radius,
                 cos: rot.cos(),
                 sin: rot.sin(),
             },
+            center_text: doc.view.center.clone(),
             background: doc.image.background,
             nodes: nodes(&doc.layers)?,
         })
@@ -309,7 +320,7 @@ impl Plan {
     pub fn precision(&self) -> Precision {
         let f = &self.frame;
         let scale = f.center[0].abs().max(f.center[1].abs()).max(1.0);
-        let ratio = f.pixel_size() / scale;
+        let ratio = (f.pixel_size_fx() / scale).to_f64();
         if ratio > SINGLE_LIMIT {
             Precision::Single
         } else if ratio > DOUBLE_LIMIT {
