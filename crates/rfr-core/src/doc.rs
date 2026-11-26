@@ -536,6 +536,14 @@ impl Document {
                 l.julia = true;
                 l.seed = seed;
             }
+            if let Some(c) = &e.view.outside_coloring {
+                l.outside_method = OutsideMethod::Formula;
+                l.outside.formula = c.clone();
+            }
+            if let Some(c) = &e.view.inside_coloring {
+                l.inside_method = InsideMethod::Formula;
+                l.inside.formula = c.clone();
+            }
             l.name = e.title.clone();
         }
         d

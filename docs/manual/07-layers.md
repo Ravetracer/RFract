@@ -50,6 +50,14 @@ Add a mask with *Add a mask* in the inspector or the … menu. The mask appears 
 in the list; select it to give it a formula from the browser and colors like any layer. Its
 merge mode and opacity do not matter.
 
+## Fill and image layers
+
+The **…** menu above the layer list adds layers that do not show a fractal: *Add solid fill*
+(one color), *Add gradient fill* (the gradient across the image, linear, radial or conical)
+and *Add image layer* (an image file; choose it under *Outside* in the inspector). They use the
+*Pixel* formula with the *Solid*, *Gradient fill* and *Image* colorings, so masks, merge modes
+and transformations work on them as on any layer.
+
 ## Density layers
 
 A **density layer** (the sparkle button above the layer list) does not color each point by

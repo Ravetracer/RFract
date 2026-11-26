@@ -337,4 +337,8 @@ pub struct FormulaAst {
     pub imports: Vec<String>,
     /// Functions declared in the sections (`complex func f(complex z) … endfunc`).
     pub funcs: Vec<MethodAst>,
+    /// RFract's bundled formulas: the coloring that suits them (`outsidecoloring = "id"`,
+    /// `insidecoloring = "id"` in `default:`).
+    pub outside_coloring: Option<String>,
+    pub inside_coloring: Option<String>,
 }

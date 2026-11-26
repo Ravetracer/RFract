@@ -52,6 +52,8 @@ enum Cmd {
     ToggleVisible(Vec<usize>),
     AddLayer,
     AddDensity,
+    /// Solid fill (0), gradient fill (1), image (2): the Pixel formula with a coloring.
+    AddFill(u8),
     AddGroup,
     Duplicate,
     Delete,
@@ -128,7 +130,10 @@ pub fn show(ui: &mut Ui, doc: &mut Document, sel: &mut Selection) -> Option<Stri
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.menu_button(icons::DOTS, |ui| {
                 ui.set_min_width(200.0);
-                let items: [MenuItem; 4] = [
+                let items: [MenuItem; 7] = [
+                    (|| Cmd::AddFill(0), "Add solid fill", "A layer of one color (merge mode and opacity as for any layer)"),
+                    (|| Cmd::AddFill(1), "Add gradient fill", "A layer with the gradient across the image (linear, radial or conical)"),
+                    (|| Cmd::AddFill(2), "Add image layer", "A layer showing an image file (choose it in the inspector)"),
                     (|| Cmd::Duplicate, "Duplicate", "A copy of the selected layer above it"),
                     (|| Cmd::Group, "Group", "Put the selected layer into a new group"),
                     (|| Cmd::Ungroup, "Ungroup", "Move the selected group's layers out of it and remove the group"),
@@ -193,8 +198,32 @@ fn apply(doc: &mut Document, sel: &mut Selection, c: Cmd) -> Option<String> {
                 l.visible = !l.visible;
             }
         }
-        Cmd::AddLayer | Cmd::AddGroup | Cmd::AddDensity => {
-            let layer = if matches!(c, Cmd::AddGroup) {
+        Cmd::AddLayer | Cmd::AddGroup | Cmd::AddDensity | Cmd::AddFill(_) => {
+            let layer = if let Cmd::AddFill(k) = c {
+                use rfr_core::doc::OutsideMethod;
+                let mut l = Layer { formula: "rfract:Pixel".into(), max_iter: 1, ..Layer::default() };
+                match k {
+                    0 => {
+                        l.name = new_name(doc, "Fill");
+                        l.outside_method = OutsideMethod::Solid;
+                        l.outside.solid = [0.5, 0.5, 0.5];
+                    }
+                    1 => {
+                        l.name = new_name(doc, "Gradient");
+                        l.outside_method = OutsideMethod::Formula;
+                        l.outside.formula = "rfract-coloring:GradientFill".into();
+                        l.outside.transfer = rfr_core::doc::Transfer::Linear;
+                        l.outside.density = 1.0;
+                    }
+                    _ => {
+                        l.name = new_name(doc, "Image");
+                        l.outside_method = OutsideMethod::Formula;
+                        l.outside.formula = "rfract-coloring:ImageMap".into();
+                        l.outside.params.insert("source".into(), rfr_core::formula::ParamValue::Int(1));
+                    }
+                }
+                l
+            } else if matches!(c, Cmd::AddGroup) {
                 Layer { name: new_name(doc, "Group"), kind: LayerKind::Group, ..Layer::default() }
             } else if matches!(c, Cmd::AddDensity) {
                 // A Buddhabrot that adds its light to the layers below.

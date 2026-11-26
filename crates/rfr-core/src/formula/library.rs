@@ -54,11 +54,14 @@ pub struct DefaultView {
     pub radius: f64,
     pub max_iter: u32,
     pub julia: Option<[f64; 2]>,
+    /// Colorings that suit the formula (bundled formulas).
+    pub outside_coloring: Option<String>,
+    pub inside_coloring: Option<String>,
 }
 
 impl Default for DefaultView {
     fn default() -> Self {
-        DefaultView { center: [0.0, 0.0], radius: 1.5, max_iter: 250, julia: None }
+        DefaultView { center: [0.0, 0.0], radius: 1.5, max_iter: 250, julia: None, outside_coloring: None, inside_coloring: None }
     }
 }
 
@@ -552,6 +555,8 @@ fn view_of(a: &FormulaAst) -> DefaultView {
         radius: 1.5 / a.magn.unwrap_or(1.0).max(1e-300),
         max_iter: a.maxiter.unwrap_or(250),
         julia: None,
+        outside_coloring: a.outside_coloring.clone(),
+        inside_coloring: a.inside_coloring.clone(),
     }
 }
 
@@ -615,6 +620,7 @@ fn build() -> Vec<Arc<Entry>> {
                 radius,
                 max_iter: p.iterations.max(1),
                 julia: if p.mode == "julia" { Some(p.julia_c.unwrap_or([0.0, 0.0])) } else { None },
+                ..DefaultView::default()
             },
             origin: Origin::Static(src),
             program: OnceLock::new(),

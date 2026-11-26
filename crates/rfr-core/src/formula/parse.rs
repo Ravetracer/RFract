@@ -1169,6 +1169,20 @@ impl Parser {
                     }
                     self.next();
                 }
+                "outsidecoloring" | "insidecoloring" => {
+                    self.next();
+                    if self.eat_op("=")
+                        && let Tok::Str(s) = self.peek().clone()
+                    {
+                        self.next();
+                        if lower == "outsidecoloring" {
+                            f.outside_coloring = Some(s);
+                        } else {
+                            f.inside_coloring = Some(s);
+                        }
+                    }
+                    self.skip_line();
+                }
                 "title" | "center" | "magn" | "maxiter" => {
                     self.next();
                     if self.eat_op("=") {
@@ -1369,6 +1383,8 @@ impl Parser {
             fractint: false,
             imports: Vec::new(),
             funcs: Vec::new(),
+            outside_coloring: None,
+            inside_coloring: None,
         };
         let mut seen_section = false;
         loop {
@@ -1525,6 +1541,8 @@ impl Parser {
                         fractint: false,
                         imports: Vec::new(),
                         funcs: Vec::new(),
+                        outside_coloring: None,
+                        inside_coloring: None,
                     };
                     self.ufm_default(&mut f)?;
                     c.params.extend(f.params);

@@ -573,6 +573,62 @@ default:
   endparam
 }
 
+Lyapunov {
+; For the Lyapunov formula: stable points (λ < 0) along the gradient by how strongly they
+; settle, chaotic points (λ ≥ 0) solid.
+final:
+  float l = real(#z)
+  if l >= 0
+    #solid = true
+  else
+    ; Clamped below 1: the gradient's end for strongly stable points.
+    #index = min(-l * @scale, 0.999999)
+  endif
+default:
+  title = "Lyapunov exponent"
+  float param scale
+    caption = "Scale"
+    default = 0.5
+    hint = "Gradient positions per unit of the exponent."
+  endparam
+}
+
+GradientFill {
+; The gradient across the plane (with the Pixel formula: a fill layer): along a direction,
+; around a center (radial) or around it by angle (conical).
+final:
+  complex w = (#z - @center) * (cos(-@angle * #pi / 180), sin(-@angle * #pi / 180))
+  if @shape == 0
+    #index = real(w) / @size + 0.5
+  elseif @shape == 1
+    #index = cabs(w) / @size
+  else
+    #index = atan2(w) / (2 * #pi) + 0.5
+  endif
+default:
+  title = "Gradient fill"
+  int param shape
+    caption = "Shape"
+    enum = "Linear" "Radial" "Conical"
+    default = 0
+    hint = "Along the angle, outward from the center, or around the center."
+  endparam
+  complex param center
+    caption = "Center"
+    default = (0, 0)
+  endparam
+  float param size
+    caption = "Size"
+    default = 3
+    hint = "Distance over which the gradient runs once."
+  endparam
+  float param angle
+    caption = "Angle"
+    default = 0
+    hint = "Direction of a linear gradient, start of a conical one (degrees)."
+  endparam
+}
+
 Iterations {
 ; The iteration count, scaled: the classic banded coloring, for the inside too.
 final:

@@ -48,6 +48,8 @@ The *Formula* method runs a coloring algorithm along every orbit. Pick it under
 | Epsilon cross | The first iteration close to an axis |
 | Closest approach (bof60) | The smallest ‖z‖ of the orbit |
 | Iteration of closest approach (bof61) | The iteration of the smallest ‖z‖ |
+| Lyapunov exponent | For the *Lyapunov* formula: stable points along the gradient, chaotic ones solid |
+| Gradient fill | The gradient across the plane, linear, radial or conical (with the *Pixel* formula: a fill layer) |
 | Image | An image file, looked up by the final *z*, the pixel or the orbit's closest approach to a center (an image trap); with size, angle, proportions and tiling. The gradient shows where the image is transparent |
 
 Algorithms can mark points as *solid* (for example outside a trap): those get the solid color

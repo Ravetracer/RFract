@@ -546,3 +546,88 @@ default:
   magn = 1
   maxiter = 1
 }
+
+Lyapunov {
+; Markus–Lyapunov fractal: the logistic map x → r·x·(1 − x) with r switching between a (the
+; point's x) and b (its y) after a sequence of A and B. z holds the Lyapunov exponent λ:
+; negative where the map settles (stable), positive where it is chaotic. Color it with the
+; Lyapunov coloring (inside).
+init:
+  int seq[16]
+  int len = 2
+  seq[0] = 1
+  seq[1] = 0
+  if @sequence == 1
+    ; AABAB
+    len = 5
+    seq[0] = 1
+    seq[1] = 1
+    seq[2] = 0
+    seq[3] = 1
+    seq[4] = 0
+  elseif @sequence == 2
+    ; BBBBBBAAAAAA (Zircon Zity)
+    len = 12
+    int k = 0
+    while k < 12
+      seq[k] = 0
+      if k >= 6
+        seq[k] = 1
+      endif
+      k = k + 1
+    endwhile
+  elseif @sequence == 3
+    ; ABBBA
+    len = 5
+    seq[0] = 1
+    seq[1] = 0
+    seq[2] = 0
+    seq[3] = 0
+    seq[4] = 1
+  elseif @sequence == 4
+    ; AAAAAABBBBBB
+    len = 12
+    int k = 0
+    while k < 12
+      seq[k] = 1
+      if k >= 6
+        seq[k] = 0
+      endif
+      k = k + 1
+    endwhile
+  endif
+  float x = 0.5
+  float lsum = 0
+  int n = 0
+  z = 0
+loop:
+  float r = imag(#pixel)
+  if seq[n % len] == 1
+    r = real(#pixel)
+  endif
+  x = r * x * (1 - x)
+  if n >= @warmup
+    lsum = lsum + log(abs(r * (1 - 2 * x)) + 1e-30)
+    z = lsum / (n - @warmup + 1)
+  endif
+  n = n + 1
+bailout:
+  true
+default:
+  title = "Lyapunov"
+  center = (3.4, 3.4)
+  magn = 2.5
+  maxiter = 400
+  insidecoloring = "rfract-coloring:Lyapunov"
+  int param sequence
+    caption = "Sequence"
+    enum = "AB" "AABAB" "BBBBBBAAAAAA" "ABBBA" "AAAAAABBBBBB"
+    default = 0
+    hint = "The order in which r takes the values a (A) and b (B)."
+  endparam
+  int param warmup
+    caption = "Warm-up"
+    default = 50
+    hint = "Iterations before the exponent is measured."
+  endparam
+}
