@@ -594,10 +594,10 @@ default:
 }
 
 GradientFill {
-; The gradient across the plane (with the Pixel formula: a fill layer): along a direction,
-; around a center (radial) or around it by angle (conical).
+; The gradient across the plane at the point (#pixel; with the Pixel formula: a fill layer):
+; along a direction, around a center (radial) or around it by angle (conical).
 final:
-  complex w = (#z - @center) * (cos(-@angle * #pi / 180), sin(-@angle * #pi / 180))
+  complex w = (#pixel - @center) * (cos(-@angle * #pi / 180), sin(-@angle * #pi / 180))
   if @shape == 0
     #index = real(w) / @size + 0.5
   elseif @shape == 1
