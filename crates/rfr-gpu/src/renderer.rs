@@ -702,6 +702,11 @@ impl GpuRenderer {
                     contents: bytemuck::cast_slice(&rfr_core::render::density::ifs_words(d)),
                     usage: wgpu::BufferUsages::STORAGE,
                 }),
+                Some(d) if d.mode == rfr_core::doc::DensityMode::Kleinian => device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("kleinian generators"),
+                    contents: bytemuck::cast_slice(&rfr_core::render::density::kleinian_words(d)),
+                    usage: wgpu::BufferUsages::STORAGE,
+                }),
                 _ => bla,
             };
             let (params, lut) = match prev {

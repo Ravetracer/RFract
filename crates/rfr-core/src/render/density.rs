@@ -70,7 +70,7 @@ pub fn pixel_of(f: &ViewFrame, z: C64) -> Option<(u32, u32)> {
 
 /// Count channels: 3 for a Nebulabrot (not in IFS mode), else 1.
 pub fn channels(d: &Density) -> usize {
-    if d.nebula && d.mode != DensityMode::Ifs { 3 } else { 1 }
+    if d.nebula && matches!(d.mode, DensityMode::Escaping | DensityMode::Captive | DensityMode::Attractor) { 3 } else { 1 }
 }
 
 /// The IFS maps for the GPU: per map (a, b, c, d) and (e, f, cumulative share of the steps,
@@ -154,9 +154,64 @@ fn ifs_orbit(s: &Scatter, i: u32) {
     }
 }
 
+/// A random walk over the group's generators (never the inverse of the step before): the
+/// points gather on the limit set. The same hashed choices as the GPU.
+fn kleinian_orbit(s: &Scatter, i: u32) {
+    let d = s.density;
+    let g = d.kleinian.generators();
+    let start = start_point(d, s.pass, i);
+    let mut z = start;
+    let mut rnd = hash(i ^ hash(s.pass ^ 0x7F4A_7C15));
+    let mut prev = 4usize;
+    let plane = (s.hist.width * s.hist.height) as usize;
+    for it in 0..s.lp.max_iter {
+        rnd = hash(rnd);
+        let pick = (rnd >> 8) % 3;
+        // The three generators other than the inverse of the previous one.
+        let banned = if prev < 4 { (prev + 2) % 4 } else { 4 };
+        let mut k = pick as usize;
+        if banned < 4 && k >= banned {
+            k += 1;
+        }
+        if banned == 4 {
+            k = ((rnd >> 8) % 4) as usize;
+        }
+        prev = k;
+        let m = &g[k];
+        let den = m[2] * z + m[3];
+        if den.norm() < 1e-30 {
+            z = C64::new(1e10, 0.0);
+            continue;
+        }
+        z = (m[0] * z + m[1]) / den;
+        if !(z.re.is_finite() && z.im.is_finite()) {
+            return;
+        }
+        if it >= d.warmup
+            && let Some((px, py)) = pixel_of(s.frame, z)
+        {
+            s.hist.counts[(py * s.hist.width + px) as usize % plane].fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+/// The Kleinian generators for the GPU: per matrix (p, q) and (r, s) as (re, im, re, im).
+pub fn kleinian_words(d: &Density) -> Vec<[f32; 4]> {
+    d.kleinian
+        .generators()
+        .iter()
+        .flat_map(|m| {
+            [[m[0].re as f32, m[0].im as f32, m[1].re as f32, m[1].im as f32], [m[2].re as f32, m[2].im as f32, m[3].re as f32, m[3].im as f32]]
+        })
+        .collect()
+}
+
 fn scatter_orbit(s: &Scatter, f: &mut Frame<f64>, i: u32) {
     if s.density.mode == DensityMode::Ifs {
         return ifs_orbit(s, i);
+    }
+    if s.density.mode == DensityMode::Kleinian {
+        return kleinian_orbit(s, i);
     }
     let Scatter { fractal: k, lp, density: d, frame, hist, pass } = *s;
     let start = start_point(d, pass, i);

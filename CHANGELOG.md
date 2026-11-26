@@ -12,6 +12,8 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
   on the GPU and the CPU. New bundled family *Attractors* (Clifford, de Jong, Hopalong,
   Gumowski–Mira, Ikeda, Tinkerbell, Pickover, Lorenz, Rössler) and the gradients *Ember* and
   *Starlight*.
+- Kleinian density layers: limit sets of two-generator groups (Grandma's recipe from two
+  traces, Riley's recipe; the Apollonian gasket among the presets).
 - IFS density layers: the chaos game over affine maps with weights and variations (as in
   fractal flames), presets, view fitting, FractInt `.ifs` import.
 - Formulas *Truchet tiles*, *Sierpinski carpet* and *Root finding (polynomial)* (Newton,

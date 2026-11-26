@@ -9,11 +9,11 @@ that come up along the way.
       attractors (bundled family), log-density tone mapping, restart while the counts fill.
 - [x] Lyapunov (Markus–Lyapunov sequences) with its coloring.
 - [x] Fill and image layers (presets of the Pixel formula), gradient fill coloring.
-- [ ] Light IFS layer (affine maps, small variation set) and `.ifs` import.
-- [ ] Generic root finding (Newton, Halley, Householder, Nova) with derivatives from the
-      compiler.
-- [ ] Kleinian/limit sets (Maskit, Riley, Grandma's recipe), Apollonian/inversion fractals.
-- [ ] Truchet and tiling fractals.
+- [x] IFS density layers (affine maps, ten variations, presets, view fitting) and `.ifs` import.
+- [x] Root finding for polynomials (Newton, Halley, Schröder, relaxation, Nova).
+- [ ] Root finding for any formula with derivatives from the compiler (a derivative operator).
+- [x] Kleinian limit sets (Grandma's recipe, Riley; Maskit and the Apollonian gasket as cases).
+- [x] Truchet tiles and the Sierpinski carpet.
 - [ ] L-systems (`.l` import, vector layer, antialiased strokes).
 - [ ] Density layers: Metropolis–Hastings sampling for zoomed Buddhabrots.
 

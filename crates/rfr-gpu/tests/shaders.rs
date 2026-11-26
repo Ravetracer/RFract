@@ -326,6 +326,15 @@ fn gpu_density_matches_the_cpu() {
     v.layers[0].density.ifs[0].variation = rfr_core::doc::Variation::Swirl;
     v.layers[0].density.ifs[1].variation = rfr_core::doc::Variation::Spherical;
     cases.push(("ifs variations", v));
+    let mut k = f.clone();
+    k.view.radius = 1.3.into();
+    k.layers[0].density.mode = rfr_core::doc::DensityMode::Kleinian;
+    k.layers[0].density.kleinian.ta = [2.0, 0.0];
+    k.layers[0].density.kleinian.tb = [2.0, 0.0];
+    cases.push(("apollonian", k.clone()));
+    let mut q = k.clone();
+    q.layers[0].density.kleinian = rfr_core::doc::Kleinian::default();
+    cases.push(("quasi-fuchsian", q));
     let (w, h, s) = (96, 64, 8);
     for (name, doc) in cases {
         let plan = Plan::sized(&doc, w, h).unwrap();

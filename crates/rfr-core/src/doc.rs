@@ -235,6 +235,76 @@ pub enum DensityMode {
     Attractor,
     /// The chaos game over the layer's affine maps (iterated function systems).
     Ifs,
+    /// A random walk over two Möbius generators and their inverses: the limit set of a
+    /// Kleinian group (see [`Kleinian`]).
+    Kleinian,
+}
+
+/// How a Kleinian group's two generators are made.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Recipe {
+    /// Grandma's two-generator recipe from the traces of a and b (ta = tb = 2: the Apollonian
+    /// gasket; tb = 2: Maskit's groups).
+    #[default]
+    Grandma,
+    /// Riley's groups: a = [1 2; 0 1], b = [1 0; c 1] with c = ta.
+    Riley,
+}
+
+/// Settings of a Kleinian density layer.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Kleinian {
+    pub recipe: Recipe,
+    /// Trace of a (Riley: the parameter c), complex.
+    pub ta: [f64; 2],
+    /// Trace of b, complex.
+    pub tb: [f64; 2],
+    /// Which root of the recipe's quadratic for the trace of ab.
+    pub other_root: bool,
+}
+
+impl Default for Kleinian {
+    fn default() -> Self {
+        Kleinian { recipe: Recipe::Grandma, ta: [1.91, 0.05], tb: [1.91, 0.05], other_root: false }
+    }
+}
+
+impl Kleinian {
+    /// The generators a, b, a⁻¹, b⁻¹ as Möbius matrices [p, q, r, s]: z ↦ (p·z + q) / (r·z + s).
+    pub fn generators(&self) -> [[crate::math::complex::C64; 4]; 4] {
+        use crate::math::complex::C64;
+        let c = |v: [f64; 2]| C64::new(v[0], v[1]);
+        let i = C64::new(0.0, 1.0);
+        let two = C64::new(2.0, 0.0);
+        let (a, b) = match self.recipe {
+            Recipe::Riley => {
+                let one = C64::new(1.0, 0.0);
+                let zero = C64::new(0.0, 0.0);
+                ([one, two, zero, one], [one, zero, c(self.ta), one])
+            }
+            Recipe::Grandma => {
+                let (ta, tb) = (c(self.ta), c(self.tb));
+                // tab² − ta·tb·tab + ta² + tb² = 0
+                let disc = (ta * ta * tb * tb - C64::new(4.0, 0.0) * (ta * ta + tb * tb)).sqrt();
+                let tab = if self.other_root { (ta * tb - disc) / two } else { (ta * tb + disc) / two };
+                let z0 = (tab - two) * tb / (tb * tab - two * ta + two * i * tab);
+                let four = C64::new(4.0, 0.0);
+                let a = [
+                    ta / two,
+                    (ta * tab - two * tb + four * i) / ((two * tab + four) * z0),
+                    (ta * tab - two * tb - four * i) * z0 / (two * tab - four),
+                    ta / two,
+                ];
+                let b = [(tb - two * i) / two, tb / two, tb / two, (tb + two * i) / two];
+                (a, b)
+            }
+        };
+        // Inverse of [p q; r s] with determinant 1: [s −q; −r p].
+        let inv = |m: [C64; 4]| [m[3], -m[1], -m[2], m[0]];
+        [a, b, inv(a), inv(b)]
+    }
 }
 
 /// A nonlinear function applied after an IFS map's affine part (as in fractal flames).
@@ -381,6 +451,7 @@ impl DensityMode {
             DensityMode::Captive => 1,
             DensityMode::Attractor => 2,
             DensityMode::Ifs => 3,
+            DensityMode::Kleinian => 4,
         }
     }
 }
@@ -406,6 +477,8 @@ pub struct Density {
     pub gamma: f64,
     /// The maps of the IFS mode.
     pub ifs: Vec<IfsMap>,
+    /// The group of the Kleinian mode.
+    pub kleinian: Kleinian,
 }
 
 impl Default for Density {
@@ -421,6 +494,7 @@ impl Default for Density {
             brightness: 1.0,
             gamma: 1.5,
             ifs: sierpinski(),
+            kleinian: Kleinian::default(),
         }
     }
 }

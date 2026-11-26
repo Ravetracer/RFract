@@ -396,8 +396,8 @@ fn transforms_ui(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
 }
 
 fn fractal_sections(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
-    // IFS density layers do not use their formula.
-    if l.kind == LayerKind::Density && l.density.mode == rfr_core::doc::DensityMode::Ifs {
+    // IFS and Kleinian density layers do not use their formula.
+    if l.kind == LayerKind::Density && matches!(l.density.mode, rfr_core::doc::DensityMode::Ifs | rfr_core::doc::DensityMode::Kleinian) {
         density_section(ui, l, actions);
         return;
     }
@@ -601,6 +601,52 @@ fn ifs_maps(ui: &mut Ui, d: &mut rfr_core::doc::Density, actions: &mut Vec<Actio
     ui.separator();
 }
 
+/// The group of a Kleinian density layer: recipe, traces, presets.
+fn kleinian_ui(ui: &mut Ui, k: &mut rfr_core::doc::Kleinian) {
+    use rfr_core::doc::{Kleinian, Recipe};
+    ui.horizontal(|ui| {
+        egui::ComboBox::from_id_salt("klein-preset").selected_text("Presets").show_ui(ui, |ui| {
+            let presets: [(&str, Kleinian); 3] = [
+                ("Apollonian gasket", Kleinian { recipe: Recipe::Grandma, ta: [2.0, 0.0], tb: [2.0, 0.0], other_root: false }),
+                ("Quasi-Fuchsian", Kleinian::default()),
+                ("Spiral", Kleinian { recipe: Recipe::Grandma, ta: [1.87, 0.1], tb: [1.87, -0.1], other_root: false }),
+            ];
+            for (name, p) in presets {
+                if ui.selectable_label(false, name).on_hover_text(format!("The {name} group")).clicked() {
+                    *k = p;
+                }
+            }
+        });
+    });
+    widgets::segmented(
+        ui,
+        &mut k.recipe,
+        &[
+            (Recipe::Grandma, "Two traces", "Grandma's recipe from the traces of a and b (2 and 2: the Apollonian gasket)"),
+            (Recipe::Riley, "Riley", "a = [1 2; 0 1], b = [1 0; c 1] with c from the first trace"),
+        ],
+    );
+    widgets::grid(ui, "klein-grid", |ui| {
+        widgets::label(ui, if k.recipe == Recipe::Riley { "c" } else { "Trace of a" }, "A complex number; small changes reshape the limit set");
+        ui.horizontal(|ui| {
+            ui.add(egui::DragValue::new(&mut k.ta[0]).speed(0.002).max_decimals(5).prefix("re "));
+            ui.add(egui::DragValue::new(&mut k.ta[1]).speed(0.002).max_decimals(5).prefix("im "));
+        });
+        ui.end_row();
+        if k.recipe == Recipe::Grandma {
+            widgets::label(ui, "Trace of b", "A complex number; 2 gives Maskit's groups");
+            ui.horizontal(|ui| {
+                ui.add(egui::DragValue::new(&mut k.tb[0]).speed(0.002).max_decimals(5).prefix("re "));
+                ui.add(egui::DragValue::new(&mut k.tb[1]).speed(0.002).max_decimals(5).prefix("im "));
+            });
+            ui.end_row();
+            widgets::label(ui, "Other root", "The recipe solves a quadratic for the trace of ab: use its other root");
+            ui.checkbox(&mut k.other_root, "").on_hover_text("The other solution for the trace of ab");
+            ui.end_row();
+        }
+    });
+}
+
 /// Settings of a density layer: which orbits, where they start, how the counts look.
 fn density_section(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
     use rfr_core::doc::{Density, DensityMode};
@@ -620,10 +666,14 @@ fn density_section(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
             (DensityMode::Captive, "Captive", "Paths of the points that stay (anti-Buddhabrot)"),
             (DensityMode::Attractor, "Attractor", "Every orbit after a warm-up: strange attractors (formulas of the Attractors family)"),
             (DensityMode::Ifs, "IFS", "The chaos game over the affine maps below (iterated function systems; the formula is not used)"),
+            (DensityMode::Kleinian, "Kleinian", "The limit set of a group of two Möbius maps (Indra's pearls; the formula is not used)"),
         ],
     );
     if d.mode == DensityMode::Ifs {
         ifs_maps(ui, d, actions);
+    }
+    if d.mode == DensityMode::Kleinian {
+        kleinian_ui(ui, &mut d.kleinian);
     }
     let def = Density::default();
     widgets::grid(ui, "density-grid", |ui| {
@@ -637,7 +687,7 @@ fn density_section(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
                 def.min_iter,
             );
         }
-        if matches!(d.mode, DensityMode::Attractor | DensityMode::Ifs) {
+        if matches!(d.mode, DensityMode::Attractor | DensityMode::Ifs | DensityMode::Kleinian) {
             widgets::slider_u32(
                 ui,
                 "Warm-up",

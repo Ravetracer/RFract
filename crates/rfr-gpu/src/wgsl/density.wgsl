@@ -79,6 +79,49 @@ fn d_ifs(i: u32, start: vec2<f32>) {
     }
 }
 
+fn c2_mul(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
+    return vec2<f32>(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
+}
+
+// A random walk over the Kleinian generators in `bla` (rfr_core::render::density::
+// kleinian_orbit): never the inverse of the step before, the same hashed choices as the CPU.
+fn d_klein(i: u32, start: vec2<f32>) {
+    var z = start;
+    var rnd = hash(i ^ hash(U.densn.w ^ 0x7F4A7C15u));
+    var prev = 4u;
+    for (var it = 0u; it < U.densx.y; it = it + 1u) {
+        rnd = hash(rnd);
+        var k = (rnd >> 8u) % 3u;
+        var banned = 4u;
+        if prev < 4u {
+            banned = (prev + 2u) % 4u;
+        }
+        if banned < 4u && k >= banned {
+            k = k + 1u;
+        }
+        if banned == 4u {
+            k = (rnd >> 8u) % 4u;
+        }
+        prev = k;
+        let m0 = bla[2u * k];
+        let m1 = bla[2u * k + 1u];
+        let den = c2_mul(m1.xy, z) + m1.zw;
+        let dn = dot(den, den);
+        if dn < 1e-30 {
+            z = vec2<f32>(1e10, 0.0);
+            continue;
+        }
+        let num = c2_mul(m0.xy, z) + m0.zw;
+        z = vec2<f32>(num.x * den.x + num.y * den.y, num.y * den.x - num.x * den.y) / dn;
+        if !(abs(z.x) < 1e30 && abs(z.y) < 1e30) {
+            return;
+        }
+        if it >= U.densi.z {
+            d_plot(c_f(z.x, z.y), 1u);
+        }
+    }
+}
+
 @compute @workgroup_size(64)
 fn scatter(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
@@ -93,6 +136,10 @@ fn scatter(@builtin(global_invocation_id) gid: vec3<u32>) {
     let start = vec2<f32>(U.dens.x + (U.dens.z - U.dens.x) * su, U.dens.y + (U.dens.w - U.dens.y) * sv);
     if U.densi.x == 3u {
         d_ifs(i, start);
+        return;
+    }
+    if U.densi.x == 4u {
+        d_klein(i, start);
         return;
     }
     let x = 0u;

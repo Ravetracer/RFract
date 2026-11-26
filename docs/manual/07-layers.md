@@ -71,6 +71,7 @@ inspector decides which orbits count:
 | Captive | The paths of points that stay: the anti-Buddhabrot |
 | Attractor | Every orbit after a warm-up: **strange attractors** (the formulas of the *Attractors* family: Clifford, de Jong, Hopalong, Gumowski–Mira, Ikeda, Tinkerbell, Pickover, Lorenz, Rössler) |
 | IFS | The chaos game of an **iterated function system**: every step applies one of the layer's maps, chosen by its weight (the formula is not used) |
+| Kleinian | The **limit set** of a group of two Möbius transformations and their inverses (a random walk over them; the formula is not used) |
 
 In IFS mode the inspector lists the maps: the six coefficients (x' = a·x + b·y + e,
 y' = c·x + d·y + f), the weight and a *variation* (a nonlinear function after the map, as in
@@ -78,6 +79,11 @@ fractal flames: sinusoidal, spherical, swirl, horseshoe, polar, handkerchief, he
 spiral). *Presets* holds the Sierpinski triangle, Barnsley's fern, the Heighway dragon and the
 Lévy C curve; *Fit view* frames the attractor. FractInt `.ifs` files open like parameter files
 (Ctrl+O): every system in the file becomes an IFS layer.
+
+In Kleinian mode the two generators come from *Grandma's recipe* (the traces of a and b, two
+complex numbers: 2 and 2 give the Apollonian gasket, a second trace of 2 gives Maskit's
+groups) or from *Riley's* recipe (one complex parameter). Small changes of the traces bend the
+limit set from circles into spirals and dust; *Presets* holds a few starting points.
 
 - *Shortest orbit* leaves out orbits that escape at once (they only add a haze).
 - *Start region* is where the start points come from (plane units, independent of the view).
