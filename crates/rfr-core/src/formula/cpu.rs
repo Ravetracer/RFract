@@ -945,11 +945,11 @@ impl<S: Scalar + Send + Sync + 'static> Compiled<S> {
         &self,
         f: &mut Frame<S>,
         maxit: u32,
-        pert: &super::perturb::Perturbation,
-        orbit: &super::perturb::RefOrbit,
+        deep: super::perturb::Deep,
         dpix: crate::math::fx::Cfx,
         mut hook: impl FnMut(Hook<S>),
     ) -> Orbit<S> {
+        let super::perturb::Deep { pert, orbit, bla } = deep;
         self.reset(f, maxit);
         let z = self.layout.slot[Z].1;
         let mut full = vec![crate::math::complex::C64::new(0.0, 0.0); pert.nlocals];
@@ -968,6 +968,16 @@ impl<S: Scalar + Send + Sync + 'static> Compiled<S> {
         while iter < maxit {
             zprev2 = f.zprev;
             f.zprev = f.cx[z];
+            // Linear steps skip iterations while they are valid (no hooks run for them).
+            let skipped = bla.map_or(0, |t| pert.bla_skip(t, &mut st, dpix, maxit - iter));
+            if skipped > 0 {
+                pert.rebase_if_needed(orbit, &mut st);
+                write(f, &st);
+                iter += skipped;
+                f.numiter = iter as i64;
+                f.lastsqr = f.cx[z].norm();
+                continue;
+            }
             pert.step(orbit, &mut st, dpix);
             write(f, &st);
             iter += 1;

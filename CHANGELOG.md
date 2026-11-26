@@ -16,6 +16,9 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
   Buffalo, Tricorn and similar formulas zoom past 1e-308. The reference orbit stays while
   you navigate near it. The status bar shows *perturbation*; it warns only about layers that
   cannot be perturbed.
+- Bilinear approximation (BLA) for deep zooms: linear steps derived from the formula skip
+  hundreds to thousands of iterations where the difference to the reference stays small
+  (about 20× faster at 1e-30 with 50 000 iterations).
 
 ## [0.4.1] - 2026-11-26
 

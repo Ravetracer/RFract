@@ -10,7 +10,7 @@ use rayon::prelude::*;
 use super::composite::{composite, mask_value};
 use super::{ColorMethod, LayerPlan, Node, OrbitResult, Plan, Precision, sample_offset, shade_formula, shade_native};
 use crate::formula::cpu::{Compiled, Frame, Hook};
-use crate::formula::perturb::{Perturbation, RefOrbit};
+use crate::formula::perturb::{BlaTable, Deep, Perturbation, RefOrbit};
 use crate::gradient::linear_to_srgb;
 use crate::math::complex::{C64, Cx};
 use crate::math::fx::Cfx;
@@ -19,8 +19,9 @@ use crate::math::scalar::{Dual, Scalar};
 /// The compiled programs of one layer.
 struct LayerK<S> {
     fractal: Compiled<S>,
-    /// Deep zooms: the perturbation of the fractal and its reference orbit.
-    pert: Option<(Perturbation, RefOrbit)>,
+    /// Deep zooms: the perturbation of the fractal, its reference orbit and the linear steps
+    /// (when no coloring needs every iteration).
+    pert: Option<(Perturbation, RefOrbit, Option<BlaTable>)>,
     transforms: Vec<Compiled<S>>,
     outside: Option<Compiled<S>>,
     inside: Option<Compiled<S>>,
@@ -119,7 +120,7 @@ impl<S: Scalar + Send + Sync + 'static> LayerK<S> {
                 }
             };
             match &self.pert {
-                Some((pert, orbit)) => self.fractal.run_perturbed(&mut f.fractal, maxit, pert, orbit, d, hook),
+                Some((pert, orbit, bla)) => self.fractal.run_perturbed(&mut f.fractal, maxit, Deep { pert, orbit, bla: bla.as_ref() }, d, hook),
                 None => self.fractal.run_with(&mut f.fractal, maxit, hook),
             }
         };
@@ -161,7 +162,9 @@ impl Kernel {
             let mut k = LayerK::<f64>::new(lp);
             let bits = crate::math::big::bits_for(plan.frame.pixel_size_fx());
             let orbit = k.fractal.reference_orbit(&pert, &plan.center_text, bits, lp.max_iter);
-            k.pert = Some((pert, orbit));
+            let bla =
+                if lp.coloring_loops() { None } else { pert.bla_table(&orbit, plan.frame.max_offset_fx(), crate::formula::perturb::BLA_EPS_CPU) };
+            k.pert = Some((pert, orbit, bla));
             return Kernel::Plain(k);
         }
         if lp.needs_derivative() { Kernel::Dual(LayerK::new(lp)) } else { Kernel::Plain(LayerK::new(lp)) }

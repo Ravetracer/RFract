@@ -55,6 +55,10 @@ struct Params {
 @group(0) @binding(4) var<storage, read> images: array<u32>;
 // The reference orbit of a deep zoom: the state variables per iteration (rfr_core RefOrbit).
 @group(0) @binding(5) var<storage, read> refo: array<vec2<f32>>;
+// Linear steps of the reference orbit (rfr_core BlaTable): 8 vec4 of level offsets (u32 bits),
+// then 3 vec4 per step: M, N (2 × 2, row-major), (M exponent, N exponent, r mantissa, r
+// exponent) with the exponents as i32 bits.
+@group(0) @binding(6) var<storage, read> bla: array<vec4<f32>>;
 
 const LUT_SIZE: u32 = 1024u;
 //@RNG_DECL

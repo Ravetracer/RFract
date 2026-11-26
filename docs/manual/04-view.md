@@ -54,7 +54,11 @@ depth limit: views at 10⁻¹⁰⁰⁰ work like any other. While you navigate, 
 stays the same as long as it is near and precise enough, so zooming does not wait for it.
 
 Deep views need many iterations: raise *Iterations* until the black regions show detail (the
-center of a spiral often needs tens of thousands).
+center of a spiral often needs tens of thousands). Most of them are skipped: where the
+difference to the reference stays small, RFract jumps over hundreds or thousands of
+iterations at once with precomputed linear steps (*bilinear approximation*), so a full HD
+image at 10⁻³⁰ with 50 000 iterations takes seconds. Coloring algorithms that look at every
+iteration (orbit traps and the like) need all of them and render slower at depth.
 
 Perturbation works for formulas built from sums, products, quotients, whole-number powers,
 `conj`, `abs`, `real`, `imag` and `flip` with variables that do not depend on conditions in the

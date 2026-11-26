@@ -149,3 +149,8 @@ fn v2_div(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
     let d = b.x * b.x + b.y * b.y;
     return vec2<f32>((a.x * b.x + a.y * b.y) / d, (a.y * b.x - a.x * b.y) / d);
 }
+
+// M · v for a 2 × 2 floatexp matrix (a, e) and a complex floatexp v.
+fn cf_mapply(a: vec4<f32>, e: i32, v: Cf) -> Cf {
+    return cf_make(a.x * v.re + a.y * v.im, a.z * v.re + a.w * v.im, e + v.e);
+}

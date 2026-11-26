@@ -70,6 +70,15 @@ impl RefOrbit {
     }
 }
 
+/// What a perturbed sample iterates against: the lowered formula, its reference orbit and
+/// the linear steps (when they apply).
+#[derive(Clone, Copy)]
+pub struct Deep<'a> {
+    pub pert: &'a Perturbation,
+    pub orbit: &'a RefOrbit,
+    pub bla: Option<&'a BlaTable>,
+}
+
 /// A sample's deltas and its position in the reference orbit.
 #[derive(Clone, Debug)]
 pub struct DeltaState {
@@ -597,6 +606,316 @@ impl Perturbation {
     }
 }
 
+// ---- bilinear approximation (BLA): skipping iterations ----
+
+/// Relative precision of linear steps: the CPU reference renderer keeps 40 bits, the GPU its
+/// `f32` mantissa (their error then stays at the size of its rounding).
+pub const BLA_EPS_CPU: f64 = 1.0 / 1_099_511_627_776.0;
+pub const BLA_EPS_GPU: f64 = 1.0 / 16_777_216.0;
+
+/// A real 2 × 2 matrix with an extended exponent: `[a b; c d] · 2^e`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Mfx {
+    pub a: [f64; 4],
+    pub e: i32,
+}
+
+impl Mfx {
+    fn new(a: [f64; 4], e: i32) -> Mfx {
+        let m = a.iter().fold(0.0f64, |m, x| m.max(x.abs()));
+        if m == 0.0 || !m.is_finite() {
+            return Mfx { a: [0.0; 4], e: 0 };
+        }
+        let k = Fx::from_f64(m).e;
+        Mfx { a: a.map(|x| x * 2f64.powi(-k)), e: e + k }
+    }
+
+    fn mul(&self, o: &Mfx) -> Mfx {
+        let (x, y) = (&self.a, &o.a);
+        Mfx::new([x[0] * y[0] + x[1] * y[2], x[0] * y[1] + x[1] * y[3], x[2] * y[0] + x[3] * y[2], x[2] * y[1] + x[3] * y[3]], self.e + o.e)
+    }
+
+    fn add(&self, o: &Mfx) -> Mfx {
+        if self.a == [0.0; 4] {
+            return *o;
+        }
+        if o.a == [0.0; 4] {
+            return *self;
+        }
+        let e = self.e.max(o.e);
+        let s = |m: &Mfx| m.a.map(|x| x * 2f64.powi((m.e - e).max(-1000)));
+        let (x, y) = (s(self), s(o));
+        Mfx::new([x[0] + y[0], x[1] + y[1], x[2] + y[2], x[3] + y[3]], e)
+    }
+
+    /// Frobenius norm (an upper bound of the operator norm).
+    fn norm(&self) -> Fx {
+        Fx::new(self.a.iter().map(|x| x * x).sum::<f64>().sqrt(), self.e)
+    }
+
+    /// `M · v` for a complex floatexp `v` (as a real 2-vector).
+    pub fn apply(&self, v: Cfx) -> Cfx {
+        Cfx::new(self.a[0] * v.re + self.a[1] * v.im, self.a[2] * v.re + self.a[3] * v.im, self.e.saturating_add(v.e))
+    }
+}
+
+/// One linear step over `len` iterations: `δz ↦ M δz + N δc` while `|δz| < r`.
+#[derive(Clone, Copy, Debug)]
+pub struct Bla {
+    pub m: Mfx,
+    pub n: Mfx,
+    pub r: Fx,
+}
+
+/// Linear steps for every aligned stretch of the reference orbit: level `k` holds the steps
+/// of `2^k` iterations starting at multiples of `2^k`.
+#[derive(Clone, Debug)]
+pub struct BlaTable {
+    pub levels: Vec<Vec<Bla>>,
+}
+
+/// The linear part of a delta (by δz and by δc), a bound of its second-order part and a
+/// limit of |δz| (sign changes of `abs` arguments).
+#[derive(Clone, Copy, Debug)]
+struct Lin {
+    j: [f64; 4],
+    k: [f64; 4],
+    q: f64,
+    lim: f64,
+}
+
+const LIN0: Lin = Lin { j: [0.0; 4], k: [0.0; 4], q: 0.0, lim: f64::INFINITY };
+
+fn mat_c(c: C64) -> [f64; 4] {
+    [c.re, -c.im, c.im, c.re]
+}
+
+fn mm(x: &[f64; 4], y: &[f64; 4]) -> [f64; 4] {
+    [x[0] * y[0] + x[1] * y[2], x[0] * y[1] + x[1] * y[3], x[2] * y[0] + x[3] * y[2], x[2] * y[1] + x[3] * y[3]]
+}
+
+fn madd(x: &[f64; 4], y: &[f64; 4]) -> [f64; 4] {
+    [x[0] + y[0], x[1] + y[1], x[2] + y[2], x[3] + y[3]]
+}
+
+fn fro(x: &[f64; 4]) -> f64 {
+    x.iter().map(|v| v * v).sum::<f64>().sqrt()
+}
+
+/// Smallest singular value of a 2 × 2 matrix.
+fn sigma_min(m: &[f64; 4]) -> f64 {
+    let (a, b, c, d) = (m[0], m[1], m[2], m[3]);
+    let s1 = a * a + b * b + c * c + d * d;
+    let det = (a * d - b * c).abs();
+    let disc = (s1 * s1 - 4.0 * det * det).max(0.0).sqrt();
+    ((s1 - disc) * 0.5).max(0.0).sqrt()
+}
+
+impl Perturbation {
+    /// Locals the loop reads before it writes them (carried from iteration to iteration).
+    fn carried(&self) -> Vec<usize> {
+        fn reads(e: &PE, out: &mut Vec<usize>) {
+            match e {
+                PE::Local(i) => out.push(*i),
+                PE::Const(_) | PE::Pixel => {}
+                PE::Add(a, b) | PE::Sub(a, b) | PE::Mul(a, b) | PE::Div(a, b) | PE::MakeC(a, b) => {
+                    reads(a, out);
+                    reads(b, out);
+                }
+                PE::Neg(a) | PE::PowI(a, _) | PE::Conj(a) | PE::Abs(a) | PE::Re(a) | PE::Im(a) | PE::Flip(a) => reads(a, out),
+            }
+        }
+        let mut written = Vec::new();
+        let mut carried = Vec::new();
+        for (i, e) in &self.body {
+            let mut r = Vec::new();
+            reads(e, &mut r);
+            for l in r {
+                if !written.contains(&l) && !carried.contains(&l) {
+                    carried.push(l);
+                }
+            }
+            written.push(*i);
+        }
+        carried
+    }
+
+    /// Whether BLA applies: only `z` is carried from iteration to iteration.
+    pub fn bla_possible(&self) -> bool {
+        self.carried().iter().all(|&l| l == Z)
+    }
+
+    fn lin(&self, e: &PE, refs: &[C64], ls: &[Lin], center: C64) -> Option<(C64, Lin)> {
+        let ev = |x: &PE| self.lin(x, refs, ls, center);
+        Some(match e {
+            PE::Const(c) => (*c, LIN0),
+            PE::Local(i) => (refs[*i], ls[*i]),
+            PE::Pixel => (center, Lin { j: [0.0; 4], k: [1.0, 0.0, 0.0, 1.0], q: 0.0, lim: f64::INFINITY }),
+            PE::Add(a, b) | PE::Sub(a, b) => {
+                let ((ra, la), (rb, lb)) = (ev(a)?, ev(b)?);
+                let sign = if matches!(e, PE::Sub(..)) { -1.0 } else { 1.0 };
+                (
+                    if sign > 0.0 { ra + rb } else { ra - rb },
+                    Lin { j: madd(&la.j, &lb.j.map(|x| sign * x)), k: madd(&la.k, &lb.k.map(|x| sign * x)), q: la.q + lb.q, lim: la.lim.min(lb.lim) },
+                )
+            }
+            PE::Mul(a, b) => {
+                let ((ra, la), (rb, lb)) = (ev(a)?, ev(b)?);
+                self.lin_mul(ra, la, rb, lb)
+            }
+            PE::Div(..) => return None,
+            PE::Neg(a) => {
+                let (r, l) = ev(a)?;
+                (-r, Lin { j: l.j.map(|x| -x), k: l.k.map(|x| -x), ..l })
+            }
+            PE::PowI(a, n) => {
+                let (r, l) = ev(a)?;
+                let (mut pr, mut pl) = (r, l);
+                for _ in 1..*n {
+                    (pr, pl) = self.lin_mul(pr, pl, r, l);
+                }
+                (pr, pl)
+            }
+            PE::Conj(a) => {
+                let (r, l) = ev(a)?;
+                let d = [1.0, 0.0, 0.0, -1.0];
+                (r.conj(), Lin { j: mm(&d, &l.j), k: mm(&d, &l.k), ..l })
+            }
+            PE::Abs(a) => {
+                let (r, l) = ev(a)?;
+                let s = |v: f64| if v >= 0.0 { 1.0 } else { -1.0 };
+                let d = [s(r.re), 0.0, 0.0, s(r.im)];
+                // The parts must keep their signs: |Jδ| below the smaller part.
+                let lim = r.re.abs().min(r.im.abs()) / fro(&l.j).max(1e-300);
+                (C64::new(r.re.abs(), r.im.abs()), Lin { j: mm(&d, &l.j), k: mm(&d, &l.k), q: l.q, lim: l.lim.min(lim) })
+            }
+            PE::Re(a) | PE::Im(a) | PE::Flip(a) => {
+                let (r, l) = ev(a)?;
+                let (d, v) = match e {
+                    PE::Re(_) => ([1.0, 0.0, 0.0, 0.0], C64::new(r.re, 0.0)),
+                    PE::Im(_) => ([0.0, 1.0, 0.0, 0.0], C64::new(r.im, 0.0)),
+                    _ => ([0.0, 1.0, 1.0, 0.0], C64::new(r.im, r.re)),
+                };
+                // Re takes row 0, Im row 1 (as row 0), Flip swaps the rows.
+                let pick = |m: &[f64; 4]| match e {
+                    PE::Re(_) => [m[0], m[1], 0.0, 0.0],
+                    PE::Im(_) => [m[2], m[3], 0.0, 0.0],
+                    _ => [m[2], m[3], m[0], m[1]],
+                };
+                let _ = d;
+                (v, Lin { j: pick(&l.j), k: pick(&l.k), ..l })
+            }
+            PE::MakeC(a, b) => {
+                let ((ra, la), (rb, lb)) = (ev(a)?, ev(b)?);
+                (
+                    C64::new(ra.re, rb.re),
+                    Lin { j: [la.j[0], la.j[1], lb.j[0], lb.j[1]], k: [la.k[0], la.k[1], lb.k[0], lb.k[1]], q: la.q + lb.q, lim: la.lim.min(lb.lim) },
+                )
+            }
+        })
+    }
+
+    fn lin_mul(&self, ra: C64, la: Lin, rb: C64, lb: Lin) -> (C64, Lin) {
+        let (ma, mb) = (mat_c(ra), mat_c(rb));
+        (
+            ra * rb,
+            Lin {
+                j: madd(&mm(&ma, &lb.j), &mm(&mb, &la.j)),
+                k: madd(&mm(&ma, &lb.k), &mm(&mb, &la.k)),
+                q: ra.norm().sqrt() * lb.q + rb.norm().sqrt() * la.q + fro(&la.j) * fro(&lb.j),
+                lim: la.lim.min(lb.lim),
+            },
+        )
+    }
+
+    /// The single linear step from reference state `n` to `n + 1` (`None`: no linear form).
+    fn bla_step(&self, orbit: &RefOrbit, n: usize, eps: f64) -> Option<Bla> {
+        let mut refs = vec![C64::new(0.0, 0.0); self.nlocals];
+        let mut ls = vec![LIN0; self.nlocals];
+        for (k, &s) in self.state.iter().enumerate() {
+            refs[s] = orbit.state(n)[k];
+        }
+        ls[Z] = Lin { j: [1.0, 0.0, 0.0, 1.0], ..LIN0 };
+        for (i, e) in &self.body {
+            let (r, l) = self.lin(e, &refs, &ls, orbit.center)?;
+            refs[*i] = r;
+            ls[*i] = l;
+        }
+        let l = ls[Z];
+        let lin_r = if l.q > 0.0 { eps * sigma_min(&l.j) / l.q } else { f64::INFINITY };
+        let r = lin_r.min(l.lim);
+        Some(Bla { m: Mfx::new(l.j, 0), n: Mfx::new(l.k, 0), r: if r.is_finite() { Fx::from_f64(r) } else { Fx::from_f64(1e300) } })
+    }
+
+    /// The table of linear steps for `orbit`; `dc` is the largest |δc| of the image, `eps`
+    /// the relative precision they keep.
+    pub fn bla_table(&self, orbit: &RefOrbit, dc: Fx, eps: f64) -> Option<BlaTable> {
+        if !self.bla_possible() || orbit.len < 3 {
+            return None;
+        }
+        let steps = orbit.len - 1;
+        let mut level: Vec<Bla> = (0..steps).map(|n| self.bla_step(orbit, n, eps)).collect::<Option<_>>()?;
+        let mut levels = Vec::new();
+        while level.len() > 1 {
+            let next: Vec<Bla> = level
+                .chunks(2)
+                .filter(|c| c.len() == 2)
+                .map(|c| {
+                    let (x, y) = (&c[0], &c[1]);
+                    // y after x: M = My·Mx, N = My·Nx + Ny; valid while x is and y's input stays valid.
+                    let reach = (y.r - x.n.norm() * dc) / x.m.norm();
+                    let r = if reach.m > 0.0 && reach < x.r {
+                        reach
+                    } else if reach.m > 0.0 {
+                        x.r
+                    } else {
+                        Fx::ZERO
+                    };
+                    Bla { m: y.m.mul(&x.m), n: y.m.mul(&x.n).add(&y.n), r }
+                })
+                .collect();
+            levels.push(level);
+            level = next;
+        }
+        levels.push(level);
+        Some(BlaTable { levels })
+    }
+
+    /// Skips iterations with the longest valid linear step at the sample's position, at most
+    /// `left`; returns the iterations skipped (0: none applies).
+    pub fn bla_skip(&self, table: &BlaTable, st: &mut DeltaState, dpix: Cfx, left: u32) -> u32 {
+        let dz = st.delta[Z].norm();
+        let tz = if st.m == 0 { table.levels.len() as u32 } else { st.m.trailing_zeros() };
+        for k in (1..=tz.min(table.levels.len() as u32 - 1)).rev() {
+            let len = 1u32 << k;
+            if len > left {
+                continue;
+            }
+            let Some(b) = table.levels[k as usize].get(st.m >> k) else { continue };
+            if dz < b.r * b.r {
+                st.delta[Z] = b.m.apply(st.delta[Z]) + b.n.apply(dpix);
+                st.m += len as usize;
+                return len;
+            }
+        }
+        0
+    }
+
+    /// After skipping: rebases like [`Perturbation::step`] when needed.
+    pub fn rebase_if_needed(&self, orbit: &RefOrbit, st: &mut DeltaState) {
+        let zk = self.state.iter().position(|&s| s == Z).unwrap_or(0);
+        let at = st.m.min(orbit.len - 1);
+        let full_z = cfx(orbit.state(at)[zk]) + st.delta[Z];
+        if st.m + 1 >= orbit.len || full_z.norm() < st.delta[Z].norm() {
+            for (k, &s) in self.state.iter().enumerate() {
+                let full = cfx(orbit.state(at)[k]) + st.delta[s];
+                st.delta[s] = full - cfx(orbit.state(0)[k]);
+            }
+            st.m = 0;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -619,7 +938,7 @@ mod tests {
                 let d = [(i as f64 - 4.5) / 5.0 * radius, (j as f64 - 4.5) / 5.0 * radius];
                 let mut g = k.frame();
                 g.ismand = true;
-                let p = k.run_perturbed(&mut g, maxit, &pert, &orbit, Cfx::from_c64(d[0], d[1]), |_| {});
+                let p = k.run_perturbed(&mut g, maxit, Deep { pert: &pert, orbit: &orbit, bla: None }, Cfx::from_c64(d[0], d[1]), |_| {});
                 // The exact escape of the exact point (center + d).
                 let scale = Fx::from_f64(radius * 1e-6);
                 let exact = [big::add(center[0], Fx::from_f64(d[0]), scale), big::add(center[1], Fx::from_f64(d[1]), scale)];
@@ -657,7 +976,49 @@ mod tests {
         assert_eq!(orbit.len, 1001, "-1.75 is inside the set");
         let mut f = k.frame();
         let d = Cfx::from_fx(Fx::parse("3e-500").unwrap(), Fx::ZERO);
-        let o = k.run_perturbed(&mut f, 1000, &pert, &orbit, d, |_| {});
+        let o = k.run_perturbed(&mut f, 1000, Deep { pert: &pert, orbit: &orbit, bla: None }, d, |_| {});
         assert!(!o.escaped);
+    }
+
+    #[test]
+    fn bla_skips_iterations_and_agrees() {
+        // The 1e-22 spiral: thousands of iterations; linear steps must give the same counts.
+        let lib = library();
+        let e = lib.get("rfract:Mandelbrot").unwrap();
+        let prog = e.program().unwrap();
+        let values: Vec<ParamValue> = prog.params.iter().map(|p| p.default.clone()).collect();
+        let k = Compiled::<f64>::new(&prog, &values);
+        let pert = Perturbation::new(&prog, &values, true, [0.0, 0.0]).unwrap();
+        assert!(pert.bla_possible());
+        let center = ["-0.743643887037158704752191506114774".to_string(), "0.131825904205311970493132056385139".to_string()];
+        let radius = Fx::parse("1e-22").unwrap();
+        let orbit = k.reference_orbit(&pert, &center, big::bits_for(radius), 12000);
+        let table = pert.bla_table(&orbit, radius * 2.0, BLA_EPS_CPU).unwrap();
+        let (mut same, mut total, mut plain_steps, mut bla_steps) = (0, 0, 0u64, 0u64);
+        for j in 0..8 {
+            for i in 0..8 {
+                let d = Cfx::from_fx(radius * ((i as f64 - 3.5) / 4.0), radius * ((j as f64 - 3.5) / 4.0));
+                let mut f = k.frame();
+                f.ismand = true;
+                let a = k.run_perturbed(&mut f, 12000, Deep { pert: &pert, orbit: &orbit, bla: None }, d, |_| {});
+                let mut calls = 0u64;
+                let mut g = k.frame();
+                g.ismand = true;
+                let b = k.run_perturbed(&mut g, 12000, Deep { pert: &pert, orbit: &orbit, bla: Some(&table) }, d, |_| calls += 1);
+                plain_steps += a.iter as u64;
+                bla_steps += calls;
+                total += 1;
+                if a.iter == b.iter && a.escaped == b.escaped {
+                    same += 1;
+                } else if std::env::var("RFR_PERT_DEBUG").is_ok() {
+                    let exact = [big::add(&center[0], d.re_fx(), radius * 1e-6), big::add(&center[1], d.im_fx(), radius * 1e-6)];
+                    let o = k.reference_orbit(&pert, &exact, big::bits_for(radius) + 64, 12000);
+                    eprintln!("{i},{j}: plain {} bla {} exact {}", a.iter, b.iter, o.len - 1);
+                }
+            }
+        }
+        eprintln!("BLA ran {bla_steps} of {plain_steps} iterations");
+        assert!(same * 100 >= total * 95, "{same} of {total} agree");
+        assert!(bla_steps * 2 < plain_steps, "BLA ran {bla_steps} of {plain_steps} iterations");
     }
 }

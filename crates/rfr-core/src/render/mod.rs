@@ -152,6 +152,12 @@ impl ViewFrame {
         self.radius_fx * (2.0 / self.height as f64)
     }
 
+    /// The largest offset of a pixel from the center (half the image diagonal), any depth.
+    pub fn max_offset_fx(&self) -> crate::math::fx::Fx {
+        let aspect = self.width as f64 / self.height as f64;
+        self.radius_fx * (1.0 + aspect * aspect).sqrt()
+    }
+
     /// Offset of image position (x, y) from the center in plane units, at any depth.
     pub fn offset_fx(&self, x: f64, y: f64) -> crate::math::fx::Cfx {
         let dx = x - self.width as f64 * 0.5;
@@ -187,6 +193,12 @@ pub struct LayerPlan {
 }
 
 impl LayerPlan {
+    /// A coloring formula runs code after every iteration (orbit traps and the like): deep
+    /// zooms cannot skip iterations for it.
+    pub fn coloring_loops(&self) -> bool {
+        [&self.outside, &self.inside].iter().any(|c| c.formula().is_some_and(|p| !p.program.body.is_empty()))
+    }
+
     pub fn new(l: &Layer) -> Result<LayerPlan, String> {
         let fractal = Prog::resolve(&l.formula, &l.params, ProgramKind::Fractal).map_err(|e| format!("{}: {e}", l.name))?;
         let transforms = l

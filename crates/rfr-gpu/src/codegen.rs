@@ -542,7 +542,7 @@ impl PertGen {
 /// The fractal's init and loop by perturbation (rfr_core Perturbation::start, step and full):
 /// deltas iterate against the reference orbit in `refo`; the locals `l<i>` get the full values
 /// for the bailout, the colorings and `final`.
-fn pert_code(p: &Perturbation, prog: &Program, init: &mut String, body: &mut String) {
+fn pert_code(p: &Perturbation, prog: &Program, use_bla: bool, init: &mut String, body: &mut String) {
     let ns = p.state.len();
     let kz = p.state.iter().position(|&s| s == Z).unwrap_or(0);
     let write_full = |out: &mut String, pad: &str| {
@@ -561,11 +561,49 @@ fn pert_code(p: &Perturbation, prog: &Program, init: &mut String, body: &mut Str
     write_full(&mut g.out, "        ");
     *init = std::mem::take(&mut g.out);
     g.pad = "            ";
+    // Linear steps (rfr_core Perturbation::bla_skip): the longest valid one at pm; the loop
+    // counts the last of its iterations.
+    let mut skip = String::new();
+    if use_bla {
+        let _ = writeln!(skip, "            var skipped = 0u;");
+        let _ = writeln!(skip, "            if U.perti.w > 0 {{");
+        let _ = writeln!(skip, "                let dz = cf_norm(pd{});", Z);
+        let _ = writeln!(skip, "                var top = u32(U.perti.w) - 1u;");
+        let _ = writeln!(skip, "                if pm != 0u {{ top = min(top, countTrailingZeros(pm)); }}");
+        let _ = writeln!(skip, "                for (var k = top; k >= 1u; k = k - 1u) {{");
+        let _ = writeln!(skip, "                    let len = 1u << k;");
+        let _ = writeln!(skip, "                    let idx = pm >> k;");
+        let _ = writeln!(skip, "                    if len > maxit - iter || idx >= ((plen - 1u) >> k) {{ continue; }}");
+        let _ = writeln!(skip, "                    let at = 8u + 3u * (bitcast<u32>(bla[k / 4u][k % 4u]) + idx);");
+        let _ = writeln!(skip, "                    let w = bla[at + 2u];");
+        let _ = writeln!(skip, "                    let rr = cf_make(w.z, 0.0, bitcast<i32>(w.w));");
+        let _ = writeln!(skip, "                    if cf_lt(dz, cf_mul(rr, rr)) {{");
+        let _ = writeln!(
+            skip,
+            "                        pd{z} = cf_add(cf_mapply(bla[at], bitcast<i32>(w.x), pd{z}), cf_mapply(bla[at + 1u], bitcast<i32>(w.y), dpix));",
+            z = Z
+        );
+        let _ = writeln!(skip, "                        pm = pm + len;");
+        let _ = writeln!(skip, "                        skipped = len;");
+        let _ = writeln!(skip, "                        break;");
+        let _ = writeln!(skip, "                    }}");
+        let _ = writeln!(skip, "                }}");
+        let _ = writeln!(skip, "            }}");
+        let _ = writeln!(skip, "            if skipped > 0u {{");
+        let _ = writeln!(skip, "                iter = iter + skipped - 1u;");
+        let _ = writeln!(skip, "            }} else {{");
+        g.pad = "                ";
+    }
+    g.out.push_str(&skip);
+    let pad = g.pad;
     for (k, &s) in p.state.iter().enumerate() {
-        let _ = writeln!(g.out, "            pr{s} = refo[pm * {ns}u + {k}u];");
+        let _ = writeln!(g.out, "{pad}pr{s} = refo[pm * {ns}u + {k}u];");
     }
     g.assign(&p.body);
-    let _ = writeln!(g.out, "            pm = pm + 1u;");
+    let _ = writeln!(g.out, "{pad}pm = pm + 1u;");
+    if use_bla {
+        let _ = writeln!(g.out, "            }}");
+    }
     let _ = writeln!(g.out, "            let fz = cf_add(cf_v2(refo[min(pm, plen - 1u) * {ns}u + {kz}u]), pd{});", Z);
     let _ = writeln!(g.out, "            if pm + 1u >= plen || cf_lt(cf_norm(fz), cf_norm(pd{})) {{", Z);
     let _ = writeln!(g.out, "                let at = min(pm, plen - 1u);");
@@ -623,7 +661,7 @@ pub fn kernel(lp: &LayerPlan, mode: Mode) -> String {
     let mut body = String::new();
     let pert = if mode == Mode::Pert { perturbation(lp) } else { None };
     match &pert {
-        Some(p) => pert_code(p, &lp.fractal.program, &mut init, &mut body),
+        Some(p) => pert_code(p, &lp.fractal.program, p.bla_possible() && !lp.coloring_loops(), &mut init, &mut body),
         None => {
             fractal.stmts(&fractal.prog.init, &mut init, 2, &mut counter);
             fractal.stmts(&fractal.prog.body, &mut body, 3, &mut counter);
