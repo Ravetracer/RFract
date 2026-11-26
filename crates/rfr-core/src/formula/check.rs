@@ -1607,6 +1607,10 @@ impl<'a> Ck<'a> {
                     let v = self.expr(inner, line)?;
                     self.numeric(v)
                 };
+                if v.ty == Ty::Color {
+                    let zero = self.as_color(real(0.0), line)?;
+                    return Ok(Expr { ty: Ty::Color, kind: Kind::ColorOp(ColorOp::Arith(Arith::Sub), vec![zero, v]) });
+                }
                 match v.kind {
                     Kind::Real(x) => real(-x),
                     Kind::Int(i) => Expr { ty: Ty::Int, kind: Kind::Int(-i) },
@@ -1695,6 +1699,17 @@ impl<'a> Ck<'a> {
             BinOp::And => return Ok(logic(Kind::And, self)),
             _ => {}
         }
+        // Arithmetic on colors: channel by channel; a number applies to all four channels.
+        if (l.ty == Ty::Color || r.ty == Ty::Color) && matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div) {
+            let k = match op {
+                BinOp::Add => Arith::Add,
+                BinOp::Sub => Arith::Sub,
+                BinOp::Mul => Arith::Mul,
+                _ => Arith::Div,
+            };
+            let (l, r) = (self.as_color(l, line)?, self.as_color(r, line)?);
+            return Ok(Expr { ty: Ty::Color, kind: Kind::ColorOp(ColorOp::Arith(k), vec![l, r]) });
+        }
         let to_num = |e: Expr| if e.ty == Ty::Bool { conv(e, Ty::Int) } else { e };
         let (l, r) = if matches!(op, BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge | BinOp::Eq | BinOp::Ne) {
             (to_num(l), to_num(r))
@@ -1728,6 +1743,15 @@ impl<'a> Ck<'a> {
             }
             BinOp::Or | BinOp::And | BinOp::Pow => unreachable!(),
         })
+    }
+
+    /// A color operand of color arithmetic: colors as they are, numbers in all four channels.
+    fn as_color(&self, e: Expr, line: usize) -> Result<Expr, Error> {
+        match e.ty {
+            Ty::Color => Ok(e),
+            Ty::Complex => err(line, "a color cannot be combined with a complex number"),
+            _ => Ok(Expr { ty: Ty::Color, kind: Kind::ColorOp(ColorOp::Splat, vec![conv(self.numeric(e), Ty::Real)]) }),
+        }
     }
 
     /// `@param == "Item"`: compares an enumeration's value with the index of the item.
@@ -2740,6 +2764,23 @@ mod tests {
         let src = "T {\nglobal:\n  Step a = new Step(2)\n  int i = 0\n  while i < @which\n    a.Apply(1)\n    a = new Step(3)\n    i = i + 1\n  endwhile\ninit:\n  z = 0\nloop:\n  z = z\nbailout:\n  |z| < 4\ndefault:\n  int param which\n    default = 0\n  endparam\n}\n";
         let ast = parse_ufm_entry(&split_entries(src)[0]).unwrap();
         assert!(check_with(&ast, ProgramKind::Fractal, Some(&ctx)).is_err());
+    }
+
+    #[test]
+    fn color_arithmetic() {
+        use super::super::cpu::Compiled;
+        let src = "C {\nfinal:\n  color a = rgba(1, 0.5, 0, 1)\n  color b = rgba(0, 0.5, 1, 0.5)\n  float u = 0.25\n  #color = a * u + b * (1 - u) - -rgba(0, 0, 0, 0.1) / 2\n}\n";
+        let p = check_kind(&parse_ufm_entry(&split_entries(src)[0]).unwrap(), ProgramKind::Coloring).unwrap();
+        let k = Compiled::<f64>::new(&p, &[]);
+        let mut f = k.frame();
+        k.color_init(&mut f, 10);
+        k.color_final(&mut f, 0, crate::math::complex::C64::new(0.0, 0.0));
+        let c = k.direct_color(&f).unwrap();
+        let want = [0.25, 0.5, 0.75, 0.25 + 0.375 + 0.05];
+        assert!(c.iter().zip(want).all(|(x, y)| (x - y).abs() < 1e-12), "{c:?}");
+        // Colors and complex numbers do not mix.
+        let src = "C {\nfinal:\n  #color = rgb(1, 0, 0) * (1, 1)\n}\n";
+        assert!(check_kind(&parse_ufm_entry(&split_entries(src)[0]).unwrap(), ProgramKind::Coloring).is_err());
     }
 
     #[test]

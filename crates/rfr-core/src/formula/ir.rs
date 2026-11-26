@@ -397,6 +397,10 @@ pub enum ColorOp {
     Merge(crate::doc::MergeMode),
     /// `gradient(t)`: the coloring's gradient at `t` (real → color).
     Gradient,
+    /// Arithmetic on colors, channel by channel (`Add`, `Sub`, `Mul`, `Div`; color × 2).
+    Arith(Arith),
+    /// A number as a color with all four channels set to it (real → color).
+    Splat,
     /// Image objects of image parameter `p` (`crate::images`): `getColor(z)` (complex →
     /// color), `getPixel(x, y)` (int, int → color), `getWidth()`, `getHeight()` (→ int),
     /// `getEmpty()` (→ bool).

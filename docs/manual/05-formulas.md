@@ -104,8 +104,10 @@ rfr-cli formulas --check path/to/formulas
 - Colors: `rgb`, `rgba`, `hsl`, `hsla` (hue 0 to 6), `red`, `green`, `blue`, `alpha`, `hue`,
   `sat`, `lum`, `blend`, `compose`, `gradient` (the coloring's gradient) and the merge
   functions (`mergenormal`, `mergemultiply`, `mergescreen`, … `mergeluminance`). Colors are
-  sRGB values from 0 to 1 with straight alpha. A coloring formula that writes `#color` colors
-  the region directly; the gradient then only serves `gradient()`.
+  sRGB values from 0 to 1 with straight alpha. `+`, `-`, `*` and `/` work channel by channel
+  on colors (`c1 * t + c2 * (1 - t)`); a number counts for all four channels. A coloring
+  formula that writes `#color` colors the region directly; the gradient then only serves
+  `gradient()`.
 - Symbols `#pixel`, `#z`, `#c`, `#zprev`, `#numiter`, `#maxiter`, `#ismand`, `#center`,
   `#magn`, `#x`, `#y`, `#width`, `#height`, `#screenpixel`, `#screenmax`, `#angle`,
   `#random` (a new random complex number per use) and `#randomrange`; `random(seed)` gives
@@ -151,5 +153,5 @@ everything else.
 
 !!! note
     Not supported yet: object arrays sized by a parameter, a loop that changes which object a
-    variable refers to, assignments inside expressions, arithmetic on colors (`c1 * t + c2`),
-    recursion and user functions outside classes. The check lists what fails by frequency.
+    variable refers to, assignments inside expressions, recursion and user functions outside
+    classes. The check lists what fails by frequency.

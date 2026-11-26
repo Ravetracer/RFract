@@ -200,6 +200,16 @@ impl Gen<'_> {
             ColorOp::Blend => format!("mix({}, {}, {})", k(0), k(1), r(2)),
             ColorOp::Compose => format!("k_compose({}, {}, {})", k(0), k(1), r(2)),
             ColorOp::Merge(m) => format!("k_merge({}u, {}, {})", m.index(), k(0), k(1)),
+            ColorOp::Arith(op) => {
+                let o = match op {
+                    Arith::Add => "+",
+                    Arith::Sub => "-",
+                    Arith::Mul => "*",
+                    _ => "/",
+                };
+                format!("({} {o} {})", k(0), k(1))
+            }
+            ColorOp::Splat => format!("vec4<f32>({})", r(0)),
             ColorOp::ImageColor(p) => format!("k_image_color({}u, {})", self.img_slot(p), k(0)),
             ColorOp::ImagePixel(p) => format!("k_image_pixel({}u, {}, {})", self.img_slot(p), k(0), k(1)),
             ColorOp::ImageWidth(p) => format!("k_image_size({}u).x", self.img_slot(p)),

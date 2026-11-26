@@ -348,6 +348,22 @@ impl<'a, S: Scalar + Send + Sync + 'static> Cc<'a, S> {
                     [e(c[0]) as f64, e(c[1]) as f64, e(c[2]) as f64, c[3] as f64]
                 }))
             }
+            ColorOp::Arith(k) => {
+                let (x, y) = (self.k(&a[0]), self.k(&a[1]));
+                E::K(Box::new(move |f| {
+                    let (p, q) = (x(f), y(f));
+                    std::array::from_fn(|i| match k {
+                        Arith::Add => p[i] + q[i],
+                        Arith::Sub => p[i] - q[i],
+                        Arith::Mul => p[i] * q[i],
+                        _ => p[i] / q[i],
+                    })
+                }))
+            }
+            ColorOp::Splat => {
+                let x = self.r(&a[0]);
+                E::K(Box::new(move |f| [x(f).v(); 4]))
+            }
             ColorOp::ImageColor(p) | ColorOp::ImagePixel(p) | ColorOp::ImageWidth(p) | ColorOp::ImageHeight(p) | ColorOp::ImageEmpty(p) => {
                 let img = match self.values.get(p) {
                     Some(ParamValue::Image { path }) => crate::images::get(path),

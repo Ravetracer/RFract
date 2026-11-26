@@ -25,6 +25,8 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
 - Image parameters: `Image param` chooses a PNG or JPEG file in the inspector; formulas read
   it through image objects (`getColor`, `getPixel`, `getWidth`, `getHeight`, `getEmpty`) on
   the CPU and the GPU. Image classes of class libraries (`ImageImport`) work.
+- Arithmetic on colors: `+`, `-`, `*`, `/` channel by channel, numbers apply to all four
+  channels (`c1 * t + c2 * (1 - t)`).
 - The *Image* coloring: an image file looked up by the final z, the pixel or the orbit's
   closest approach (image trap), with size, angle, proportions and tiling.
 
