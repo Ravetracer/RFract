@@ -4,6 +4,8 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-26
+
 ### Added
 
 - UFM classes: class libraries (.ulb) from the formula folders, objects, methods,
