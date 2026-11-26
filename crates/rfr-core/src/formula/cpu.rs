@@ -913,6 +913,76 @@ impl<S: Scalar + Send + Sync + 'static> Compiled<S> {
         (index, self.solid(f))
     }
 
+    /// Writes the real or complex local `slot` (`f64` value).
+    fn set_local(&self, f: &mut Frame<S>, slot: usize, v: crate::math::complex::C64) {
+        let (ty, k) = self.layout.slot[slot];
+        match ty {
+            Ty::Complex => f.cx[k] = Cx::from_f64(v.re, v.im),
+            Ty::Real => f.reals[k] = S::from_f64(v.re),
+            _ => {}
+        }
+    }
+
+    /// The reference orbit of a deep zoom at `center`: the formula's own bailout decides when
+    /// it ends.
+    pub fn reference_orbit(&self, pert: &super::perturb::Perturbation, center: &[String; 2], bits: usize, maxit: u32) -> super::perturb::RefOrbit {
+        let mut f = self.frame();
+        self.reset(&mut f, maxit);
+        pert.reference(center, bits, maxit, |full| {
+            for &s in &pert.state {
+                self.set_local(&mut f, s, full[s]);
+            }
+            let z = f.cx[self.layout.slot[Z].1];
+            f.lastsqr = z.norm();
+            !z.is_finite() || !(self.bailout)(&f)
+        })
+    }
+
+    /// [`Compiled::run_with`] by perturbation: the deltas of the sample at offset `dpix` from
+    /// the reference iterate; the frame holds the full values for the bailout, the hooks and
+    /// `final`.
+    pub fn run_perturbed(
+        &self,
+        f: &mut Frame<S>,
+        maxit: u32,
+        pert: &super::perturb::Perturbation,
+        orbit: &super::perturb::RefOrbit,
+        dpix: crate::math::fx::Cfx,
+        mut hook: impl FnMut(Hook<S>),
+    ) -> Orbit<S> {
+        self.reset(f, maxit);
+        let z = self.layout.slot[Z].1;
+        let mut full = vec![crate::math::complex::C64::new(0.0, 0.0); pert.nlocals];
+        let mut st = pert.start(orbit, dpix);
+        let mut write = |f: &mut Frame<S>, st: &super::perturb::DeltaState| {
+            pert.full(orbit, st, &mut full);
+            for &s in &pert.state {
+                self.set_local(f, s, full[s]);
+            }
+        };
+        write(f, &st);
+        hook(Hook::Init(f.cx[z]));
+        let mut escaped = false;
+        let mut iter = 0;
+        let mut zprev2 = Cx::zero();
+        while iter < maxit {
+            zprev2 = f.zprev;
+            f.zprev = f.cx[z];
+            pert.step(orbit, &mut st, dpix);
+            write(f, &st);
+            iter += 1;
+            f.numiter = iter as i64;
+            f.lastsqr = f.cx[z].norm();
+            if !f.cx[z].is_finite() || !(self.bailout)(f) {
+                escaped = true;
+                break;
+            }
+            hook(Hook::Iter(iter, f.cx[z], f.zprev));
+        }
+        self.fin.iter().for_each(|s| s(f));
+        Orbit { z: f.cx[z], zprev: f.zprev, zprev2, iter, escaped }
+    }
+
     /// Iterates one sample. The caller sets `pixel`, `c`, `ismand`, `center` and `magn`.
     pub fn run(&self, f: &mut Frame<S>, maxit: u32) -> Orbit<S> {
         self.run_with(f, maxit, |_| {})

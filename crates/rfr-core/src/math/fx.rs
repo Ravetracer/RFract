@@ -267,3 +267,131 @@ mod tests {
         assert!((a.sqrt().log10() - a.log10() / 2.0).abs() < 1e-12);
     }
 }
+
+/// A complex floatexp with one exponent for both parts: `(re, im) · 2^e`, `max(|re|, |im|)` in
+/// `[1, 2)` (or zero). The GPU's perturbation kernel uses the same layout with `f32` parts.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Cfx {
+    pub re: f64,
+    pub im: f64,
+    pub e: i32,
+}
+
+/// The power of two of `x`'s leading bit (`x` finite, non-zero).
+fn exponent_of(x: f64) -> i32 {
+    let bits = x.to_bits();
+    let exp = ((bits >> 52) & 0x7ff) as i32;
+    if exp == 0 { exponent_of(x * 2f64.powi(64)) - 64 } else { exp - 1023 }
+}
+
+/// `x · 2^k` without overflow in the factor.
+fn scale(x: f64, k: i32) -> f64 {
+    if k.abs() <= 1000 { x * 2f64.powi(k) } else { x * 2f64.powi(k / 2) * 2f64.powi(k - k / 2) }
+}
+
+impl Cfx {
+    pub const ZERO: Cfx = Cfx { re: 0.0, im: 0.0, e: 0 };
+
+    pub fn new(re: f64, im: f64, e: i32) -> Cfx {
+        let m = re.abs().max(im.abs());
+        if m == 0.0 || !m.is_finite() {
+            return if m.is_finite() { Cfx::ZERO } else { Cfx { re, im, e } };
+        }
+        let k = exponent_of(m);
+        Cfx { re: scale(re, -k), im: scale(im, -k), e: e.saturating_add(k) }
+    }
+
+    pub fn from_c64(re: f64, im: f64) -> Cfx {
+        Cfx::new(re, im, 0)
+    }
+
+    pub fn from_fx(re: Fx, im: Fx) -> Cfx {
+        let e = if re.is_zero() {
+            im.e
+        } else if im.is_zero() {
+            re.e
+        } else {
+            re.e.max(im.e)
+        };
+        Cfx::new(scale(re.m, re.e - e), scale(im.m, im.e - e), e)
+    }
+
+    /// The value as `f64` parts (0 below their range).
+    pub fn to_c64(self) -> (f64, f64) {
+        if self.e < -1100 {
+            return (0.0, 0.0);
+        }
+        (scale(self.re, self.e), scale(self.im, self.e))
+    }
+
+    pub fn re_fx(self) -> Fx {
+        Fx::new(self.re, self.e)
+    }
+
+    pub fn im_fx(self) -> Fx {
+        Fx::new(self.im, self.e)
+    }
+
+    pub fn is_zero(self) -> bool {
+        self.re == 0.0 && self.im == 0.0
+    }
+
+    /// Squared magnitude.
+    pub fn norm(self) -> Fx {
+        Fx::new(self.re * self.re + self.im * self.im, self.e.saturating_mul(2))
+    }
+
+    pub fn conj(self) -> Cfx {
+        Cfx { re: self.re, im: -self.im, e: self.e }
+    }
+}
+
+impl Neg for Cfx {
+    type Output = Cfx;
+    fn neg(self) -> Cfx {
+        Cfx { re: -self.re, im: -self.im, e: self.e }
+    }
+}
+
+impl Add for Cfx {
+    type Output = Cfx;
+    fn add(self, o: Cfx) -> Cfx {
+        if self.is_zero() {
+            return o;
+        }
+        if o.is_zero() {
+            return self;
+        }
+        let (a, b) = if self.e >= o.e { (self, o) } else { (o, self) };
+        let d = a.e - b.e;
+        if d > 64 {
+            return a;
+        }
+        Cfx::new(a.re + scale(b.re, -d), a.im + scale(b.im, -d), a.e)
+    }
+}
+
+impl Sub for Cfx {
+    type Output = Cfx;
+    fn sub(self, o: Cfx) -> Cfx {
+        self + -o
+    }
+}
+
+impl Mul for Cfx {
+    type Output = Cfx;
+    fn mul(self, o: Cfx) -> Cfx {
+        Cfx::new(self.re * o.re - self.im * o.im, self.re * o.im + self.im * o.re, self.e.saturating_add(o.e))
+    }
+}
+
+impl Div for Cfx {
+    type Output = Cfx;
+    fn div(self, o: Cfx) -> Cfx {
+        let d = o.re * o.re + o.im * o.im;
+        if d == 0.0 {
+            return Cfx { re: f64::INFINITY, im: f64::INFINITY, e: 0 };
+        }
+        Cfx::new((self.re * o.re + self.im * o.im) / d, (self.im * o.re - self.re * o.im) / d, self.e.saturating_sub(o.e))
+    }
+}

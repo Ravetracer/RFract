@@ -152,6 +152,15 @@ impl ViewFrame {
         self.radius_fx * (2.0 / self.height as f64)
     }
 
+    /// Offset of image position (x, y) from the center in plane units, at any depth.
+    pub fn offset_fx(&self, x: f64, y: f64) -> crate::math::fx::Cfx {
+        let dx = x - self.width as f64 * 0.5;
+        let dy = -(y - self.height as f64 * 0.5);
+        let s = self.radius_fx / (self.height as f64 * 0.5);
+        let (re, im) = (dx * self.cos - dy * self.sin, dx * self.sin + dy * self.cos);
+        crate::math::fx::Cfx::from_fx(s * re, s * im)
+    }
+
     /// Plane coordinate of image position (x, y) (pixels, y down, fractional).
     pub fn plane(&self, x: f64, y: f64) -> C64 {
         let s = self.radius / (self.height as f64 * 0.5);

@@ -10,6 +10,7 @@ pub mod cpu;
 pub mod ir;
 pub mod library;
 pub mod parse;
+pub mod perturb;
 
 pub use ast::{Dialect, ParamKind, ParamValue, ProgramKind};
 pub use ir::Program;

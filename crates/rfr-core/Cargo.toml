@@ -13,4 +13,5 @@ rayon = "1.12"
 png = "0.18"
 dashu-float = "0.6.2"
 dashu-int = "0.6.2"
+dashu-base = "0.6.1"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }

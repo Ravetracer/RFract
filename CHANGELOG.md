@@ -9,6 +9,11 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
 - Views at any depth: the zoom is kept as a number with an extended exponent and the center
   as exact decimal text; panning and zooming stay exact below 1e-308. The *Zoom* field takes
   text such as `1e500`.
+- Deep zoom by perturbation (CPU renderer for now): a reference orbit in arbitrary precision
+  at the view center, every sample iterates its difference with an extended exponent and
+  rebasing. The perturbed iteration is derived from the formula itself (sums, products,
+  integer powers, conj, abs, real/imag parts), so Mandelbrot powers, Burning Ship, Celtic,
+  Buffalo, Tricorn and similar formulas zoom past 1e-308.
 
 ## [0.4.1] - 2026-11-26
 

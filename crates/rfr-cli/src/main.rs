@@ -120,7 +120,7 @@ fn render(args: &[String]) -> Result<(), String> {
     let t = Instant::now();
     let plan = rfr_core::render::Plan::sized(&doc, w, h)?;
     if plan.precision() == rfr_core::render::Precision::Beyond {
-        eprintln!("note: the view is deeper than double precision reaches; expect rounding steps");
+        eprintln!("note: the view is deeper than double precision reaches; the CPU renders it by perturbation (--cpu)");
     }
     let mut how = "on the CPU".to_string();
     let mut rgba = None;
