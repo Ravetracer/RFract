@@ -3,6 +3,21 @@
 The stages and their scope are in PLAN.md. This file holds the next concrete steps and wishes
 that come up along the way.
 
+## Stage 4 – Deep zoom
+
+- [x] Views at any depth (floatexp radius, decimal center, exact panning and zooming).
+- [x] Perturbation derived from the formula (sums, products, quotients, integer powers, conj,
+      abs via diffabs, real/imag/flip), bignum reference orbit (dashu), floatexp deltas with
+      rebasing; CPU and GPU (`Mode::Pert`), parity tests.
+- [x] BLA (linear steps derived from the formula, binary table, floatexp matrices).
+- [x] Reference orbit kept while navigating near it, new ones in the background.
+- [ ] Periodicity checking and interior checks (cardioid/bulbs) for faster inside regions.
+- [ ] Automatic iteration count (raise while pixels at the limit border escaping ones).
+- [ ] Location bookmarks.
+- [ ] Distance estimation in perturbation views (derivative deltas), BLA for formulas that
+      carry more than z, reference values in double-float on the GPU (long orbits).
+- [ ] Formulas that cannot be perturbed: CPU arbitrary-precision fallback (slow) or a hint.
+
 ## Stage 3b – UFM classes (done, v0.4.1)
 
 - Classes, inheritance, methods, static and base calls, fields, object parameters (plugins)
