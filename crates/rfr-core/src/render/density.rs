@@ -173,7 +173,8 @@ pub fn color(lp: &LayerPlan, d: &Density, hist: &Histogram, x: u32, y: u32) -> [
     if v <= 0.0 {
         return [0.0; 4];
     }
-    let c = crate::gradient::lut_sample(&lp.outside.lut, v as f64);
+    // The gradient's last entry at full density (the lookup wraps at 1).
+    let c = crate::gradient::lut_sample(&lp.outside.lut, v as f64 * (1.0 - 1.0 / lp.outside.lut.len().max(1) as f64));
     [c[0], c[1], c[2], c[3] * v]
 }
 

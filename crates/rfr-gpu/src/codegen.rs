@@ -29,6 +29,7 @@ pub enum Mode {
 const SCALAR_F32: &str = include_str!("wgsl/scalar_f32.wgsl");
 const SCALAR_DUAL: &str = include_str!("wgsl/scalar_dual.wgsl");
 const PERTURB: &str = include_str!("wgsl/perturb.wgsl");
+const DENSITY: &str = include_str!("wgsl/density.wgsl");
 const SCALAR_DF64: &str = include_str!("wgsl/scalar_df64.wgsl");
 const CSTD: &str = include_str!("wgsl/cstd.wgsl");
 const KERNEL: &str = include_str!("wgsl/kernel.wgsl");
@@ -619,8 +620,39 @@ fn pert_code(p: &Perturbation, prog: &Program, use_bla: bool, init: &mut String,
     *body = g.out;
 }
 
+/// The shader of a density layer: kernel.wgsl before its main plus density.wgsl with the
+/// formula's init, loop and bailout (entry points `scatter`, `dmax` and `main`).
+pub fn density_kernel(lp: &LayerPlan) -> String {
+    let g = Gen {
+        prog: &lp.fractal.program,
+        values: &lp.fractal.values,
+        funcs: func_choices(&lp.fractal.program, &lp.fractal.values),
+        prefix: "l".into(),
+        base: 0,
+        img_base: 0,
+    };
+    let mut counter = 0;
+    let mut loc = String::new();
+    locals(&g, &mut loc, "        ", None);
+    let mut init = String::new();
+    g.stmts(&g.prog.init, &mut init, 2, &mut counter);
+    let mut body = String::new();
+    g.stmts(&g.prog.body, &mut body, 3, &mut counter);
+    let prelude = KERNEL.split("@compute").next().unwrap_or_default().replace("//@RNG_DECL", "var<private> rng_l: u32;");
+    let dens = DENSITY
+        .replace("//@MODE_INIT", "        rng_l = hash(rng_base ^ 1u);")
+        .replace("//@LOCALS", loc.trim_end())
+        .replace("//@INIT", init.trim_end())
+        .replace("//@BODY", body.trim_end())
+        .replace("//@BAILOUT", &g.expr(&g.prog.bailout));
+    format!("{SCALAR_F32}\n{CSTD}\n{BLEND}\n{prelude}\n{dens}")
+}
+
 /// The complete kernel shader of a layer.
 pub fn kernel(lp: &LayerPlan, mode: Mode) -> String {
+    if lp.density.is_some() {
+        return density_kernel(lp);
+    }
     fn gen_for<'a>(prog: &'a Prog, prefix: String, base: &mut usize, img: &mut usize) -> Gen<'a> {
         let g =
             Gen { prog: &prog.program, values: &prog.values, funcs: func_choices(&prog.program, &prog.values), prefix, base: *base, img_base: *img };
@@ -774,6 +806,7 @@ pub fn signature(lp: &LayerPlan, mode: Mode) -> u64 {
     lp.outside.formula().is_some().hash(&mut h);
     lp.inside.formula().is_some().hash(&mut h);
     lp.transforms.len().hash(&mut h);
+    lp.density.is_some().hash(&mut h);
     mode.hash(&mut h);
     // Perturbation code has the parameter values folded in.
     if mode == Mode::Pert {

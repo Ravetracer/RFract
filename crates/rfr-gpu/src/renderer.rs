@@ -80,6 +80,11 @@ struct Uni {
     pert: [f32; 4],
     perti: [i32; 4],
     pref: [f32; 4],
+    dens: [f32; 4],
+    densi: [u32; 4],
+    densn: [u32; 4],
+    densx: [u32; 4],
+    densb: [f32; 4],
 }
 
 /// Compositing uniforms (composite.wgsl `Op`).
@@ -148,6 +153,11 @@ fn layer_uni(plan: &Plan, lp: &LayerPlan) -> Uni {
         pert: [0.0; 4],
         perti: [0; 4],
         pref: [0.0; 4],
+        dens: [0.0; 4],
+        densi: [0; 4],
+        densn: [0; 4],
+        densx: [0; 4],
+        densb: [0.0; 4],
     }
 }
 
@@ -260,7 +270,25 @@ struct LayerRes {
     bla: wgpu::Buffer,
     orbit_state: Option<OrbitState>,
     orbit_job: Option<OrbitJob>,
+    /// Density layers: the counts (binding 7) and the uniforms of the scatter passes.
+    hist: wgpu::Buffer,
+    density: Option<DensityRes>,
     uni: Uni,
+}
+
+/// GPU resources of a density layer's scatter passes.
+struct DensityRes {
+    uniform: wgpu::Buffer,
+    orbits: u32,
+    pixels: u32,
+}
+
+/// Cache keys of a density layer's `scatter` and `dmax` pipelines (derived from its signature).
+fn scatter_key(sig: u64) -> u64 {
+    sig ^ 0x5CA7_7E50_0000_0001
+}
+fn dmax_key(sig: u64) -> u64 {
+    sig ^ 0xD3A5_0000_0000_0002
 }
 
 /// A reference orbit on the GPU and where it was computed.
@@ -393,10 +421,14 @@ pub struct GpuRenderer {
     dirty_display: bool,
     generation: u64,
     ready: bool,
-    /// A small storage buffer for bindings a layer does not use.
+    /// Small storage buffers for bindings a layer does not use (read-only ones, and the
+    /// read-write counts of density layers: a buffer cannot be both in one dispatch).
     empty: wgpu::Buffer,
+    empty_rw: wgpu::Buffer,
     /// The plan last set (installs reference orbits finished in the background).
     last_plan: Option<Plan>,
+    /// Passes of the density layers' orbits since the plan was set.
+    density_passes: u32,
 }
 
 /// Most bytes of scratch slots (the band height is limited by it).
@@ -417,6 +449,7 @@ impl GpuRenderer {
                 entry(4, buffer(wgpu::BufferBindingType::Storage { read_only: true })),
                 entry(5, buffer(wgpu::BufferBindingType::Storage { read_only: true })),
                 entry(6, buffer(wgpu::BufferBindingType::Storage { read_only: true })),
+                entry(7, buffer(wgpu::BufferBindingType::Storage { read_only: false })),
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -466,7 +499,9 @@ impl GpuRenderer {
             generation: 0,
             ready: false,
             empty: empty_storage(device),
+            empty_rw: empty_storage(device),
             last_plan: None,
+            density_passes: 0,
             ctx,
         }
     }
@@ -512,6 +547,7 @@ impl GpuRenderer {
     /// for layers whose programs or modes changed.
     pub fn set_plan(&mut self, plan: &Plan) {
         self.last_plan = Some(plan.clone());
+        self.density_passes = 0;
         let device = self.ctx.device.clone();
         let layers = plan.layers();
         self.plan_mode = Some(renderer_mode(plan));
@@ -633,6 +669,32 @@ impl GpuRenderer {
                 Some(s) => (s.buf.clone(), s.bla.clone()),
                 None => (self.empty.clone(), self.empty.clone()),
             };
+            // Density layers: fresh counts for every plan (the view decides where points go).
+            let (hist, density) = match &lp.density {
+                Some(d) => {
+                    let channels = if d.nebula { 3 } else { 1 };
+                    let pixels = plan.frame.width * plan.frame.height;
+                    let hist = device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("density counts"),
+                        size: ((channels * pixels + 4) as u64) * 4,
+                        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                        mapped_at_creation: false,
+                    });
+                    uni.dens = d.region.map(|v| v as f32);
+                    uni.densi = [d.mode.index(), d.min_iter, d.warmup, d.orbits.max(1)];
+                    uni.densn = [d.nebula_iter[0], d.nebula_iter[1], d.nebula_iter[2], 0];
+                    uni.densx = [channels, rfr_core::render::density::max_iter(lp, d), d.nebula as u32, 0];
+                    uni.densb = [d.brightness as f32, d.gamma as f32, 0.0, 0.0];
+                    let uniform = device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("density"),
+                        size: std::mem::size_of::<Uni>() as u64,
+                        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                        mapped_at_creation: false,
+                    });
+                    (hist, Some(DensityRes { uniform, orbits: d.orbits.max(1), pixels }))
+                }
+                None => (self.empty_rw.clone(), None),
+            };
             let (params, lut) = match prev {
                 Some(r) => (r.params, r.lut),
                 None => (
@@ -655,7 +717,7 @@ impl GpuRenderer {
             l.extend_from_slice(&lp.inside.lut);
             self.ctx.queue.write_buffer(&lut, 0, bytemuck::cast_slice(&l));
             self.request_pipeline(signature, lp, mode);
-            res.push(LayerRes { signature, params, lut, images, image_src, orbit, bla, orbit_state: state, orbit_job: job, uni });
+            res.push(LayerRes { signature, params, lut, images, image_src, orbit, bla, orbit_state: state, orbit_job: job, hist, density, uni });
         }
         self.layers = res;
         let (ops, slots) = schedule(plan);
@@ -726,19 +788,65 @@ impl GpuRenderer {
         Target { width, height, accum, texture, view }
     }
 
+    /// One pass of every density layer's orbits into its counts, then their largest counts
+    /// (density.wgsl `scatter`, `dmax`).
+    fn density_pass(&self, scratch: &wgpu::Buffer) {
+        let device = &self.ctx.device;
+        let mut enc = device.create_command_encoder(&Default::default());
+        for l in &self.layers {
+            let Some(d) = &l.density else { continue };
+            let (Some(Ok(scatter)), Some(Ok(dmax))) = (self.pipeline(scatter_key(l.signature)), self.pipeline(dmax_key(l.signature))) else {
+                continue;
+            };
+            let mut u = l.uni;
+            u.densn[3] = self.density_passes;
+            self.ctx.queue.write_buffer(&d.uniform, 0, bytemuck::bytes_of(&u));
+            let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("density"),
+                layout: &self.layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: d.uniform.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: l.params.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 2, resource: l.lut.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 3, resource: scratch.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 4, resource: l.images.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 5, resource: l.orbit.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 6, resource: l.bla.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 7, resource: l.hist.as_entire_binding() },
+                ],
+            });
+            let mut pass = enc.begin_compute_pass(&Default::default());
+            pass.set_bind_group(0, &bind, &[]);
+            pass.set_pipeline(&scatter);
+            pass.dispatch_workgroups(d.orbits.div_ceil(64), 1, 1);
+            pass.set_pipeline(&dmax);
+            pass.dispatch_workgroups(d.pixels.div_ceil(256), 1, 1);
+        }
+        self.ctx.queue.submit(Some(enc.finish()));
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+    }
+
     fn request_pipeline(&mut self, sig: u64, lp: &LayerPlan, mode: Mode) {
         if self.cache.lock().ok().is_some_and(|c| c.contains_key(&sig)) || self.pending.iter().any(|(s, _)| *s == sig) {
             return;
         }
         let source = codegen::kernel(lp, mode);
+        let density = lp.density.is_some();
         let device = self.ctx.device.clone();
         let layout = self.pipeline_layout.clone();
         let cache = self.cache.clone();
         let (tx, rx) = channel();
         std::thread::spawn(move || {
-            let r = compile(&device, &layout, &source);
+            // Density layers: the scatter and maximum passes come from the same module.
+            let mut built = vec![(sig, compile(&device, &layout, &source, "main"))];
+            if density {
+                built.push((scatter_key(sig), compile(&device, &layout, &source, "scatter")));
+                built.push((dmax_key(sig), compile(&device, &layout, &source, "dmax")));
+            }
             if let Ok(mut c) = cache.lock() {
-                c.insert(sig, r);
+                for (k, r) in built {
+                    c.insert(k, r);
+                }
             }
             let _ = tx.send(());
         });
@@ -754,13 +862,19 @@ impl GpuRenderer {
         self.pending.retain(|(_, rx)| matches!(rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
         let mut ready = true;
         for l in &self.layers {
-            match self.pipeline(l.signature) {
-                Some(Ok(_)) => {}
-                Some(Err(e)) => {
-                    self.error.get_or_insert(e);
-                    ready = false;
+            let mut keys = vec![l.signature];
+            if l.density.is_some() {
+                keys.extend([scatter_key(l.signature), dmax_key(l.signature)]);
+            }
+            for k in keys {
+                match self.pipeline(k) {
+                    Some(Ok(_)) => {}
+                    Some(Err(e)) => {
+                        self.error.get_or_insert(e);
+                        ready = false;
+                    }
+                    None => ready = false,
                 }
-                None => ready = false,
             }
         }
         self.ready = ready;
@@ -826,6 +940,7 @@ impl GpuRenderer {
                             wgpu::BindGroupEntry { binding: 4, resource: l.images.as_entire_binding() },
                             wgpu::BindGroupEntry { binding: 5, resource: l.orbit.as_entire_binding() },
                             wgpu::BindGroupEntry { binding: 6, resource: l.bla.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 7, resource: l.hist.as_entire_binding() },
                         ],
                     });
                     steps.push((p, bind));
@@ -847,6 +962,16 @@ impl GpuRenderer {
         let start = Instant::now();
         let mut worked = false;
         while self.samples < max_samples {
+            if self.row == 0 && self.layers.iter().any(|l| l.density.is_some()) {
+                self.density_pass(scratch);
+                self.density_passes += 1;
+                if rfr_core::render::density::restart_due(self.density_passes, max_samples) {
+                    let mut enc = device.create_command_encoder(&Default::default());
+                    enc.clear_buffer(&t.accum, 0, None);
+                    self.ctx.queue.submit(Some(enc.finish()));
+                    self.samples = 0;
+                }
+            }
             let rows = self.band_rows.min(height - self.row).min(max_rows);
             for op in &self.ops {
                 match &op.kind {
@@ -985,7 +1110,7 @@ impl GpuRenderer {
     }
 }
 
-fn compile(device: &wgpu::Device, layout: &wgpu::PipelineLayout, source: &str) -> Result<wgpu::ComputePipeline, String> {
+fn compile(device: &wgpu::Device, layout: &wgpu::PipelineLayout, source: &str, entry: &str) -> Result<wgpu::ComputePipeline, String> {
     // Validate first: naga's message is far more useful than a device error.
     let module = naga::front::wgsl::parse_str(source).map_err(|e| format!("shader: {}", e.emit_to_string(source)))?;
     naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty())
@@ -997,7 +1122,7 @@ fn compile(device: &wgpu::Device, layout: &wgpu::PipelineLayout, source: &str) -
         label: Some("kernel"),
         layout: Some(layout),
         module: &module,
-        entry_point: Some("main"),
+        entry_point: Some(entry),
         compilation_options: Default::default(),
         cache: None,
     });

@@ -39,6 +39,16 @@ struct Uni {
     perti: vec4<i32>,
     // Perturbation: the reference point (f32), unused…
     pref: vec4<f32>,
+    // Density layers (density.wgsl): start region x0, y0, x1, y1
+    dens: vec4<f32>,
+    // mode, minimum orbit length, warm-up, orbits per pass
+    densi: vec4<u32>,
+    // Nebulabrot limits r, g, b, pass index
+    densn: vec4<u32>,
+    // channels, iteration limit, Nebulabrot, unused
+    densx: vec4<u32>,
+    // brightness, gamma, unused…
+    densb: vec4<f32>,
 }
 
 struct Params {

@@ -44,6 +44,12 @@ fn every_library_program_gives_valid_wgsl() {
         }
     }
     assert!(perturbable >= 10, "only {perturbable} formulas can be perturbed");
+    // Density layers: the Mandelbrot (Buddhabrot) and every attractor.
+    for e in library().usable().filter(|e| e.id == "rfract:Mandelbrot" || e.id.starts_with("rfract-attractor:")) {
+        let mut doc = Document::for_formula(&e.id);
+        doc.layers[0].kind = rfr_core::doc::LayerKind::Density;
+        check(&format!("density {}", e.title), &doc, &[Mode::Plain]);
+    }
     for e in library().colorings() {
         let mut d = Document::default();
         d.layers[0].outside_method = OutsideMethod::Formula;
@@ -280,4 +286,45 @@ fn gpu_perturbation_matches_the_cpu() {
     let fresh = rfr_core::render::cpu::rgba8(&rfr_gpu::render_blocking(ctx2, &plan3, s, |_| true).unwrap());
     let diff = block_diff(&after, &fresh, w as usize, h as usize);
     assert!(diff < 3.0, "background reference orbit: block difference {diff:.2} of 255");
+}
+
+#[test]
+fn gpu_density_matches_the_cpu() {
+    let Ok(ctx) = rfr_gpu::GpuContext::new_headless() else {
+        eprintln!("no GPU: skipped");
+        return;
+    };
+    let mut cases = Vec::new();
+    let mut b = Document::for_formula("rfract:Mandelbrot");
+    b.view.center = ["-0.4".into(), "0".into()];
+    b.view.radius = 1.3.into();
+    b.layers[0].kind = rfr_core::doc::LayerKind::Density;
+    b.layers[0].max_iter = 300;
+    b.layers[0].density.orbits = 40000;
+    b.layers[0].outside.gradient = rfr_core::gradient::preset("Ember").unwrap();
+    cases.push(("buddhabrot", b.clone()));
+    let mut n = b.clone();
+    n.layers[0].density.nebula = true;
+    n.layers[0].density.nebula_iter = [300, 100, 30];
+    cases.push(("nebulabrot", n));
+    let mut a = Document::for_formula("rfract-attractor:Clifford");
+    a.layers[0].kind = rfr_core::doc::LayerKind::Density;
+    a.layers[0].density.mode = rfr_core::doc::DensityMode::Attractor;
+    a.layers[0].density.orbits = 2000;
+    a.layers[0].outside.gradient = rfr_core::gradient::preset("Ember").unwrap();
+    cases.push(("clifford", a));
+    let (w, h, s) = (96, 64, 8);
+    for (name, doc) in cases {
+        let plan = Plan::sized(&doc, w, h).unwrap();
+        let cpu = rfr_core::render::cpu::render(&doc, w, h, s).unwrap().rgba8();
+        let gpu = rfr_core::render::cpu::rgba8(&rfr_gpu::render_blocking(ctx.clone(), &plan, s, |_| true).unwrap());
+        if let Ok(dir) = std::env::var("RFR_DUMP") {
+            rfr_core::io::png::write_rgba8(&std::path::Path::new(&dir).join(format!("{name}-cpu.png")), w, h, &cpu, None).unwrap();
+            rfr_core::io::png::write_rgba8(&std::path::Path::new(&dir).join(format!("{name}-gpu.png")), w, h, &gpu, None).unwrap();
+        }
+        assert!(cpu.chunks(4).filter(|p| p[0] > 60).count() > 50, "{name}: the CPU image shows the orbits");
+        let d = block_diff(&cpu, &gpu, w as usize, h as usize);
+        eprintln!("{name}: block difference {d:.2}");
+        assert!(d < 6.0, "{name}: block difference {d:.2} of 255");
+    }
 }
