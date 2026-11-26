@@ -472,6 +472,10 @@ fn fractal_sections(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
             }
         }
     }
+    if l.kind == LayerKind::Density {
+        density_section(ui, l, actions);
+        return;
+    }
     transforms_ui(ui, l, actions);
     let sec = widgets::section(ui, "Outside", true);
     if sec.reset {
@@ -540,6 +544,90 @@ fn fractal_sections(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
             }
         });
     }
+}
+
+/// Settings of a density layer: which orbits, where they start, how the counts look.
+fn density_section(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
+    use rfr_core::doc::{Density, DensityMode};
+    let sec = widgets::section(ui, "Density", true);
+    if sec.reset {
+        l.density = Density::default();
+    }
+    if !sec.open {
+        return;
+    }
+    let d = &mut l.density;
+    widgets::segmented(
+        ui,
+        &mut d.mode,
+        &[
+            (DensityMode::Escaping, "Escaping", "Paths of the points that escape (Buddhabrot)"),
+            (DensityMode::Captive, "Captive", "Paths of the points that stay (anti-Buddhabrot)"),
+            (DensityMode::Attractor, "Attractor", "Every orbit after a warm-up: strange attractors (formulas of the Attractors family)"),
+        ],
+    );
+    let def = Density::default();
+    widgets::grid(ui, "density-grid", |ui| {
+        if d.mode == DensityMode::Escaping {
+            widgets::slider_u32(
+                ui,
+                "Shortest orbit",
+                "Orbits that escape sooner are not drawn (they only add a haze)",
+                &mut d.min_iter,
+                0..=1000,
+                def.min_iter,
+            );
+        }
+        if d.mode == DensityMode::Attractor {
+            widgets::slider_u32(
+                ui,
+                "Warm-up",
+                "Iterations before the points are counted (the orbit settles on the attractor)",
+                &mut d.warmup,
+                0..=1000,
+                def.warmup,
+            );
+        }
+        widgets::label(ui, "Start region", "Where the start points are drawn from: x from, y from, x to, y to (plane units)");
+        ui.horizontal(|ui| {
+            for (k, v) in d.region.iter_mut().enumerate() {
+                ui.add(egui::DragValue::new(v).speed(0.01).max_decimals(6)).on_hover_text(["x from", "y from", "x to", "y to"][k]);
+            }
+        });
+        ui.end_row();
+        widgets::label(ui, "Orbits per pass", "Start points per render pass: more fill the image faster, each pass takes longer");
+        ui.add(egui::DragValue::new(&mut d.orbits).range(256..=4_000_000).speed(256.0)).on_hover_text("Start points per pass");
+        ui.end_row();
+        widgets::label(ui, "Nebulabrot", "Red, green and blue count orbits up to their own iteration limits");
+        ui.checkbox(&mut d.nebula, "").on_hover_text("Three channels with their own iteration limits instead of the gradient");
+        ui.end_row();
+        if d.nebula {
+            widgets::label(ui, "Limits (R G B)", "Longest orbit counted in red, green and blue");
+            ui.horizontal(|ui| {
+                for (k, v) in d.nebula_iter.iter_mut().enumerate() {
+                    ui.add(egui::DragValue::new(v).range(1..=1_000_000)).on_hover_text(["Red", "Green", "Blue"][k]);
+                }
+            });
+            ui.end_row();
+        }
+        widgets::slider_log(
+            ui,
+            "Brightness",
+            "Scales the log density (higher: more of the image at full brightness)",
+            &mut d.brightness,
+            0.05..=20.0,
+            def.brightness,
+        );
+        widgets::slider(ui, "Gamma", "Lifts the faint parts (higher) or darkens them (lower)", &mut d.gamma, 0.2..=5.0, def.gamma);
+        if !d.nebula {
+            widgets::label(ui, "Gradient", "Colors from few points (left) to many (right). Click to edit.");
+            let w = ui.available_width().clamp(120.0, 260.0);
+            if widgets::gradient_strip(ui, &l.outside.gradient, w, 18.0).on_hover_text("Click to edit the gradient").clicked() {
+                actions.push(Action::EditGradient(false));
+            }
+            ui.end_row();
+        }
+    });
 }
 
 fn view_and_image(ui: &mut Ui, doc: &mut Document, sel: &Selection) {
@@ -674,7 +762,7 @@ pub fn show(ui: &mut Ui, doc: &mut Document, sel: &Selection) -> Vec<Action> {
             layer_settings(ui, l, sel, &mut actions);
         }
         if let Some(l) = target_mut(doc, sel)
-            && l.kind == LayerKind::Fractal
+            && matches!(l.kind, LayerKind::Fractal | LayerKind::Density)
         {
             fractal_sections(ui, l, &mut actions);
         }

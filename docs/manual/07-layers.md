@@ -50,6 +50,30 @@ Add a mask with *Add a mask* in the inspector or the … menu. The mask appears 
 in the list; select it to give it a formula from the browser and colors like any layer. Its
 merge mode and opacity do not matter.
 
+## Density layers
+
+A **density layer** (the sparkle button above the layer list) does not color each point by
+its own orbit: it draws many orbits from random start points and counts how often they pass
+through every pixel. Its formula is an ordinary formula; the *Density* section in the
+inspector decides which orbits count:
+
+| Mode | Draws |
+|------|-------|
+| Escaping | The paths of points that escape: the **Buddhabrot** (with the Mandelbrot formula) |
+| Captive | The paths of points that stay: the anti-Buddhabrot |
+| Attractor | Every orbit after a warm-up: **strange attractors** (the formulas of the *Attractors* family: Clifford, de Jong, Hopalong, Gumowski–Mira, Ikeda, Tinkerbell, Pickover, Lorenz, Rössler) |
+
+- *Shortest orbit* leaves out orbits that escape at once (they only add a haze).
+- *Start region* is where the start points come from (plane units, independent of the view).
+- *Orbits per pass*: more fill the image faster; every render pass adds that many.
+- *Nebulabrot* counts three channels with their own iteration limits (red, green, blue) and
+  shows them as RGB; otherwise the gradient colors the counts, from few (left) to many (right).
+- *Brightness* and *Gamma* shape the log density: the brightest pixel has full brightness.
+
+The image gets sharper with every pass. While the counts fill up, the accumulated image starts
+over each time the passes double, so early passes do not stay in it. New density layers merge
+with *Screen*, so their light adds to the layers below.
+
 ## Background
 
 *Image › Background* is the color below all layers. With its opacity at 0, exported PNGs keep

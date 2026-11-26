@@ -51,6 +51,7 @@ enum Cmd {
     Select(Selection),
     ToggleVisible(Vec<usize>),
     AddLayer,
+    AddDensity,
     AddGroup,
     Duplicate,
     Delete,
@@ -154,6 +155,9 @@ pub fn show(ui: &mut Ui, doc: &mut Document, sel: &mut Selection) -> Option<Stri
             if widgets::icon_button(ui, icons::FOLDER_PLUS, "Add a group above the selected layer").clicked() {
                 cmds.push(Cmd::AddGroup);
             }
+            if widgets::icon_button(ui, icons::DENSITY, "Add a density layer above the selected layer: the orbits of its formula, counted per pixel (Buddhabrot; strange attractors with the formulas of the Attractors family)").clicked() {
+                cmds.push(Cmd::AddDensity);
+            }
             if widgets::icon_button(ui, icons::PLUS, "Add a fractal layer above the selected layer").clicked() {
                 cmds.push(Cmd::AddLayer);
             }
@@ -189,9 +193,15 @@ fn apply(doc: &mut Document, sel: &mut Selection, c: Cmd) -> Option<String> {
                 l.visible = !l.visible;
             }
         }
-        Cmd::AddLayer | Cmd::AddGroup => {
+        Cmd::AddLayer | Cmd::AddGroup | Cmd::AddDensity => {
             let layer = if matches!(c, Cmd::AddGroup) {
                 Layer { name: new_name(doc, "Group"), kind: LayerKind::Group, ..Layer::default() }
+            } else if matches!(c, Cmd::AddDensity) {
+                // A Buddhabrot that adds its light to the layers below.
+                let mut l =
+                    Layer { name: new_name(doc, "Density"), kind: LayerKind::Density, merge: rfr_core::doc::MergeMode::Screen, ..Layer::default() };
+                l.outside.gradient = rfr_core::gradient::preset("Ember").unwrap_or_default();
+                l
             } else {
                 // A new layer copies the selected layer's colors, but starts as a Mandelbrot
                 // in Screen mode so it shows through.

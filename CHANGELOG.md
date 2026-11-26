@@ -4,6 +4,15 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
 
 ## [Unreleased]
 
+### Added
+
+- Density layers: orbits of the layer's formula from random start points, counted per pixel
+  and tone-mapped (log density): Buddhabrot (escaping orbits), anti-Buddhabrot (captive
+  orbits), Nebulabrot (three channels with their own iteration limits) and strange attractors,
+  on the GPU and the CPU. New bundled family *Attractors* (Clifford, de Jong, Hopalong,
+  Gumowski–Mira, Ikeda, Tinkerbell, Pickover, Lorenz, Rössler) and the gradients *Ember* and
+  *Starlight*.
+
 ## [0.5.0] - 2026-11-26
 
 ### Added
