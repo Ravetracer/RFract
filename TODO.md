@@ -3,6 +3,20 @@
 The stages and their scope are in PLAN.md. This file holds the next concrete steps and wishes
 that come up along the way.
 
+## Stage 5 – More fractal types (layer kinds)
+
+- [x] Density layers (CPU and GPU): Buddhabrot, anti-Buddhabrot, Nebulabrot, strange
+      attractors (bundled family), log-density tone mapping, restart while the counts fill.
+- [x] Lyapunov (Markus–Lyapunov sequences) with its coloring.
+- [x] Fill and image layers (presets of the Pixel formula), gradient fill coloring.
+- [ ] Light IFS layer (affine maps, small variation set) and `.ifs` import.
+- [ ] Generic root finding (Newton, Halley, Householder, Nova) with derivatives from the
+      compiler.
+- [ ] Kleinian/limit sets (Maskit, Riley, Grandma's recipe), Apollonian/inversion fractals.
+- [ ] Truchet and tiling fractals.
+- [ ] L-systems (`.l` import, vector layer, antialiased strokes).
+- [ ] Density layers: Metropolis–Hastings sampling for zoomed Buddhabrots.
+
 ## Stage 4 – Deep zoom
 
 - [x] Views at any depth (floatexp radius, decimal center, exact panning and zooming).
