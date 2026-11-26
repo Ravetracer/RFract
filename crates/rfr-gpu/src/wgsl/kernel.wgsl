@@ -42,6 +42,9 @@ struct Params {
 // Outside gradient in entries 0..1023, inside gradient in 1024..2047.
 @group(0) @binding(2) var<storage, read> lut: array<vec4<f32>>;
 @group(0) @binding(3) var<storage, read_write> scratch: array<vec4<f32>>;
+// Images of image parameters (rfr_core::images::pack): per image a header (width, height,
+// pixel offset, original width << 16 | original height), then packed sRGB RGBA8 pixels.
+@group(0) @binding(4) var<storage, read> images: array<u32>;
 
 const LUT_SIZE: u32 = 1024u;
 //@RNG_DECL
@@ -128,6 +131,61 @@ fn k_compose(b: vec4<f32>, t: vec4<f32>, amount: f32) -> vec4<f32> {
 
 fn k_merge(mode: u32, b: vec4<f32>, t: vec4<f32>) -> vec4<f32> {
     return vec4<f32>(b_blend(mode, b.xyz, t.xyz), t.w);
+}
+
+fn k_img_px(off: u32, w: u32, x: u32, y: u32) -> vec4<f32> {
+    return unpack4x8unorm(images[off + y * w + x]);
+}
+
+// image.getColor(z): the image covers (-1, -1)..(1, 1), top row at im = 1; bilinear;
+// transparent outside (rfr_core::images::color).
+fn k_image_color(slot: u32, z: Cx) -> vec4<f32> {
+    let w = images[slot * 4u];
+    let h = images[slot * 4u + 1u];
+    let off = images[slot * 4u + 2u];
+    if w == 0u || h == 0u {
+        return vec4<f32>(0.0);
+    }
+    let fw = f32(w);
+    let fh = f32(h);
+    let u = (s_v(z.re) + 1.0) * 0.5 * fw;
+    let v = (1.0 - s_v(z.im)) * 0.5 * fh;
+    if !(u >= 0.0 && u < fw && v >= 0.0 && v < fh) {
+        return vec4<f32>(0.0);
+    }
+    let x = u - 0.5;
+    let y = v - 0.5;
+    let x0 = floor(x);
+    let y0 = floor(y);
+    let xa = u32(clamp(x0, 0.0, fw - 1.0));
+    let xb = u32(clamp(x0 + 1.0, 0.0, fw - 1.0));
+    let ya = u32(clamp(y0, 0.0, fh - 1.0));
+    let yb = u32(clamp(y0 + 1.0, 0.0, fh - 1.0));
+    let top = mix(k_img_px(off, w, xa, ya), k_img_px(off, w, xb, ya), x - x0);
+    let bottom = mix(k_img_px(off, w, xa, yb), k_img_px(off, w, xb, yb), x - x0);
+    return mix(top, bottom, y - y0);
+}
+
+// image.getWidth(), getHeight(): the file's size (0: no image).
+fn k_image_size(slot: u32) -> vec2<i32> {
+    if images[slot * 4u] == 0u {
+        return vec2<i32>(0);
+    }
+    let o = images[slot * 4u + 3u];
+    return vec2<i32>(i32(o >> 16u), i32(o & 0xffffu));
+}
+
+// image.getPixel(x, y): file coordinates from the top left; transparent outside.
+fn k_image_pixel(slot: u32, x: i32, y: i32) -> vec4<f32> {
+    let w = images[slot * 4u];
+    let h = images[slot * 4u + 1u];
+    let size = k_image_size(slot);
+    if w == 0u || x < 0 || y < 0 || x >= size.x || y >= size.y {
+        return vec4<f32>(0.0);
+    }
+    let xs = u32(x) * w / u32(size.x);
+    let ys = u32(y) * h / u32(size.y);
+    return k_img_px(images[slot * 4u + 2u], w, xs, ys);
 }
 
 // The coloring's gradient (base: LUT offset; 0xffffffff: none, a gray ramp).

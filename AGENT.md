@@ -91,6 +91,10 @@ cargo fmt --all --check
   plugin choice. Dev tools: `cargo run -p rfr-core --example check_entry -- <file> <entry>
   [<param>=<class> …]` (compile one entry with its folder's classes and chosen plugins, trace
   orbits), `--example ulb_errors <dir>`.
+- Image parameters (`ParamKind::Image`, value: file path): `new @image` is a built-in image
+  object (`Inst::image`); its methods become `ColorOp::Image*` ops. Images load through
+  `rfr_core::images` (cache, sampling); the GPU gets them per layer as a packed `u32` buffer
+  (binding 4, slots in `codegen::layer_images` order, `k_image_*` in `kernel.wgsl`).
 - Arrays live per sample (`ir::Local::cap`, at most 4096 elements); colors are `Ty::Color`
   (sRGB-encoded RGBA, `ColorOp`), never converted to numbers (`check::color_misuse`).
 - Colorings and transformations are programs of the same IR (`ProgramKind`): colorings run

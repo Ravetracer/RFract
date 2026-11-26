@@ -238,6 +238,8 @@ pub enum ParamKind {
     Color,
     /// An object parameter: the user picks a class derived from `ParamDecl::base`.
     Class,
+    /// An image file (`Image param`): formulas read it through image objects.
+    Image,
 }
 
 /// A parameter value as stored in documents and formula defaults.
@@ -255,6 +257,10 @@ pub enum ParamValue {
     Class {
         class: String,
     },
+    /// An image file (empty: none).
+    Image {
+        path: String,
+    },
 }
 
 impl ParamValue {
@@ -265,7 +271,7 @@ impl ParamValue {
             ParamValue::Float(f) => *f,
             ParamValue::Complex(c) => c[0],
             ParamValue::Color(c) => c[0],
-            ParamValue::Func(_) | ParamValue::Class { .. } => 0.0,
+            ParamValue::Func(_) | ParamValue::Class { .. } | ParamValue::Image { .. } => 0.0,
         }
     }
     pub fn as_complex(&self) -> [f64; 2] {

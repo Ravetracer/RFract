@@ -138,7 +138,18 @@ condition on a parameter, an index from a parameter, a method that returns diffe
 in different branches), the formula keeps all candidates and picks the right one while
 rendering. Each method call on such a variable is built in once per candidate.
 
+### Image parameters
+
+`Image param name … endparam` lets you choose an image file (PNG or JPEG) in the inspector.
+Formulas read it through an image object: `Image img = new @name`, then `img.getColor(z)`
+(the whole image covers the square from −1−1i to 1+1i, the top row at +1i; transparent
+outside), `img.getPixel(x, y)` (pixel coordinates from the top left), `img.getWidth()`,
+`img.getHeight()` and `img.getEmpty()` (no image chosen or the file cannot be read). Class
+libraries use them through their image classes (`ImageImport` and its relatives). Images
+larger than 4096 × 4096 pixels are scaled down; they render on the graphics card like
+everything else.
+
 !!! note
     Not supported yet: object arrays sized by a parameter, a loop that changes which object a
-    variable refers to, assignments inside expressions, recursion, image parameters and user
-    functions outside classes. The check lists what fails by frequency.
+    variable refers to, assignments inside expressions, arithmetic on colors (`c1 * t + c2`),
+    recursion and user functions outside classes. The check lists what fails by frequency.

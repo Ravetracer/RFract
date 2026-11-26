@@ -16,7 +16,10 @@ that come up along the way.
       refers to.
 - [ ] Assignments inside expressions (`Cast(a[10] = new @f(this))`, `abs(r = random(r))`).
 - [ ] More standard classes (orbit traps, exponential smoothing, direct orbit traps, …).
-- [ ] Image parameters (`Image` class), user functions outside classes.
+- [x] Image parameters (`Image` class, `getColor`/`getPixel`/…), the *Image* coloring.
+- [ ] Arithmetic on colors (`c1 * t + c2 * (1 - t)`; blocks `InterpolatedImage`,
+      `ImageTraps`).
+- [ ] User functions outside classes.
 - [ ] Optional: Cranelift JIT for the CPU path.
 
 ## Done in stage 3 (v0.4.0)

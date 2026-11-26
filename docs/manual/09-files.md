@@ -6,6 +6,10 @@
 **Ctrl+O** opens `.rfr` files and PNG images rendered by RFract. Drop a file onto the window to
 open it. RFract asks before it discards unsaved changes.
 
+Image parameters store the image file's path. When the file is not there (a document or
+parameter file from another computer), RFract looks for a file of the same name in your
+formula folders.
+
 ## Parameter files (.upr, .par)
 
 **Ctrl+O** also opens `.upr` and FractInt `.par` parameter files. A file with several images shows their list

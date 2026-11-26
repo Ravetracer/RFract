@@ -397,6 +397,14 @@ pub enum ColorOp {
     Merge(crate::doc::MergeMode),
     /// `gradient(t)`: the coloring's gradient at `t` (real → color).
     Gradient,
+    /// Image objects of image parameter `p` (`crate::images`): `getColor(z)` (complex →
+    /// color), `getPixel(x, y)` (int, int → color), `getWidth()`, `getHeight()` (→ int),
+    /// `getEmpty()` (→ bool).
+    ImageColor(usize),
+    ImagePixel(usize),
+    ImageWidth(usize),
+    ImageHeight(usize),
+    ImageEmpty(usize),
 }
 
 /// The merge mode each color function parameter chooses (`None`: not one).

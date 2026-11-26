@@ -348,6 +348,33 @@ impl<'a, S: Scalar + Send + Sync + 'static> Cc<'a, S> {
                     [e(c[0]) as f64, e(c[1]) as f64, e(c[2]) as f64, c[3] as f64]
                 }))
             }
+            ColorOp::ImageColor(p) | ColorOp::ImagePixel(p) | ColorOp::ImageWidth(p) | ColorOp::ImageHeight(p) | ColorOp::ImageEmpty(p) => {
+                let img = match self.values.get(p) {
+                    Some(ParamValue::Image { path }) => crate::images::get(path),
+                    _ => None,
+                };
+                match op {
+                    ColorOp::ImageColor(_) => {
+                        let z = self.c(&a[0]);
+                        E::K(Box::new(move |f| {
+                            let z = z(f);
+                            crate::images::color(img.as_deref(), z.re.v(), z.im.v())
+                        }))
+                    }
+                    ColorOp::ImagePixel(_) => {
+                        let (x, y) = (self.i(&a[0]), self.i(&a[1]));
+                        E::K(Box::new(move |f| crate::images::pixel(img.as_deref(), x(f), y(f))))
+                    }
+                    ColorOp::ImageEmpty(_) => {
+                        let empty = img.is_none();
+                        E::B(Box::new(move |_| empty))
+                    }
+                    _ => {
+                        let n = img.map_or(0, |i| i64::from(if op == ColorOp::ImageWidth(p) { i.orig_width } else { i.orig_height }));
+                        E::I(Box::new(move |_| n))
+                    }
+                }
+            }
         }
     }
 

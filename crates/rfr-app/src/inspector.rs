@@ -123,6 +123,28 @@ fn param_widget(ui: &mut Ui, salt: &str, p: &Param, value: &mut ParamValue) -> b
                 .response
                 .on_hover_text(format!("{tip}\nThe class (plugin) to use: any class derived from {base}; its parameters follow below."));
         }
+        (ParamKind::Image, ParamValue::Image { path }) => {
+            ui.horizontal(|ui| {
+                let name = if path.is_empty() { "(none)".to_string() } else { path.rsplit(['/', '\\']).next().unwrap_or(path).to_string() };
+                let hover = if path.is_empty() {
+                    format!("{tip}\nChoose an image file (PNG or JPEG).")
+                } else {
+                    format!("{tip}\n{path}\nClick to choose another image.")
+                };
+                if ui.button(format!("{} {name}", icons::OPEN)).on_hover_text(hover).clicked()
+                    && let Some(f) = rfd::FileDialog::new().add_filter("Images", &["png", "jpg", "jpeg"]).pick_file()
+                {
+                    *path = f.display().to_string();
+                }
+                if !path.is_empty() {
+                    if ui.small_button(icons::X).on_hover_text("Remove the image (formulas then see an empty image)").clicked() {
+                        path.clear();
+                    } else if let Err(e) = rfr_core::images::load(path) {
+                        ui.label(RichText::new(icons::WARNING).color(theme::WARN)).on_hover_text(format!("{e}\nThe formula sees an empty image."));
+                    }
+                }
+            });
+        }
         (ParamKind::Color, ParamValue::Color(c)) => {
             // Formula colors are sRGB-encoded; the picker works on linear values.
             use rfr_core::render::composite::{srgb_decode, srgb_encode};

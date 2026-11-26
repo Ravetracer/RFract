@@ -8,8 +8,8 @@
 use std::fmt::Write;
 use std::hash::{Hash, Hasher};
 
-use rfr_core::formula::ParamValue;
 use rfr_core::formula::ir::*;
+use rfr_core::formula::{ParamKind, ParamValue};
 use rfr_core::render::{LayerPlan, Prog};
 
 /// Scalar mode of a shader.
@@ -40,6 +40,8 @@ struct Gen<'a> {
     /// Name prefix of this program's locals (`l` fractal, `t0_` transformations, `ko` / `ki`
     /// colorings).
     prefix: String,
+    /// Slot of this program's first image parameter in the layer's images (`layer_images`).
+    img_base: usize,
     /// Index of this program's first parameter in `P`.
     base: usize,
 }
@@ -177,6 +179,11 @@ impl Gen<'_> {
         }
     }
 
+    /// The layer's image slot of image parameter `p` of this program.
+    fn img_slot(&self, p: usize) -> usize {
+        self.img_base + self.prog.params[..p].iter().filter(|q| q.kind == ParamKind::Image).count()
+    }
+
     fn color_op(&self, op: ColorOp, a: &[Expr]) -> String {
         let r = |i: usize| format!("s_v({})", self.expr(&a[i]));
         let k = |i: usize| self.expr(&a[i]);
@@ -193,6 +200,11 @@ impl Gen<'_> {
             ColorOp::Blend => format!("mix({}, {}, {})", k(0), k(1), r(2)),
             ColorOp::Compose => format!("k_compose({}, {}, {})", k(0), k(1), r(2)),
             ColorOp::Merge(m) => format!("k_merge({}u, {}, {})", m.index(), k(0), k(1)),
+            ColorOp::ImageColor(p) => format!("k_image_color({}u, {})", self.img_slot(p), k(0)),
+            ColorOp::ImagePixel(p) => format!("k_image_pixel({}u, {}, {})", self.img_slot(p), k(0), k(1)),
+            ColorOp::ImageWidth(p) => format!("k_image_size({}u).x", self.img_slot(p)),
+            ColorOp::ImageHeight(p) => format!("k_image_size({}u).y", self.img_slot(p)),
+            ColorOp::ImageEmpty(p) => format!("(images[{}u * 4u] == 0u)", self.img_slot(p)),
             ColorOp::Gradient => {
                 let base = match self.prefix.as_str() {
                     "ko" => "0u",
@@ -365,6 +377,14 @@ pub fn param_programs(lp: &LayerPlan) -> Vec<&Prog> {
     v
 }
 
+/// The image parameter values of a layer in slot order (programs as in `param_programs`).
+pub fn layer_images(lp: &LayerPlan) -> Vec<&ParamValue> {
+    param_programs(lp)
+        .into_iter()
+        .flat_map(|prog| prog.program.params.iter().zip(&prog.values).filter(|(p, _)| p.kind == ParamKind::Image).map(|(_, v)| v))
+        .collect()
+}
+
 /// Parameter values of a layer as `P` entries.
 pub fn param_values(lp: &LayerPlan) -> Vec<[f32; 4]> {
     let mut p = vec![[0.0f32; 4]; MAX_PARAMS];
@@ -406,16 +426,18 @@ fn locals(g: &Gen, out: &mut String, pad: &str, first: Option<&str>) {
 
 /// The complete kernel shader of a layer.
 pub fn kernel(lp: &LayerPlan, mode: Mode) -> String {
-    fn gen_for<'a>(prog: &'a Prog, prefix: String, base: &mut usize) -> Gen<'a> {
-        let g = Gen { prog: &prog.program, values: &prog.values, funcs: func_choices(&prog.program, &prog.values), prefix, base: *base };
+    fn gen_for<'a>(prog: &'a Prog, prefix: String, base: &mut usize, img: &mut usize) -> Gen<'a> {
+        let g =
+            Gen { prog: &prog.program, values: &prog.values, funcs: func_choices(&prog.program, &prog.values), prefix, base: *base, img_base: *img };
         *base += prog.program.params.len();
+        *img += prog.program.params.iter().filter(|p| p.kind == ParamKind::Image).count();
         g
     }
-    let mut base = 0;
-    let fractal = gen_for(&lp.fractal, "l".into(), &mut base);
-    let transforms: Vec<Gen> = lp.transforms.iter().enumerate().map(|(k, t)| gen_for(t, format!("t{k}_"), &mut base)).collect();
-    let outside = lp.outside.formula().map(|p| gen_for(p, "ko".into(), &mut base));
-    let inside = lp.inside.formula().map(|p| gen_for(p, "ki".into(), &mut base));
+    let (mut base, mut img) = (0, 0);
+    let fractal = gen_for(&lp.fractal, "l".into(), &mut base, &mut img);
+    let transforms: Vec<Gen> = lp.transforms.iter().enumerate().map(|(k, t)| gen_for(t, format!("t{k}_"), &mut base, &mut img)).collect();
+    let outside = lp.outside.formula().map(|p| gen_for(p, "ko".into(), &mut base, &mut img));
+    let inside = lp.inside.formula().map(|p| gen_for(p, "ki".into(), &mut base, &mut img));
     let mut counter = 0;
 
     // Transformations: each one runs only when the ones before left the point alive.

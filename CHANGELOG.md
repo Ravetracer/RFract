@@ -22,6 +22,11 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
   objects depending on conditions, indexes from parameters or the branch a method returns
   from (was an error).
 - Method calls on array elements as statements (`m_Elements[j].Init(pz)`).
+- Image parameters: `Image param` chooses a PNG or JPEG file in the inspector; formulas read
+  it through image objects (`getColor`, `getPixel`, `getWidth`, `getHeight`, `getEmpty`) on
+  the CPU and the GPU. Image classes of class libraries (`ImageImport`) work.
+- The *Image* coloring: an image file looked up by the final z, the pixel or the orbit's
+  closest approach (image trap), with size, angle, proportions and tiling.
 
 ### Fixed
 

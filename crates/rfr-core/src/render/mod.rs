@@ -382,8 +382,8 @@ pub fn resolve_value(kind: ParamKind, default: &ParamValue, v: Option<&ParamValu
         (ParamKind::Float, other) => ParamValue::Float(other.as_f64()),
         (ParamKind::Complex, other) => ParamValue::Complex(other.as_complex()),
         (ParamKind::Color, other) => ParamValue::Color(other.as_color()),
-        (ParamKind::Class, ParamValue::Class { .. }) => v.clone(),
-        (ParamKind::Class, _) => default.clone(),
+        (ParamKind::Class, ParamValue::Class { .. }) | (ParamKind::Image, ParamValue::Image { .. }) => v.clone(),
+        (ParamKind::Class | ParamKind::Image, _) => default.clone(),
     }
 }
 

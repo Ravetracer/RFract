@@ -488,6 +488,91 @@ default:
   endparam
 }
 
+ImageMap {
+; Direct coloring with an image: a point of the orbit (the final z, the pixel, or the orbit's
+; closest approach to the center) looks up an image file that covers a square of the given
+; size. Where the image is transparent, outside it, or when no image is chosen, the gradient
+; shows (by iteration count).
+global:
+  Image img = new @image
+init:
+  float dmin = 1e30
+  complex zmin = (0, 0)
+loop:
+  if @source == 2
+    float d = cabs(#z - @center)
+    if d < dmin
+      dmin = d
+      zmin = #z
+    endif
+  endif
+final:
+  complex p = #z
+  if @source == 1
+    p = #pixel
+  elseif @source == 2
+    p = zmin
+  endif
+  complex w = (p - @center) * (cos(-@angle * #pi / 180), sin(-@angle * #pi / 180)) / (@size * 0.5)
+  if @aspect && !img.getEmpty()
+    float iw = img.getWidth()
+    float ih = img.getHeight()
+    if iw > ih
+      w = (real(w), imag(w) * iw / ih)
+    else
+      w = (real(w) * ih / iw, imag(w))
+    endif
+  endif
+  if @tile
+    float tx = real(w) + 1
+    float ty = imag(w) + 1
+    w = (tx - 2 * floor(tx / 2) - 1, ty - 2 * floor(ty / 2) - 1)
+  endif
+  #color = compose(gradient(#numiter * @density), img.getColor(w), 1)
+default:
+  title = "Image"
+  Image param image
+    caption = "Image"
+    hint = "The image file (PNG or JPEG)."
+  endparam
+  int param source
+    caption = "Look up"
+    enum = "Final z" "Pixel" "Closest approach"
+    default = 0
+    hint = "The point that picks the image color: the last z of the orbit, the pixel itself, or the orbit point closest to the center (an image trap)."
+  endparam
+  complex param center
+    caption = "Center"
+    default = (0, 0)
+    hint = "Where the middle of the image lies."
+  endparam
+  float param size
+    caption = "Size"
+    default = 4
+    hint = "Width of the square the image covers."
+  endparam
+  float param angle
+    caption = "Angle"
+    default = 0
+    hint = "Rotation of the image in degrees."
+  endparam
+  bool param aspect
+    caption = "Keep proportions"
+    default = true
+    hint = "Shows the image with its own proportions instead of stretched to a square."
+  endparam
+  bool param tile
+    caption = "Tile"
+    default = false
+    hint = "Repeats the image across the plane."
+  endparam
+  float param density
+    caption = "Gradient density"
+    default = 0.02
+    hint = "Gradient positions per iteration for the color where the image is transparent."
+  endparam
+}
+
 Iterations {
 ; The iteration count, scaled: the classic banded coloring, for the inside too.
 final:

@@ -15,6 +15,7 @@ use bytemuck::{Pod, Zeroable};
 use rfr_core::doc::MaskSource;
 use rfr_core::gradient::LUT_SIZE;
 use rfr_core::render::{Blend, LayerPlan, Node, Plan, Precision};
+use wgpu::util::DeviceExt;
 
 use crate::codegen::{self, MAX_PARAMS, Mode};
 
@@ -241,6 +242,9 @@ struct LayerRes {
     signature: u64,
     params: wgpu::Buffer,
     lut: wgpu::Buffer,
+    /// The layer's images (`rfr_core::images::pack`) and what they were made from.
+    images: wgpu::Buffer,
+    image_src: Vec<Option<Arc<rfr_core::images::ImageData>>>,
     uni: Uni,
 }
 
@@ -297,6 +301,7 @@ impl GpuRenderer {
                 entry(1, buffer(wgpu::BufferBindingType::Uniform)),
                 entry(2, buffer(wgpu::BufferBindingType::Storage { read_only: true })),
                 entry(3, buffer(wgpu::BufferBindingType::Storage { read_only: false })),
+                entry(4, buffer(wgpu::BufferBindingType::Storage { read_only: true })),
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -395,7 +400,43 @@ impl GpuRenderer {
             if codegen::param_programs(lp).iter().map(|p| p.program.params.len()).sum::<usize>() > MAX_PARAMS {
                 self.error = Some(format!("{}: too many parameters for one layer", lp.fractal.id));
             }
-            let (params, lut) = match old.next() {
+            let prev = old.next();
+            // Images: uploaded again only when they change (they can be large).
+            let image_src: Vec<_> = codegen::layer_images(lp)
+                .into_iter()
+                .map(|v| match v {
+                    rfr_core::formula::ParamValue::Image { path } => rfr_core::images::get(path),
+                    _ => None,
+                })
+                .collect();
+            let same = |a: &[Option<Arc<rfr_core::images::ImageData>>]| {
+                a.len() == image_src.len()
+                    && a.iter().zip(&image_src).all(|(x, y)| match (x, y) {
+                        (Some(x), Some(y)) => Arc::ptr_eq(x, y),
+                        (None, None) => true,
+                        _ => false,
+                    })
+            };
+            let images = match &prev {
+                Some(r) if same(&r.image_src) => r.images.clone(),
+                _ => {
+                    let words = rfr_core::images::pack(&image_src);
+                    let bytes = (words.len() * 4) as u64;
+                    let limit = device.limits().max_storage_buffer_binding_size;
+                    let words = if bytes > limit {
+                        self.error = Some(format!("{}: the images are too large for the graphics card", lp.fractal.id));
+                        rfr_core::images::pack(&vec![None; image_src.len()])
+                    } else {
+                        words
+                    };
+                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("images"),
+                        contents: bytemuck::cast_slice(&words),
+                        usage: wgpu::BufferUsages::STORAGE,
+                    })
+                }
+            };
+            let (params, lut) = match prev {
                 Some(r) => (r.params, r.lut),
                 None => (
                     device.create_buffer(&wgpu::BufferDescriptor {
@@ -417,7 +458,7 @@ impl GpuRenderer {
             l.extend_from_slice(&lp.inside.lut);
             self.ctx.queue.write_buffer(&lut, 0, bytemuck::cast_slice(&l));
             self.request_pipeline(signature, lp, mode);
-            res.push(LayerRes { signature, params, lut, uni: layer_uni(plan, lp) });
+            res.push(LayerRes { signature, params, lut, images, image_src, uni: layer_uni(plan, lp) });
         }
         self.layers = res;
         let (ops, slots) = schedule(plan);
@@ -571,6 +612,7 @@ impl GpuRenderer {
                             wgpu::BindGroupEntry { binding: 1, resource: l.params.as_entire_binding() },
                             wgpu::BindGroupEntry { binding: 2, resource: l.lut.as_entire_binding() },
                             wgpu::BindGroupEntry { binding: 3, resource: scratch.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 4, resource: l.images.as_entire_binding() },
                         ],
                     });
                     steps.push((p, bind));

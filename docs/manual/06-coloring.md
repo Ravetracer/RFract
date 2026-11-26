@@ -48,6 +48,7 @@ The *Formula* method runs a coloring algorithm along every orbit. Pick it under
 | Epsilon cross | The first iteration close to an axis |
 | Closest approach (bof60) | The smallest ‖z‖ of the orbit |
 | Iteration of closest approach (bof61) | The iteration of the smallest ‖z‖ |
+| Image | An image file, looked up by the final *z*, the pixel or the orbit's closest approach to a center (an image trap); with size, angle, proportions and tiling. The gradient shows where the image is transparent |
 
 Algorithms can mark points as *solid* (for example outside a trap): those get the solid color
 below the gradient, which can also be transparent.
@@ -57,7 +58,8 @@ below the gradient, which can also be transparent.
 Coloring algorithms are formulas in UFM syntax (`formulas/rfract/rfract.ucl`): `init:` runs
 once, `loop:` after every iteration, `final:` at the end; they read `#z` and write `#index`
 (the gradient position), `#solid` or `#color` (a direct color, see *Formula files* in the Formulas chapter). *Direct color (hue by angle)* is an example
-of a direct coloring: it composes hues over the gradient and multiplies a tint color.
+of a direct coloring: it composes hues over the gradient and multiplies a tint color, *Image*
+another one: it reads an image file through an image parameter.
 
 ## The gradient editor
 

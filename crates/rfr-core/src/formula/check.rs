@@ -68,6 +68,8 @@ struct Inst {
     /// Made from an object parameter: its parameters are user parameters; otherwise they keep
     /// their defaults.
     plugin: bool,
+    /// A built-in image object: the image parameter it reads (`Some(None)`: no image).
+    image: Option<Option<usize>>,
 }
 
 /// An inlined method call.
@@ -522,6 +524,21 @@ impl<'a> Ck<'a> {
             Some(s) => (s.prefix.clone(), s.plugin),
             None => (String::new(), true),
         };
+        if param && let Some(image) = self.image_param(name) {
+            // `new @image`: the built-in image class; its methods are image operations.
+            let class = Arc::new(ast::ClassAst {
+                name: "Image".into(),
+                parent: None,
+                fields: Vec::new(),
+                methods: Vec::new(),
+                params: Vec::new(),
+                title: None,
+                line: 0,
+            });
+            let id = self.instances.len();
+            self.instances.push(Inst { class, prefix: format!("{prefix}~{id}."), plugin: false, image: Some(image) });
+            return Ok(Some(id));
+        }
         let (class, new_prefix, new_plugin) = if param {
             let full = format!("{prefix}{name}");
             let i = self.param_index(&full).ok_or_else(|| Error { line, msg: format!("unknown object parameter '@{name}'") })?;
@@ -539,7 +556,7 @@ impl<'a> Ck<'a> {
             (c, format!("{prefix}~{n}."), false)
         };
         let id = self.instances.len();
-        self.instances.push(Inst { class: class.clone(), prefix: new_prefix.clone(), plugin: new_plugin });
+        self.instances.push(Inst { class: class.clone(), prefix: new_prefix.clone(), plugin: new_plugin, image: None });
         let chain = self.chain(&class, line)?;
         // Fields start at zero; object fields are null.
         let mut array_fields = Vec::new();
@@ -1159,6 +1176,69 @@ impl<'a> Ck<'a> {
         }
     }
 
+    /// The image parameter `@name` names in the current scope: `Some(Some(index))` for a user
+    /// parameter, `Some(None)` for one of an object whose parameters keep their defaults (no
+    /// image), `None` if it is no image parameter.
+    fn image_param(&self, name: &str) -> Option<Option<usize>> {
+        let (prefix, plugin, class) = match self.scopes.last() {
+            Some(s) => (s.prefix.clone(), s.plugin, s.this.map(|t| self.instances[t].class.clone()).or(s.class.clone())),
+            None => (String::new(), true, None),
+        };
+        if plugin && let Some(i) = self.param_index(&format!("{prefix}{name}")) {
+            return (self.params[i].kind == ParamKind::Image).then_some(Some(i));
+        }
+        let chain = self.chain(&class?, 0).ok()?;
+        chain
+            .iter()
+            .rev()
+            .find_map(|c| c.params.iter().find(|p| p.name.eq_ignore_ascii_case(name)))
+            .filter(|p| p.kind == ParamKind::Image)
+            .map(|_| None)
+    }
+
+    /// A method of a built-in image object.
+    fn image_method(&mut self, image: Option<usize>, name: &str, args: &[ast::Expr], line: usize) -> Result<Called, Error> {
+        let want = |n: usize| if args.len() == n { Ok(()) } else { err(line, format!("'{name}' takes {n} argument(s)")) };
+        let arg = |ck: &mut Self, k: usize, ty: Ty| -> Result<Expr, Error> {
+            let v = ck.expr(&args[k], line)?;
+            Ok(conv(ck.numeric(v), ty))
+        };
+        let op = |o: fn(usize) -> ColorOp, ty: Ty, a: Vec<Expr>| match image {
+            Some(p) => Expr { ty, kind: Kind::ColorOp(o(p), a) },
+            // No image: transparent, zero size, empty.
+            None => match ty {
+                Ty::Color => Expr { ty, kind: Kind::ColorOp(ColorOp::Rgba, vec![real(0.0), real(0.0), real(0.0), real(0.0)]) },
+                Ty::Bool => Expr { ty, kind: Kind::Bool(true) },
+                _ => Expr { ty, kind: Kind::Int(0) },
+            },
+        };
+        Ok(Called::Value(match name.to_ascii_lowercase().as_str() {
+            "getcolor" => {
+                want(1)?;
+                let z = arg(self, 0, Ty::Complex)?;
+                op(ColorOp::ImageColor, Ty::Color, vec![z])
+            }
+            "getpixel" => {
+                want(2)?;
+                let (x, y) = (arg(self, 0, Ty::Int)?, arg(self, 1, Ty::Int)?);
+                op(ColorOp::ImagePixel, Ty::Color, vec![x, y])
+            }
+            "getwidth" => {
+                want(0)?;
+                op(ColorOp::ImageWidth, Ty::Int, Vec::new())
+            }
+            "getheight" => {
+                want(0)?;
+                op(ColorOp::ImageHeight, Ty::Int, Vec::new())
+            }
+            "getempty" => {
+                want(0)?;
+                op(ColorOp::ImageEmpty, Ty::Bool, Vec::new())
+            }
+            _ => return err(line, format!("images have no method '{name}' (getColor, getPixel, getWidth, getHeight, getEmpty)")),
+        }))
+    }
+
     /// `object.Method(args)`, `Class.Method(args)` (static, or a base class's implementation
     /// for `this`).
     fn method_call(&mut self, obj: &ast::Expr, name: &str, args: &[ast::Expr], line: usize) -> Result<Called, Error> {
@@ -1175,6 +1255,9 @@ impl<'a> Ck<'a> {
             return self.inline(this, &impl_class, &m, args, line);
         }
         let call = |ck: &mut Self, inst: usize| {
+            if let Some(image) = ck.instances[inst].image {
+                return ck.image_method(image, name, args, line);
+            }
             let class = ck.instances[inst].class.clone();
             let (impl_class, m) =
                 ck.find_method(&class, name, line)?.ok_or_else(|| Error { line, msg: format!("'{}' has no method '{name}'", class.name) })?;
@@ -2210,8 +2293,9 @@ pub fn param_ty(kind: ParamKind) -> Ty {
         ParamKind::Float => Ty::Real,
         ParamKind::Complex | ParamKind::Func => Ty::Complex,
         ParamKind::Color => Ty::Color,
-        // Object parameters have no value in the program (they choose code); a placeholder.
-        ParamKind::Class => Ty::Int,
+        // Object and image parameters have no value in the program (they choose code or name
+        // a file); a placeholder.
+        ParamKind::Class | ParamKind::Image => Ty::Int,
     }
 }
 

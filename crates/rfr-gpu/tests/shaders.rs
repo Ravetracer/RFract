@@ -130,6 +130,27 @@ fn gpu_matches_the_cpu_renderer() {
         d.layers[0].transforms.push(TransformRef { formula: e.id.clone(), ..TransformRef::default() });
         cases.push((format!("transform {}", e.title), d));
     }
+    // Image parameters: a small generated image, looked up by the final z and tiled by pixel.
+    let img_path = std::env::temp_dir().join(format!("rfr-test-image-{}.png", std::process::id()));
+    let (iw, ih) = (12u32, 8u32);
+    let pixels: Vec<u8> = (0..iw * ih)
+        .flat_map(|k| {
+            let (x, y) = (k % iw, k / iw);
+            [(x * 21) as u8, (y * 31) as u8, ((x + y) * 13) as u8, if (x + y) % 5 == 0 { 0 } else { 255 }]
+        })
+        .collect();
+    rfr_core::io::png::write_rgba8(&img_path, iw, ih, &pixels, None).unwrap();
+    for (label, source, tile) in [("final z", 0, false), ("pixel tiled", 1, true)] {
+        let mut d = Document::for_formula("rfract:Mandelbrot");
+        d.layers[0].outside_method = OutsideMethod::Formula;
+        let o = &mut d.layers[0].outside;
+        o.formula = "rfract-coloring:ImageMap".into();
+        o.params.insert("image".into(), rfr_core::formula::ParamValue::Image { path: img_path.display().to_string() });
+        o.params.insert("source".into(), rfr_core::formula::ParamValue::Int(source));
+        o.params.insert("tile".into(), rfr_core::formula::ParamValue::Bool(tile));
+        o.params.insert("size".into(), rfr_core::formula::ParamValue::Float(1.3));
+        cases.push((format!("image {label}"), d));
+    }
     cases.push(("layered".into(), layered()));
     let mut transparent = layered();
     transparent.image.background = [0.0; 4];

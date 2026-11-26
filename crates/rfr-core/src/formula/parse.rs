@@ -1087,6 +1087,16 @@ impl Parser {
                 f.params.push(p);
                 continue;
             }
+            // An image parameter: `Image param name … endparam` (the built-in image class).
+            if typed.is_none() && word.eq_ignore_ascii_case("image") && matches!(self.peek_at(1), Tok::Ident(s) if s.eq_ignore_ascii_case("param")) {
+                self.next();
+                self.next();
+                if let Some(mut p) = self.ufm_param_block(Some(ParamKind::Image))? {
+                    p.base = Some("Image".into());
+                    f.params.push(p);
+                }
+                continue;
+            }
             // An object parameter: `Formula param formulaClass … endparam`.
             if typed.is_none() && !is_keyword(&word) && matches!(self.peek_at(1), Tok::Ident(s) if s.eq_ignore_ascii_case("param")) {
                 self.next();
@@ -1241,6 +1251,7 @@ impl Parser {
             (ParamKind::Complex, None) => ParamValue::Complex([0.0, 0.0]),
             (ParamKind::Class, Some(v @ ParamValue::Class { .. })) => v,
             (ParamKind::Class, _) => ParamValue::Class { class: String::new() },
+            (ParamKind::Image, _) => ParamValue::Image { path: String::new() },
             (ParamKind::Color, Some(v)) => ParamValue::Color(v.as_color()),
             (ParamKind::Color, None) => ParamValue::Color([0.0, 0.0, 0.0, 1.0]),
             (_, Some(v)) => ParamValue::Float(v.as_f64()),

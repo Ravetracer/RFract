@@ -2046,6 +2046,7 @@ dependencies = [
 name = "rfr-core"
 version = "0.4.0"
 dependencies = [
+ "image",
  "libloading",
  "png",
  "rayon",
