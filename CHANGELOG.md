@@ -4,6 +4,8 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-27
+
 ### Added
 
 - 3D object layers: Mandelbulb, quaternion Julia sets, Mandelbox and Menger sponge, sphere
