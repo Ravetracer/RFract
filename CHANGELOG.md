@@ -4,6 +4,8 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-27
+
 ### Added
 
 - Periodicity checking and the main cardioid and bulb test: with a solid inside color,
