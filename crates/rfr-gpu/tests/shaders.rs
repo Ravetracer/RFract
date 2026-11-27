@@ -583,3 +583,34 @@ fn zoom_sequence_frames_match_direct_renders() {
     }
     assert!(seq.rendered <= 16, "{} images for a zoom by 10^4", seq.rendered);
 }
+
+/// A poster rendered in tiles (`rfr_gpu::poster`) looks like the image rendered in one piece,
+/// effects included; the PNG holds the document.
+#[test]
+fn tiled_posters_match_whole_renders() {
+    let Ok(ctx) = rfr_gpu::GpuContext::new_headless() else {
+        eprintln!("no GPU: skipped");
+        return;
+    };
+    let mut doc = Document::for_formula("rfract:Mandelbrot");
+    doc.view.set_center([-0.745, 0.11]);
+    doc.view.radius = 0.02.into();
+    doc.view.rotation = 20.0;
+    doc.post.sharpen = 0.3;
+    doc.post.vignette = 0.3;
+    doc.post.distortion = 0.08;
+    doc.post.chromatic = 0.01;
+    let (w, h, s) = (2300u32, 900u32, 4);
+    let dir = std::env::temp_dir().join(format!("rfr-poster-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("poster.png");
+    let never = std::sync::atomic::AtomicBool::new(false);
+    rfr_gpu::poster::render_poster(&doc, (w, h, s), Some(ctx.clone()), &path, &never, |_| {}).unwrap();
+    let (_, _, tiled) = rfr_core::io::png::read_rgba8(&path).unwrap();
+    let (whole, _) = rfr_gpu::animation::FrameRenderer::new(Some(ctx)).still(&doc, w, h, s).unwrap();
+    let diff = block_diff(&tiled, &whole, w as usize, h as usize);
+    eprintln!("tiled vs whole: block difference {diff:.2}");
+    assert!(diff < 3.0, "{diff:.2}");
+    assert_eq!(rfr_core::io::open(&path).unwrap().view, doc.view);
+    std::fs::remove_dir_all(&dir).ok();
+}

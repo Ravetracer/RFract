@@ -417,41 +417,139 @@ pub fn grade(c: [f32; 3], x: u32, y: u32, w: u32, h: u32, post: &Post) -> [f32; 
     })
 }
 
-/// The display image: per pixel sRGB-encoded red, green, blue (0..1) and alpha, from the
-/// averaged image `lin` (linear, straight alpha).
-pub fn apply(lin: &[[f32; 4]], w: u32, h: u32, post: &Post) -> Vec<[f32; 4]> {
-    let (wu, hu) = (w as usize, h as usize);
+/// Premultiplied light of linear, straight-alpha pixels (not-finite values as 0).
+fn premultiplied(lin: &[[f32; 4]]) -> Vec<[f32; 4]> {
     let ok = |v: f32| if v.is_finite() { v } else { 0.0 };
-    // Premultiplied light.
-    let pre: Vec<[f32; 4]> = lin
-        .iter()
+    lin.iter()
         .map(|c| {
             let a = ok(c[3]).clamp(0.0, 1.0);
             [ok(c[0]).max(0.0) * a, ok(c[1]).max(0.0) * a, ok(c[2]).max(0.0) * a, a]
         })
-        .collect();
-    let rad: Vec<[f32; 3]> = pre.iter().map(|c| [c[0], c[1], c[2]]).collect();
-    let bloom = if post.bloom > 0.0 { bloom_levels(&rad, wu, hu, post) } else { Vec::new() };
-    let weights = level_weights(post.bloom_size, bloom.len());
-    let streak = streaks(&rad, wu, hu, post);
-    let exposure = 2f32.powf(post.exposure as f32);
-    let rays = (post.rays > 0.0).then(|| bright_level(&rad, wu, hu, exposure, post.rays_threshold as f32));
-    let flare = (post.flare > 0.0).then(|| bright_level(&rad, wu, hu, exposure, post.flare_threshold as f32));
-    let strength = post.bloom as f32;
-    let tint = post.streak_tint.map(|t| t * post.streak as f32);
+        .collect()
+}
+
+/// The light effects that spread over the image (bloom, streaks, god rays, lens flares):
+/// computed from the whole image (for tiled posters from a smaller copy of it) and looked up
+/// by the position in the image (0..1).
+pub struct Glow {
+    bloom: Vec<Level>,
+    weights: Vec<f32>,
+    streak: Option<Level>,
+    rays: Option<Level>,
+    flare: Option<Level>,
+}
+
+impl Glow {
+    /// The glow of the averaged image `lin` (linear, straight alpha, `w` × `h`).
+    pub fn new(lin: &[[f32; 4]], w: u32, h: u32, post: &Post) -> Glow {
+        let (wu, hu) = (w as usize, h as usize);
+        let rad: Vec<[f32; 3]> = premultiplied(lin).iter().map(|c| [c[0], c[1], c[2]]).collect();
+        let bloom = if post.bloom > 0.0 { bloom_levels(&rad, wu, hu, post) } else { Vec::new() };
+        let weights = level_weights(post.bloom_size, bloom.len());
+        let exposure = 2f32.powf(post.exposure as f32);
+        Glow {
+            streak: streaks(&rad, wu, hu, post),
+            rays: (post.rays > 0.0).then(|| bright_level(&rad, wu, hu, exposure, post.rays_threshold as f32)),
+            flare: (post.flare > 0.0).then(|| bright_level(&rad, wu, hu, exposure, post.flare_threshold as f32)),
+            bloom,
+            weights,
+        }
+    }
+
+    /// A glow that adds nothing.
+    pub fn empty() -> Glow {
+        Glow { bloom: Vec::new(), weights: Vec::new(), streak: None, rays: None, flare: None }
+    }
+
+    /// No glow at all (the effects that spread are off).
+    pub fn none(post: &Post) -> bool {
+        post.bloom <= 0.0 && post.streak <= 0.0 && post.rays <= 0.0 && post.flare <= 0.0
+    }
+
+    /// The glow at image position (`u`, `v`), 0..1.
+    fn at(&self, u: f32, v: f32, post: &Post) -> [f32; 3] {
+        let strength = post.bloom as f32;
+        let tint = post.streak_tint.map(|t| t * post.streak as f32);
+        let mut glow = [0.0f32; 3];
+        for (l, wt) in self.bloom.iter().zip(&self.weights) {
+            let s = sample(l, u, v);
+            for k in 0..3 {
+                glow[k] += s[k] * wt * strength;
+            }
+        }
+        if let Some(l) = &self.streak {
+            let s = sample(l, u, v);
+            for k in 0..3 {
+                glow[k] += s[k] * tint[k];
+            }
+        }
+        if let Some(l) = &self.rays {
+            let g = god_rays(l, u, v, post);
+            for k in 0..3 {
+                glow[k] += g[k];
+            }
+        }
+        if let Some(l) = &self.flare {
+            let g = lens_flare(l, u, v, post);
+            for k in 0..3 {
+                glow[k] += g[k];
+            }
+        }
+        glow
+    }
+}
+
+/// A rectangle of an image in pixels: x, y, width, height.
+pub type Rect = [u32; 4];
+
+/// The display image: per pixel sRGB-encoded red, green, blue (0..1) and alpha, from the
+/// averaged image `lin` (linear, straight alpha).
+pub fn apply(lin: &[[f32; 4]], w: u32, h: u32, post: &Post) -> Vec<[f32; 4]> {
+    let glow = Glow::new(lin, w, h, post);
+    apply_region(lin, [0, 0, w, h], [0, 0, w, h], w, h, &glow, post)
+}
+
+/// Margin in pixels around `tile` of a `w` × `h` image that [`apply_region`] needs: one pixel
+/// for sharpening, and how far lens distortion and chromatic aberration reach.
+pub fn margin(tile: Rect, w: u32, h: u32, post: &Post) -> u32 {
+    let (dist, ca) = (post.distortion as f32, (post.chromatic as f32).abs());
+    if dist == 0.0 && ca == 0.0 {
+        return 2;
+    }
+    let (cx, cy) = (0.5 * (w as f32 - 1.0), 0.5 * (h as f32 - 1.0));
+    let mut m = 0.0f32;
+    let (x0, y0, x1, y1) = (tile[0] as f32, tile[1] as f32, (tile[0] + tile[2]) as f32, (tile[1] + tile[3]) as f32);
+    for (x, y) in [(x0, y0), (x1, y0), (x0, y1), (x1, y1), ((x0 + x1) * 0.5, y0), ((x0 + x1) * 0.5, y1), (x0, (y0 + y1) * 0.5), (x1, (y0 + y1) * 0.5)]
+    {
+        let (dx, dy) = (x - cx, y - cy);
+        let r2 = (dx * dx + dy * dy) / (cx * cx + cy * cy).max(1e-6);
+        let base = 1.0 + dist * r2;
+        let s = ((base * (1.0 + ca) - 1.0).abs()).max((base * (1.0 - ca) - 1.0).abs());
+        m = m.max(dx.hypot(dy) * s);
+    }
+    m.ceil() as u32 + 3
+}
+
+/// The display pixels of `tile` (a part of a `w` × `h` image), from `lin`: the averaged image
+/// (linear, straight alpha) in `region`, which holds the tile with its [`margin`] (clamped to
+/// the image). `glow` comes from the whole image. The same result as [`apply`] on the whole
+/// image, cut to the tile.
+pub fn apply_region(lin: &[[f32; 4]], region: Rect, tile: Rect, w: u32, h: u32, glow: &Glow, post: &Post) -> Vec<[f32; 4]> {
+    let [rx, ry, rw, rh] = region.map(|v| v as usize);
+    let pre = premultiplied(lin);
     let sharpen = post.sharpen as f32;
-    // Sharpened light plus glow.
-    let mut mid = vec![[0.0f32; 4]; wu * hu];
-    mid.par_chunks_mut(wu.max(1)).enumerate().for_each(|(y, row)| {
-        let v = (y as f32 + 0.5) / h as f32;
+    // Sharpened light plus glow over the region.
+    let mut mid = vec![[0.0f32; 4]; rw * rh];
+    mid.par_chunks_mut(rw.max(1)).enumerate().for_each(|(y, row)| {
+        let v = ((ry + y) as f32 + 0.5) / h as f32;
         for (x, o) in row.iter_mut().enumerate() {
-            let c = pre[y * wu + x];
+            let c = pre[y * rw + x];
             let mut rgb = [c[0], c[1], c[2]];
             if sharpen != 0.0 {
                 let mut m = [0.0f32; 3];
                 for dy in -1i64..=1 {
                     for dx in -1i64..=1 {
-                        let q = pre[(y as i64 + dy).clamp(0, hu as i64 - 1) as usize * wu + (x as i64 + dx).clamp(0, wu as i64 - 1) as usize];
+                        let q = pre[(y as i64 + dy).clamp(0, rh as i64 - 1) as usize * rw + (x as i64 + dx).clamp(0, rw as i64 - 1) as usize];
                         for k in 0..3 {
                             m[k] += q[k] / 9.0;
                         }
@@ -461,46 +559,22 @@ pub fn apply(lin: &[[f32; 4]], w: u32, h: u32, post: &Post) -> Vec<[f32; 4]> {
                     rgb[k] = (rgb[k] + sharpen * (rgb[k] - m[k])).max(0.0);
                 }
             }
-            let u = (x as f32 + 0.5) / w as f32;
-            let mut glow = [0.0f32; 3];
-            for (l, wt) in bloom.iter().zip(&weights) {
-                let s = sample(l, u, v);
-                for k in 0..3 {
-                    glow[k] += s[k] * wt * strength;
-                }
-            }
-            if let Some(l) = &streak {
-                let s = sample(l, u, v);
-                for k in 0..3 {
-                    glow[k] += s[k] * tint[k];
-                }
-            }
-            if let Some(l) = &rays {
-                let g = god_rays(l, u, v, post);
-                for k in 0..3 {
-                    glow[k] += g[k];
-                }
-            }
-            if let Some(l) = &flare {
-                let g = lens_flare(l, u, v, post);
-                for k in 0..3 {
-                    glow[k] += g[k];
-                }
-            }
+            let u = ((rx + x) as f32 + 0.5) / w as f32;
+            let glow = glow.at(u, v, post);
             let a = c[3] + (1.0 - c[3]) * glow[0].max(glow[1]).max(glow[2]).clamp(0.0, 1.0);
             *o = [rgb[0] + glow[0], rgb[1] + glow[1], rgb[2] + glow[2], a];
         }
     });
-    // Lens distortion and chromatic aberration, then the grading.
+    // Lens distortion and chromatic aberration (in image coordinates), then the grading.
     let (cx, cy) = (0.5 * (w as f32 - 1.0), 0.5 * (h as f32 - 1.0));
     let (dist, ca) = (post.distortion as f32, post.chromatic as f32);
     let bilinear = |fx: f32, fy: f32| -> [f32; 4] {
-        let fx = fx.clamp(0.0, w as f32 - 1.0);
-        let fy = fy.clamp(0.0, h as f32 - 1.0);
+        let fx = fx.clamp(0.0, w as f32 - 1.0).clamp(rx as f32, (rx + rw - 1) as f32) - rx as f32;
+        let fy = fy.clamp(0.0, h as f32 - 1.0).clamp(ry as f32, (ry + rh - 1) as f32) - ry as f32;
         let (x0, y0) = (fx.floor() as usize, fy.floor() as usize);
-        let (x1, y1) = ((x0 + 1).min(wu - 1), (y0 + 1).min(hu - 1));
+        let (x1, y1) = ((x0 + 1).min(rw - 1), (y0 + 1).min(rh - 1));
         let (tx, ty) = (fx - x0 as f32, fy - y0 as f32);
-        let p = |x: usize, y: usize| mid[y * wu + x];
+        let p = |x: usize, y: usize| mid[y * rw + x];
         let (a, b, c, d) = (p(x0, y0), p(x1, y0), p(x0, y1), p(x1, y1));
         std::array::from_fn(|k| {
             let top = a[k] + (b[k] - a[k]) * tx;
@@ -508,11 +582,14 @@ pub fn apply(lin: &[[f32; 4]], w: u32, h: u32, post: &Post) -> Vec<[f32; 4]> {
             top + (bottom - top) * ty
         })
     };
-    let mut out = vec![[0.0f32; 4]; wu * hu];
-    out.par_chunks_mut(wu.max(1)).enumerate().for_each(|(y, row)| {
-        for (x, o) in row.iter_mut().enumerate() {
+    let [tx0, ty0, tw, th] = tile.map(|v| v as usize);
+    let mut out = vec![[0.0f32; 4]; tw * th];
+    out.par_chunks_mut(tw.max(1)).enumerate().for_each(|(j, row)| {
+        let y = ty0 + j;
+        for (i, o) in row.iter_mut().enumerate() {
+            let x = tx0 + i;
             let c = if dist == 0.0 && ca == 0.0 {
-                mid[y * wu + x]
+                mid[(y - ry) * rw + (x - rx)]
             } else {
                 let (dx, dy) = (x as f32 - cx, y as f32 - cy);
                 let r2 = (dx * dx + dy * dy) / (cx * cx + cy * cy).max(1e-6);
@@ -760,5 +837,35 @@ mod tests {
             assert!((l - 1.0).abs() < 0.02 && v[2] > 0.0, "{c:?}");
         }
         assert!(r.iter().any(|c| c[2] > 0.999), "the flat set faces straight up");
+    }
+
+    #[test]
+    fn tiles_give_the_whole_image() {
+        let (w, h) = (97u32, 61u32);
+        let img = image(w, h, |x, y| {
+            let v = ((x * 7 + y * 13) % 17) as f32 / 4.0;
+            [v, (x as f32 / 30.0).sin().abs() * 3.0, (y % 5) as f32, if x % 11 == 0 { 0.5 } else { 1.0 }]
+        });
+        let post = Post { bloom: 0.8, sharpen: 0.6, distortion: 0.15, chromatic: 0.03, spectral: true, vignette: 0.4, grain: 0.2, ..Post::default() };
+        let whole = apply(&img, w, h, &post);
+        let glow = Glow::new(&img, w, h, &post);
+        let mut stitched = vec![[0.0f32; 4]; (w * h) as usize];
+        for ty in (0..h).step_by(20) {
+            for tx in (0..w).step_by(32) {
+                let tile = [tx, ty, 32.min(w - tx), 20.min(h - ty)];
+                let m = margin(tile, w, h, &post);
+                let (x0, y0) = (tx.saturating_sub(m), ty.saturating_sub(m));
+                let (x1, y1) = ((tile[0] + tile[2] + m).min(w), (tile[1] + tile[3] + m).min(h));
+                let region = [x0, y0, x1 - x0, y1 - y0];
+                let part: Vec<[f32; 4]> = (y0..y1).flat_map(|y| (x0..x1).map(move |x| (x, y))).map(|(x, y)| img[(y * w + x) as usize]).collect();
+                let out = apply_region(&part, region, tile, w, h, &glow, &post);
+                for j in 0..tile[3] {
+                    for i in 0..tile[2] {
+                        stitched[((ty + j) * w + tx + i) as usize] = out[(j * tile[2] + i) as usize];
+                    }
+                }
+            }
+        }
+        assert_eq!(stitched, whole);
     }
 }

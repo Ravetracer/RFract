@@ -8,7 +8,11 @@ that come up along the way.
 - [x] Explore lane: presets (the manual's examples), random documents framed by zooming into
       the busiest part of a neutral preview, mutations (parameters, colors, view, formula),
       quality filter (noise and contrast of the thumbnail), snapshots.
-- [ ] Tiled poster renders (20k+ px, tile-wise denoising).
+- [x] Tiled poster renders (20k+ px, tile-wise denoising): exact tiles for per-pixel layers,
+      effects per region with margins, glow from a 4K render, PNG written in bands (20000 ×
+      11250 in 76 s, 0.7 GB memory).
+      Open: lit layers, layer effects, density layers and 3D objects in tiles (needs a
+      "window of a larger frame" in both renderers).
 - [ ] Render queue polish (job settings: size, samples, frames; tiled posters as jobs).
 - [ ] Performance: adaptive AA, CPU guessing/boundary tracing, shader cache on disk.
 - [ ] Complete manual with how-tos and example documents.

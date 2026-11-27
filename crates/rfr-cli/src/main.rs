@@ -302,6 +302,24 @@ fn render(args: &[String]) -> Result<(), String> {
         return Err(format!("refusing to overwrite the input {}", output.display()));
     }
     let t = Instant::now();
+    if rfr_core::render::tiles::needs_tiles(w, h) {
+        let gpu = if cpu { None } else { rfr_gpu::GpuContext::new_headless().map_err(|e| eprintln!("{e}; rendering on the CPU")).ok() };
+        let n = rfr_gpu::poster::tile_count(w, h);
+        let never = std::sync::atomic::AtomicBool::new(false);
+        let note = rfr_gpu::poster::render_poster(&doc, (w, h, s), gpu, &output, &never, |p| {
+            use std::io::Write;
+            eprint!("\rtile {} of {n}   ", ((p * n as f32).round() as usize).min(n));
+            let _ = std::io::stderr().flush();
+        })?;
+        eprintln!();
+        println!(
+            "rendered {w} × {h} in {n} tiles, {s} samples per pixel{} in {:.1} s → {}",
+            note.map(|n| format!(", {n}")).unwrap_or_default(),
+            t.elapsed().as_secs_f64(),
+            output.display()
+        );
+        return Ok(());
+    }
     let plan = rfr_core::render::Plan::sized(&doc, w, h)?;
     if plan.precision() == rfr_core::render::Precision::Beyond {
         for lp in plan.layers() {

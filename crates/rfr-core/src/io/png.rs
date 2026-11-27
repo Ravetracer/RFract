@@ -26,6 +26,55 @@ pub fn write_rgba8(path: &Path, width: u32, height: u32, rgba: &[u8], doc: Optio
     w.finish().map_err(|e| err(&e))
 }
 
+/// A PNG written a band of rows at a time (posters larger than memory likes), with the
+/// document inside like [`write_rgba8`].
+pub struct RowWriter {
+    stream: png::StreamWriter<'static, BufWriter<std::fs::File>>,
+    path: std::path::PathBuf,
+}
+
+impl RowWriter {
+    pub fn new(path: &Path, width: u32, height: u32, doc: Option<&Document>) -> Result<RowWriter, String> {
+        let err = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
+        let file = std::fs::File::create(path).map_err(|e| err(&e))?;
+        let mut enc = png::Encoder::new(BufWriter::new(file), width, height);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        if let Some(d) = doc {
+            enc.add_itxt_chunk(KEYWORD.into(), d.to_json()).map_err(|e| err(&e))?;
+        }
+        enc.add_text_chunk("Software".into(), crate::name_version()).map_err(|e| err(&e))?;
+        let w = enc.write_header().map_err(|e| err(&e))?;
+        let stream = w.into_stream_writer().map_err(|e| err(&e))?;
+        Ok(RowWriter { stream, path: path.to_path_buf() })
+    }
+
+    /// Writes whole rows (RGBA8), top to bottom.
+    pub fn write_rows(&mut self, rgba: &[u8]) -> Result<(), String> {
+        use std::io::Write;
+        self.stream.write_all(rgba).map_err(|e| format!("{}: {e}", self.path.display()))
+    }
+
+    pub fn finish(self) -> Result<(), String> {
+        let p = self.path.clone();
+        self.stream.finish().map_err(|e| format!("{}: {e}", p.display()))
+    }
+}
+
+/// The pixels of an 8-bit RGBA PNG (as RFract writes them): width, height, RGBA.
+pub fn read_rgba8(path: &Path) -> Result<(u32, u32, Vec<u8>), String> {
+    let err = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
+    let file = std::fs::File::open(path).map_err(|e| err(&e))?;
+    let mut reader = png::Decoder::new(std::io::BufReader::new(file)).read_info().map_err(|e| err(&e))?;
+    let mut buf = vec![0u8; reader.output_buffer_size().ok_or_else(|| err(&"image too large"))?];
+    let info = reader.next_frame(&mut buf).map_err(|e| err(&e))?;
+    if info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
+        return Err(err(&"not an 8-bit RGBA image"));
+    }
+    buf.truncate(info.buffer_size());
+    Ok((info.width, info.height, buf))
+}
+
 /// The document embedded in a PNG written by RFract.
 pub fn read_document(path: &Path) -> Result<Document, String> {
     let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;

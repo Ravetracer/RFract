@@ -9,6 +9,8 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
 - Explore lane (*View › Explore lane*): presets, batches of random fractals (escape time,
   Julia sets, root finding, lit reliefs) framed at their edge, mutations of the current
   document (parameters, colors, view, formula), a quality filter and snapshots.
+- Posters: images above 8K UHD render in tiles (export, command line, render queue) and
+  are written a band at a time, so 20000 px and more fit on any graphics card.
 
 ## [0.9.0] - 2026-11-27
 

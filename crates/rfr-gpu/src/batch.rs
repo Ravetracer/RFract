@@ -21,6 +21,15 @@ pub fn run_job(job: &QueueJob, gpu: Option<GpuContext>, ffmpeg: &Path, cancel: &
         std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
     }
     match job.what {
+        JobWhat::Image if rfr_core::render::tiles::needs_tiles(w, h) => {
+            let note = crate::poster::render_poster(&doc, (w, h, s), gpu, &job.output, cancel, &mut progress)?;
+            Ok(format!(
+                "{} ({w} × {h} in {} tiles{})",
+                job.output.display(),
+                crate::poster::tile_count(w, h),
+                note.map(|n| format!(", {n}")).unwrap_or_default()
+            ))
+        }
         JobWhat::Image => {
             let (rgba, note) = FrameRenderer::new(gpu).still(&doc, w, h, s)?;
             let mut saved = doc.clone();

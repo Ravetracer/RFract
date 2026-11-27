@@ -50,6 +50,22 @@ and saves a PNG. The PNG carries the document, so every exported picture opens a
 its settings. More samples smooth the edges (anti-aliasing); 64 is a good start, fine detail
 may need 256 or more.
 
+### Posters
+
+Images larger than about 8K UHD (7680 × 4320 pixels) render in tiles of 2048 × 2048 pixels,
+one after the other, so a poster of 20000 pixels or more fits on any graphics card and in
+memory: the PNG is written a band of tiles at a time. The tiles join without seams; the
+effects work across them (lens distortion and chromatic aberration see past the tile edges,
+the denoiser works tile by tile with an overlap). Bloom, streaks, god rays and lens flares
+come from a smaller render of the whole view (3840 pixels on the long side), so they look as
+in an image of that size.
+
+Tiles need layers that color every pixel on its own: formulas with their colorings,
+transformations, masks and groups. Lit layers, layer effects, density layers and 3D objects
+depend on the whole image; a poster with one of them stops with a message that names the
+layer (render it at 8K or smaller). The command line (`rfr-cli render -W 20000 -H 11250 …`)
+and the render queue make posters the same way.
+
 ## Command line
 
 `rfr-cli` renders without the window:

@@ -25,7 +25,7 @@ impl FrameRenderer {
     }
 
     /// The averaged image (linear, straight alpha) of `plan` with `samples` samples.
-    fn render_plan(&mut self, plan: &Plan, samples: u32) -> Result<Vec<[f32; 4]>, String> {
+    pub(crate) fn render_plan(&mut self, plan: &Plan, samples: u32) -> Result<Vec<[f32; 4]>, String> {
         match &mut self.gpu {
             Some(r) => {
                 r.set_plan(plan);

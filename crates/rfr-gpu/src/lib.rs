@@ -6,6 +6,7 @@
 pub mod animation;
 pub mod batch;
 pub mod codegen;
+pub mod poster;
 pub mod renderer;
 
 pub use renderer::{GpuContext, GpuRenderer, render_aux, render_blocking};

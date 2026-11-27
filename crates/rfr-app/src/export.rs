@@ -2,8 +2,11 @@
 
 //! Image export: renders the document at its image size and sample count (GPU, or the CPU
 //! renderer on a worker thread without a GPU) and writes a PNG that carries the document.
+//! Posters above about 8K UHD render in tiles on a worker thread (`rfr_gpu::poster`).
 
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
@@ -23,6 +26,9 @@ enum Engine {
     Cpu(Receiver<Finished>),
     /// The GPU is done; denoising and effects run on a worker thread.
     Finishing(Receiver<Finished>),
+    /// A poster in tiles on a worker thread that writes the file itself: done share, cancel
+    /// flag, the note when finished.
+    Poster(Receiver<Result<Option<String>, String>>, Arc<AtomicU32>, Arc<AtomicBool>),
 }
 
 struct Job {
@@ -47,8 +53,26 @@ impl Export {
 
     /// Starts rendering `doc` into `path`.
     pub fn start(&mut self, doc: &Document, path: PathBuf, gpu: Option<GpuContext>) -> Result<(), String> {
-        let plan = Plan::new(doc)?;
         let samples = doc.image.samples.max(1);
+        let (w, h) = (doc.image.width.max(1), doc.image.height.max(1));
+        if rfr_core::render::tiles::needs_tiles(w, h) {
+            rfr_core::render::tiles::can_tile(doc)
+                .map_err(|e| format!("{w} × {h} renders in tiles, but {e}; render it smaller or change the layer"))?;
+            let (tx, rx) = channel();
+            let progress = Arc::new(AtomicU32::new(0));
+            let cancel = Arc::new(AtomicBool::new(false));
+            let (d, out, pr, ca, g) = (doc.clone(), path.clone(), progress.clone(), cancel.clone(), gpu.clone());
+            std::thread::spawn(move || {
+                let r = rfr_gpu::poster::render_poster(&d, (w, h, samples), g, &out, &ca, |p| pr.store(p.to_bits(), Ordering::Relaxed));
+                if r.is_err() {
+                    let _ = std::fs::remove_file(&out);
+                }
+                let _ = tx.send(r);
+            });
+            self.job = Some(Job { engine: Engine::Poster(rx, progress, cancel), doc: doc.clone(), path, samples, start: Instant::now(), gpu });
+            return Ok(());
+        }
+        let plan = Plan::new(doc)?;
         let engine = match gpu.clone() {
             Some(ctx) => {
                 let mut r = GpuRenderer::new(ctx);
@@ -108,6 +132,22 @@ impl Export {
                 }
                 f32::NAN
             }
+            Engine::Poster(rx, progress, _) => {
+                if let Ok(r) = rx.try_recv() {
+                    let job = self.job.take()?;
+                    return Some(match r {
+                        Ok(note) => format!(
+                            "Exported {} in tiles in {:.1} s{}",
+                            job.path.display(),
+                            job.start.elapsed().as_secs_f64(),
+                            note.map(|n| format!(", {n}")).unwrap_or_default()
+                        ),
+                        Err(e) if e == "cancelled" => "Export cancelled (nothing written)".into(),
+                        Err(e) => format!("Export failed: {e}"),
+                    });
+                }
+                f32::from_bits(progress.load(Ordering::Relaxed))
+            }
         };
         if let Some(rx) = finishing {
             job.engine = Engine::Finishing(rx);
@@ -115,7 +155,12 @@ impl Export {
         let finishing_now = matches!(job.engine, Engine::Finishing(_));
         let mut cancel = false;
         egui::Window::new("Export").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-            ui.label(format!("Rendering {} × {}, {} samples per pixel", job.doc.image.width, job.doc.image.height, job.samples));
+            let tiled = if let Engine::Poster(..) = job.engine {
+                format!(" in {} tiles", rfr_gpu::poster::tile_count(job.doc.image.width, job.doc.image.height))
+            } else {
+                String::new()
+            };
+            ui.label(format!("Rendering {} × {}, {} samples per pixel{tiled}", job.doc.image.width, job.doc.image.height, job.samples));
             ui.label(RichText::new(job.path.display().to_string()).size(theme::fs(11.0)).color(theme::TEXT_MUTED));
             if finishing_now {
                 let text = if job.doc.post.denoise { "denoising and finishing…" } else { "finishing…" };
@@ -132,6 +177,11 @@ impl Export {
         });
         ctx.request_repaint();
         if cancel {
+            // A poster stops after its current tile and removes the partial file.
+            if let Engine::Poster(_, _, c) = &job.engine {
+                c.store(true, Ordering::Relaxed);
+                return None;
+            }
             self.job = None;
             return Some("Export cancelled".into());
         }

@@ -12,6 +12,7 @@ pub mod light;
 pub mod object;
 pub mod oidn;
 pub mod post;
+pub mod tiles;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
