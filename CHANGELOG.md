@@ -4,6 +4,8 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-27
+
 ### Changed
 
 - 3D terrain: its own *Terrain height* (a share of the image height) instead of the relief,
