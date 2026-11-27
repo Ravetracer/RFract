@@ -199,11 +199,30 @@ fn coloring(ui: &mut Ui, id: &str, c: &mut Coloring, inside: bool, actions: &mut
     widgets::label(
         ui,
         "Transfer",
-        "Maps the coloring value before density and offset: square root and logarithm spread the colors where values grow quickly",
+        "Maps the coloring value before density and offset: square root and logarithm spread the colors where values grow quickly; \
+         histogram spreads them by how often each value occurs in the view",
     );
     egui::ComboBox::from_id_salt((id, "transfer")).selected_text(c.transfer.label()).show_ui(ui, |ui| {
         for t in Transfer::ALL {
-            ui.selectable_value(&mut c.transfer, t, t.label());
+            let hint = match t {
+                Transfer::Linear => "The value as it is",
+                Transfer::Sqrt => "Square root: more colors where the values are small",
+                Transfer::Cbrt => "Cube root: like the square root, stronger",
+                Transfer::Log => "Logarithm: even colors over values that grow by factors",
+                Transfer::Square => "Square: more colors where the values are large",
+                Transfer::Histogram => {
+                    "By the share of the view's pixels below the value: every part of the gradient covers about \
+                     as many pixels (0..1 over the view; density 1 shows the gradient once)"
+                }
+            };
+            let was = c.transfer;
+            if ui.selectable_value(&mut c.transfer, t, t.label()).on_hover_text(hint).changed()
+                && t == Transfer::Histogram
+                && was != Transfer::Histogram
+            {
+                // The shares run 0..1: show the whole gradient once.
+                c.density = 1.0;
+            }
         }
     });
     ui.end_row();

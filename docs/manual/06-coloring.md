@@ -14,8 +14,24 @@ Every point either escapes (the **outside**) or stays bounded until the iteratio
 | Solid | One color (with an opacity: 0 leaves the region transparent). |
 
 The value goes through the **transfer** function (linear, square root, cube root,
-logarithm, square), is multiplied by the **density** (gradient repetitions per unit) and
-shifted by the **offset**, and then picks a color from the gradient. The gradient repeats.
+logarithm, square, histogram), is multiplied by the **density** (gradient repetitions per
+unit) and shifted by the **offset**, and then picks a color from the gradient. The gradient
+repeats.
+
+### Histogram coloring
+
+The *Histogram* transfer replaces the value by the share of the region's pixels in the view
+whose value is lower: 0 for the lowest, 1 for the highest. Every part of the gradient then
+covers about as many pixels, wherever the values crowd: no washed-out areas where many
+pixels share a few iterations, no hidden colors where few reach high values. Density 1
+shows the gradient once over the view (choosing *Histogram* sets it); higher densities
+repeat it.
+
+The distribution comes from a small probe of the layer over the whole view (about 16,000
+pixels), so the preview, exports of any size and tiled posters color alike. It changes with
+the view: zooming or panning shifts the colors, also in animations. It works for the outside
+and the inside, for every method with a value (also coloring algorithms) and for masks; 3D
+objects keep their values as they are.
 
 ![Distance estimation: bright edges, dark distance](images/example-distance.jpg)
 

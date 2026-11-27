@@ -8,6 +8,7 @@
 pub mod composite;
 pub mod cpu;
 pub mod density;
+pub mod histogram;
 pub mod iterations;
 pub mod light;
 pub mod object;
@@ -78,6 +79,9 @@ pub struct ColorPlan {
     pub offset: f64,
     /// Linear RGB and alpha.
     pub solid: [f32; 4],
+    /// Histogram transfer: the quantiles of the values in the view (see [`histogram`]; empty
+    /// leaves the values as they are).
+    pub hist: Vec<f32>,
 }
 
 impl ColorPlan {
@@ -89,6 +93,7 @@ impl ColorPlan {
             density: c.density,
             offset: c.offset,
             solid: [c.solid[0], c.solid[1], c.solid[2], c.solid_alpha.clamp(0.0, 1.0)],
+            hist: Vec::new(),
         }
     }
 
@@ -115,12 +120,13 @@ impl ColorPlan {
 
     /// The gradient position of a coloring value before the offset (lit layers' heights).
     pub fn position(&self, v: f64) -> f64 {
-        self.transfer.apply(v) * self.density
+        let t = if self.transfer == Transfer::Histogram { histogram::cdf(&self.hist, v) } else { self.transfer.apply(v) };
+        t * self.density
     }
 
     /// Gradient color (linear RGB, alpha) for a coloring value.
     pub fn color(&self, v: f64) -> [f32; 4] {
-        crate::gradient::lut_sample(&self.lut, self.transfer.apply(v) * self.density + self.offset)
+        crate::gradient::lut_sample(&self.lut, self.position(v) + self.offset)
     }
 
     pub fn formula(&self) -> Option<&Prog> {
@@ -381,27 +387,43 @@ pub struct Plan {
     pub nodes: Vec<Node>,
 }
 
-fn mask_plan(l: &Layer) -> Result<Option<MaskPlan>, String> {
+/// The document and image size the histogram tables of a plan come from (none: no tables).
+type Probe<'a> = Option<(&'a Document, u32, u32)>;
+
+/// The plan of layer `l` with its histogram tables.
+fn layer_plan(l: &Layer, probe: Probe) -> Result<LayerPlan, String> {
+    let mut lp = LayerPlan::new(l)?;
+    if let Some((doc, w, h)) = probe
+        && histogram::used(l)
+    {
+        let t = histogram::tables(doc, l, w, h);
+        lp.outside.hist = t.outside.clone();
+        lp.inside.hist = t.inside.clone();
+    }
+    Ok(lp)
+}
+
+fn mask_plan(l: &Layer, probe: Probe) -> Result<Option<MaskPlan>, String> {
     match &l.mask {
         Some(m) if m.enabled => {
-            Ok(Some(MaskPlan { layer: LayerPlan::new(&m.layer).map_err(|e| format!("mask of {e}"))?, invert: m.invert, source: m.source }))
+            Ok(Some(MaskPlan { layer: layer_plan(&m.layer, probe).map_err(|e| format!("mask of {e}"))?, invert: m.invert, source: m.source }))
         }
         _ => Ok(None),
     }
 }
 
-fn nodes(list: &[Layer]) -> Result<Vec<Node>, String> {
+fn nodes(list: &[Layer], probe: Probe) -> Result<Vec<Node>, String> {
     let mut out = Vec::new();
     for l in list.iter().filter(|l| l.visible && l.opacity > 0.0) {
         let blend = Blend { mode: l.merge, opacity: l.opacity.clamp(0.0, 1.0) as f32 };
         match l.kind {
             LayerKind::Fractal | LayerKind::Density | LayerKind::Object => {
-                out.push(Node::Layer { layer: Box::new(LayerPlan::new(l)?), blend, mask: mask_plan(l)? })
+                out.push(Node::Layer { layer: Box::new(layer_plan(l, probe)?), blend, mask: mask_plan(l, probe)? })
             }
             LayerKind::Group => {
-                let children = nodes(&l.children)?;
+                let children = nodes(&l.children, probe)?;
                 if !children.is_empty() {
-                    out.push(Node::Group { children, blend, mask: mask_plan(l)? });
+                    out.push(Node::Group { children, blend, mask: mask_plan(l, probe)? });
                 }
             }
         }
@@ -416,12 +438,22 @@ impl Plan {
     }
 
     pub fn sized(doc: &Document, width: u32, height: u32) -> Result<Plan, String> {
+        Plan::build(doc, width, height, Some((doc, width, height)))
+    }
+
+    /// The plan of a part of a larger image (`tiles::region_doc`): histogram tables come from
+    /// `full`, the document of the whole image at `w` × `h`.
+    pub fn region(part: &Document, width: u32, height: u32, full: &Document, w: u32, h: u32) -> Result<Plan, String> {
+        Plan::build(part, width, height, Some((full, w, h)))
+    }
+
+    fn build(doc: &Document, width: u32, height: u32, probe: Probe) -> Result<Plan, String> {
         let mut plan = Plan {
             frame: ViewFrame::of(doc, width, height),
             center_text: doc.view.center.clone(),
             background: doc.image.background,
             adaptive: 0.0,
-            nodes: nodes(&doc.layers)?,
+            nodes: nodes(&doc.layers, probe)?,
         }
         .with_adaptive(doc.image.adaptive as f32);
         // Lit layers lit by the document's light sources.

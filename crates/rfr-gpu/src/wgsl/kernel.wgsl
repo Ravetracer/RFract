@@ -17,7 +17,7 @@ struct Uni {
     iter: vec4<u32>,
     // seed x, seed y, periodicity tolerance (0: off), main bulbs of z² + c inside (1: on)
     seed: vec4<f32>,
-    // transfer, density, offset, unused (outside, inside)
+    // transfer, density, offset, histogram table present (1) (outside, inside)
     outc: vec4<f32>,
     inc: vec4<f32>,
     // solid colors (linear RGB, alpha)
@@ -144,6 +144,70 @@ fn transfer(kind: u32, v: f32) -> f32 {
         case 4u: { return v * v; }
         default: { return v; }
     }
+}
+
+// Histogram tables after both gradients (rfr_core::render::histogram): HIST_N + 1 quantiles
+// in rows of four, the outside's first.
+const HIST_N: u32 = 256u;
+const HIST_ROWS: u32 = 65u;
+
+fn hist_q(base: u32, k: u32) -> f32 {
+    let r = lut[base + k / 4u];
+    return r[k % 4u];
+}
+
+// The number of quantiles below v (or up to v when `upto`).
+fn hist_count(base: u32, v: f32, upto: bool) -> u32 {
+    var lo = 0u;
+    var hi = HIST_N + 1u;
+    while lo < hi {
+        let m = (lo + hi) / 2u;
+        let q = hist_q(base, m);
+        if q < v || (upto && q == v) {
+            lo = m + 1u;
+        } else {
+            hi = m;
+        }
+    }
+    return lo;
+}
+
+// histogram::cdf
+fn hist_cdf(inside: bool, v: f32) -> f32 {
+    var base = 2u * LUT_SIZE;
+    if inside {
+        base = base + HIST_ROWS;
+    }
+    let below = hist_count(base, v, false);
+    let upto = hist_count(base, v, true);
+    if upto > below {
+        return f32(below + upto - 1u) * 0.5 / f32(HIST_N);
+    }
+    if below == 0u {
+        return 0.0;
+    }
+    if below > HIST_N {
+        return 1.0;
+    }
+    let k = below - 1u;
+    let a = hist_q(base, k);
+    let b = hist_q(base, k + 1u);
+    return (f32(k) + (v - a) / (b - a)) / f32(HIST_N);
+}
+
+// The transferred value of a region (ColorPlan::position before the density).
+fn region_transfer(inside: bool, v: f32) -> f32 {
+    var c = U.outc;
+    if inside {
+        c = U.inc;
+    }
+    if u32(c.x) == 5u {
+        if c.w > 0.0 {
+            return hist_cdf(inside, v);
+        }
+        return v;
+    }
+    return transfer(u32(c.x), v);
 }
 
 fn lut_sample(base: u32, t: f32) -> vec4<f32> {
@@ -315,10 +379,10 @@ fn finite4(c: vec4<f32>) -> vec4<f32> {
 
 fn region_color(inside: bool, v: f32) -> vec4<f32> {
     if inside {
-        g_value = transfer(u32(U.inc.x), v) * U.inc.y;
+        g_value = region_transfer(true, v) * U.inc.y;
         return finite4(lut_sample(LUT_SIZE, g_value + U.inc.z));
     }
-    g_value = transfer(u32(U.outc.x), v) * U.outc.y;
+    g_value = region_transfer(false, v) * U.outc.y;
     return finite4(lut_sample(0u, g_value + U.outc.z));
 }
 

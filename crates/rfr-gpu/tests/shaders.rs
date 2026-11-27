@@ -291,6 +291,18 @@ fn gpu_matches_the_cpu_renderer() {
     let mut de = Document::for_formula("rfract:Mandelbrot");
     de.layers[0].outside_method = OutsideMethod::Distance;
     cases.push(("distance".into(), de));
+    for (label, method) in [("smooth", OutsideMethod::Smooth), ("bands", OutsideMethod::Iterations)] {
+        let mut d = Document::for_formula("rfract:Mandelbrot");
+        d.view.set_center([-0.745, 0.11]);
+        d.view.radius = 0.02.into();
+        d.layers[0].outside_method = method;
+        d.layers[0].outside.transfer = rfr_core::doc::Transfer::Histogram;
+        d.layers[0].outside.density = 1.0;
+        d.layers[0].inside_method = InsideMethod::Magnitude;
+        d.layers[0].inside.transfer = rfr_core::doc::Transfer::Histogram;
+        d.layers[0].inside.density = 1.0;
+        cases.push((format!("histogram {label}"), d));
+    }
     for e in library().usable().filter(|e| e.set == rfr_core::formula::library::Set::FractalPark).step_by(97) {
         cases.push((e.title.clone(), Document::for_formula(&e.id)));
     }
@@ -657,6 +669,9 @@ fn tiled_posters_match_whole_renders() {
     doc.view.set_center([-0.745, 0.11]);
     doc.view.radius = 0.02.into();
     doc.view.rotation = 20.0;
+    // Histogram coloring: every tile takes the tables of the whole view.
+    doc.layers[0].outside.transfer = rfr_core::doc::Transfer::Histogram;
+    doc.layers[0].outside.density = 1.0;
     doc.post.sharpen = 0.3;
     doc.post.vignette = 0.3;
     doc.post.distortion = 0.08;

@@ -70,28 +70,10 @@ impl<S: Scalar + Send + Sync + 'static> LayerK<S> {
         };
         let maxit = lp.max_iter;
         let region = if o.escaped { &lp.outside } else { &lp.inside };
-        let dz = (o.z.re.d() * o.z.re.d() + o.z.im.d() * o.z.im.d()).sqrt();
-        let r = OrbitResult { z: o.z.v(), zprev: o.zprev.v(), zprev2: o.zprev2.v(), iter: o.iter, escaped: o.escaped, dz };
+        let r = Self::result(&o);
         // The color and the gradient position before the offset (lit layers' heights).
-        let (color, value) = match region.method {
-            ColorMethod::Formula(_) => {
-                let (k, fr) = if o.escaped { (self.outside.as_ref(), f.outside.as_mut()) } else { (self.inside.as_ref(), f.inside.as_mut()) };
-                match (k, fr) {
-                    (Some(k), Some(fr)) => {
-                        fr.zcur = o.z;
-                        let (index, solid) = k.color_final(fr, o.iter, o.zprev);
-                        let direct = k.direct_color(fr);
-                        let value = if solid || direct.is_some() { 0.0 } else { region.position(index.v()) };
-                        (shade_formula(region, index.v(), solid, direct), value)
-                    }
-                    _ => (region.solid, 0.0),
-                }
-            }
-            _ => {
-                let value = native_value(region, &r, plan.frame.pixel_size()).map_or(0.0, |v| region.position(v));
-                (shade_native(region, &r, plan.frame.pixel_size()), value)
-            }
-        };
+        let (color, raw) = self.shade(f, lp, plan, &o, &r);
+        let value = raw.map_or(0.0, |v| region.position(v));
         // Lit layers and layers with effects: the height and the distance to the set in pixels.
         let field = lp.light.as_ref().map_or([0.0, 3.0e38], |l| {
             let smooth = if o.escaped { smooth_iter(&r) } else { maxit as f64 };
@@ -99,6 +81,33 @@ impl<S: Scalar + Send + Sync + 'static> LayerK<S> {
             [light::height(l.source, smooth, value, distance, color), light::distance_px(&r, plan.frame.pixel_size())]
         });
         (color, field, !o.escaped && maxit >= GUESS_MIN_ITER)
+    }
+
+    fn result(o: &Orbit<S>) -> OrbitResult {
+        let dz = (o.z.re.d() * o.z.re.d() + o.z.im.d() * o.z.im.d()).sqrt();
+        OrbitResult { z: o.z.v(), zprev: o.zprev.v(), zprev2: o.zprev2.v(), iter: o.iter, escaped: o.escaped, dz }
+    }
+
+    /// The color of an orbit by its region's coloring and the coloring value (before the
+    /// transfer; none for solid colors and formulas that set the color directly).
+    fn shade(&self, f: &mut LayerF<S>, lp: &LayerPlan, plan: &Plan, o: &Orbit<S>, r: &OrbitResult) -> ([f32; 4], Option<f64>) {
+        let region = if o.escaped { &lp.outside } else { &lp.inside };
+        match region.method {
+            ColorMethod::Formula(_) => {
+                let (k, fr) = if o.escaped { (self.outside.as_ref(), f.outside.as_mut()) } else { (self.inside.as_ref(), f.inside.as_mut()) };
+                match (k, fr) {
+                    (Some(k), Some(fr)) => {
+                        fr.zcur = o.z;
+                        let (index, solid) = k.color_final(fr, o.iter, o.zprev);
+                        let direct = k.direct_color(fr);
+                        let value = (!solid && direct.is_none()).then(|| index.v());
+                        (shade_formula(region, index.v(), solid, direct), value)
+                    }
+                    _ => (region.solid, None),
+                }
+            }
+            _ => (shade_native(region, r, plan.frame.pixel_size()), native_value(region, r, plan.frame.pixel_size())),
+        }
     }
 
     /// The orbit of the sample at plane point `p` of pixel `pix` (its transformations, the
@@ -668,6 +677,42 @@ pub fn heights_at(plan: &Plan, pts: &[(f64, f64)]) -> Vec<f32> {
     let k = Kernel::new(lp, plan);
     let mut f = k.frames();
     pts.iter().map(|&(x, y)| k.eval(&mut f, lp, plan, (plan.frame.plane(x, y), plan.frame.offset_fx(x, y)), 0.0, (0, 0, 0)).1[0]).collect()
+}
+
+/// Coloring values (before the transfer) of the plan's first layer at the pixel centers,
+/// row-major, with whether the orbit stayed inside; none for pixels colored without a value
+/// (solid colors, direct formula colors). Density and 3D object layers give nothing.
+pub fn coloring_values(plan: &Plan) -> Vec<Option<(bool, f64)>> {
+    let layers = plan.layers();
+    let Some(lp) = layers.first() else { return Vec::new() };
+    fn run<S: Scalar + Send + Sync + 'static>(
+        k: &LayerK<S>,
+        lp: &LayerPlan,
+        plan: &Plan,
+        lift: impl Fn(C64) -> Cx<S> + Sync,
+    ) -> Vec<Option<(bool, f64)>> {
+        let (w, h) = (plan.frame.width as usize, plan.frame.height as usize);
+        let mut out = vec![None; w * h];
+        out.par_chunks_mut(w).enumerate().for_each_init(
+            || k.frames(),
+            |f, (y, row)| {
+                for (x, out) in row.iter_mut().enumerate() {
+                    let (px, py) = (x as f64 + 0.5, y as f64 + 0.5);
+                    let (p, d) = (plan.frame.plane(px, py), plan.frame.offset_fx(px, py));
+                    *out = k.orbit(f, lp, plan, lift(p), d, (x as u32, y as u32, 0)).and_then(|o| {
+                        let r = LayerK::<S>::result(&o);
+                        k.shade(f, lp, plan, &o, &r).1.filter(|v| v.is_finite()).map(|v| (!o.escaped, v))
+                    });
+                }
+            },
+        );
+        out
+    }
+    match Kernel::new(lp, plan) {
+        Kernel::Plain(k) => run(&k, lp, plan, |p| p),
+        Kernel::Dual(k) => run(&k, lp, plan, |p| Cx::new(Dual::new(p.re, 1.0), Dual::new(p.im, 0.0))),
+        Kernel::Density(_) | Kernel::Object => Vec::new(),
+    }
 }
 
 /// Iteration counts of the plan's first layer at the pixel centers, row-major: the iterations

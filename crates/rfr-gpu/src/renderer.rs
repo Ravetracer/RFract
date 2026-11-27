@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use bytemuck::{Pod, Zeroable};
 use rfr_core::doc::MaskSource;
 use rfr_core::gradient::LUT_SIZE;
+use rfr_core::render::histogram::HIST_ROWS;
 use rfr_core::render::{Blend, LayerPlan, Node, Plan, Precision};
 use wgpu::util::DeviceExt;
 
@@ -278,8 +279,8 @@ fn layer_uni(plan: &Plan, lp: &LayerPlan) -> Uni {
         rot: [f.cos as f32, f.sin as f32, f.pixel_size() as f32, 1.0],
         iter: [lp.max_iter, lp.julia as u32, o.method_index(), i.method_index()],
         seed: [lp.seed[0] as f32, lp.seed[1] as f32, period, bulbs],
-        outc: [o.transfer.index() as f32, o.density as f32, o.offset as f32, 0.0],
-        inc: [i.transfer.index() as f32, i.density as f32, i.offset as f32, 0.0],
+        outc: [o.transfer.index() as f32, o.density as f32, o.offset as f32, !o.hist.is_empty() as u32 as f32],
+        inc: [i.transfer.index() as f32, i.density as f32, i.offset as f32, !i.hist.is_empty() as u32 as f32],
         out_solid: o.solid,
         in_solid: i.solid,
         band: [0, 0, 0, NONE],
@@ -1029,15 +1030,23 @@ impl GpuRenderer {
                     }),
                     device.create_buffer(&wgpu::BufferDescriptor {
                         label: Some("lut"),
-                        size: (2 * LUT_SIZE * 16) as u64,
+                        size: ((2 * LUT_SIZE + 2 * HIST_ROWS) * 16) as u64,
                         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                         mapped_at_creation: false,
                     }),
                 ),
             };
             self.ctx.queue.write_buffer(&params, 0, bytemuck::cast_slice(&codegen::param_values(lp)));
+            // Both gradients, then both histogram tables (kernel.wgsl `hist_cdf`).
             let mut l: Vec<[f32; 4]> = lp.outside.lut.clone();
             l.extend_from_slice(&lp.inside.lut);
+            for t in [&lp.outside.hist, &lp.inside.hist] {
+                let mut rows = vec![[0.0f32; 4]; HIST_ROWS];
+                for (k, v) in t.iter().enumerate().take(4 * HIST_ROWS) {
+                    rows[k / 4][k % 4] = *v;
+                }
+                l.extend_from_slice(&rows);
+            }
             self.ctx.queue.write_buffer(&lut, 0, bytemuck::cast_slice(&l));
             self.request_pipeline(signature, lp, mode);
             res.push(LayerRes {

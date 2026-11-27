@@ -36,7 +36,10 @@ Open points of the earlier stages (their notes below stay for the details).
 - [x] Location bookmarks: `doc.bookmarks` (name + view, saved in the document, skipped by
       keyframe blending), *View › Bookmarks* window with thumbnails (explore renderer),
       Ctrl+B, `rfr-cli render --bookmark`.
-- [ ] Histogram coloring.
+- [x] Histogram coloring: `Transfer::Histogram` maps the value through quantiles of the
+      view (`render/histogram.rs`, 128² px CPU probe, cached; 257 quantiles per region in
+      the layer's gradient buffer, `kernel.wgsl` `hist_cdf`); posters take the whole
+      view's tables (`Plan::region`).
 - [ ] Post-transformations.
 - [ ] Orbit display, Julia preview inset.
 - [ ] Distance estimation in double-float views (dual double-float) and perturbation views.

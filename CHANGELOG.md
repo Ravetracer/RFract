@@ -4,6 +4,11 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
 
 ## [Unreleased]
 
+### Added
+
+- Histogram coloring (*Transfer › Histogram*): the colors spread by how often each value
+  occurs in the view, so every part of the gradient covers about as many pixels.
+
 ## [0.11.0] - 2026-11-27
 
 ### Added

@@ -883,13 +883,16 @@ pub enum Transfer {
     Cbrt,
     Log,
     Square,
+    /// By the distribution of the values in the view (see [`crate::render::histogram`]);
+    /// [`Transfer::apply`] leaves the value as it is.
+    Histogram,
 }
 
 impl Transfer {
-    pub const ALL: [Transfer; 5] = [Transfer::Linear, Transfer::Sqrt, Transfer::Cbrt, Transfer::Log, Transfer::Square];
+    pub const ALL: [Transfer; 6] = [Transfer::Linear, Transfer::Sqrt, Transfer::Cbrt, Transfer::Log, Transfer::Square, Transfer::Histogram];
     pub fn apply(self, v: f64) -> f64 {
         match self {
-            Transfer::Linear => v,
+            Transfer::Linear | Transfer::Histogram => v,
             Transfer::Sqrt => v.max(0.0).sqrt(),
             Transfer::Cbrt => v.cbrt(),
             Transfer::Log => (1.0 + v.max(0.0)).ln(),
@@ -903,6 +906,7 @@ impl Transfer {
             Transfer::Cbrt => "Cube root",
             Transfer::Log => "Logarithm",
             Transfer::Square => "Square",
+            Transfer::Histogram => "Histogram",
         }
     }
     pub fn index(self) -> u32 {

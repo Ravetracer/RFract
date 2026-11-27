@@ -658,6 +658,7 @@ fn render_check(prog: rfr_core::formula::Program, kind: rfr_core::formula::Progr
         density: 1.0,
         offset: 0.0,
         solid: [0.0, 0.0, 0.0, 1.0],
+        hist: Vec::new(),
     };
     let lp = match kind {
         ProgramKind::Fractal => LayerPlan {
