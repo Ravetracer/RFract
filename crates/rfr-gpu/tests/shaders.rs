@@ -200,7 +200,10 @@ fn gpu_matches_the_cpu_renderer() {
         l.terrain = true;
         l.shadows = true;
         l.camera.yaw = 30.0;
-        cases.push(("lit terrain".into(), ter));
+        cases.push(("lit terrain".into(), ter.clone()));
+        // The denoiser's normal images of a lit layer and a terrain.
+        cases.push(("normals lit".into(), rfr_core::render::post::aux_documents(&lit).unwrap()[1].clone()));
+        cases.push(("normals terrain".into(), rfr_core::render::post::aux_documents(&ter).unwrap()[1].clone()));
         // Layer effects: the set alone (outside transparent) with a shadow and glows, and neon
         // edges on a plain Mandelbrot.
         use rfr_core::doc::{LayerEffects, OutsideMethod};

@@ -1150,6 +1150,10 @@ pub struct Lighting {
     pub terrain: bool,
     pub terrain_height: f64,
     pub camera: Camera,
+    /// Renders the surface normals as colors instead of shading (the denoiser's normal
+    /// image, `render::post::aux_documents`); never saved.
+    #[serde(skip)]
+    pub normal_output: bool,
 }
 
 /// A camera orbiting the middle of a terrain: the direction it looks from (degrees, 0: from
@@ -1193,6 +1197,7 @@ impl Default for Lighting {
             terrain: false,
             terrain_height: 0.15,
             camera: Camera::default(),
+            normal_output: false,
         }
     }
 }

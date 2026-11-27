@@ -135,9 +135,10 @@ fn render(args: &[String]) -> Result<(), String> {
             Ok(ctx) => {
                 let name = ctx.adapter_name.clone();
                 let mode = rfr_gpu::renderer::renderer_mode(&plan);
-                match rfr_gpu::render_blocking(ctx, &plan, s, |_| true) {
+                match rfr_gpu::render_blocking(ctx.clone(), &plan, s, |_| true) {
                     Ok(lin) => {
-                        rgba = Some(rfr_core::render::post::finish_export(lin, w, h, &doc.post));
+                        let aux = if doc.post.denoise { rfr_gpu::render_aux(&doc, w, h, s, Some(&ctx)) } else { None };
+                        rgba = Some(rfr_core::render::post::finish_export(lin, w, h, &doc.post, aux.as_ref()));
                         how = format!("on {name} ({mode:?})");
                     }
                     Err(e) => eprintln!("GPU render failed ({e}); rendering on the CPU"),
@@ -148,7 +149,10 @@ fn render(args: &[String]) -> Result<(), String> {
     }
     let rgba = match rgba {
         Some(v) => v,
-        None => rfr_core::render::post::finish_export(rfr_core::render::cpu::render(&doc, w, h, s)?.linear(), w, h, &doc.post),
+        None => {
+            let aux = if doc.post.denoise { rfr_gpu::render_aux(&doc, w, h, s, None) } else { None };
+            rfr_core::render::post::finish_export(rfr_core::render::cpu::render(&doc, w, h, s)?.linear(), w, h, &doc.post, aux.as_ref())
+        }
     };
     let (rgba, note) = rgba;
     if let Some(n) = note {

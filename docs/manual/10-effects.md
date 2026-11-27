@@ -52,8 +52,11 @@ Glow also spreads over transparent parts of the image, which then become partly 
 
 **Denoise exports** runs exported images and command line renders through Intel Open Image
 Denoise before the other effects: grain from few samples (soft shadows, occlusion, glows,
-density layers) disappears. The preview is not denoised. The denoiser also softens very fine
-detail such as thin filaments; *Denoise amount* below 1 keeps part of the original. The export
+density layers) disappears. The preview is not denoised. With lit layers or 3D objects the
+export also renders two helper images with a few samples, the surface colors without light
+and the surface directions, which keep edges and fine detail sharp; without them the
+denoiser softens very fine detail such as thin filaments, and *Denoise amount* below 1 keeps
+part of the original. The export
 message says whether the image was denoised and on which device; without the library (see
 *Installation*) the image is saved as it is.
 

@@ -6,7 +6,7 @@
 pub mod codegen;
 pub mod renderer;
 
-pub use renderer::{GpuContext, GpuRenderer, render_blocking};
+pub use renderer::{GpuContext, GpuRenderer, render_aux, render_blocking};
 
 /// What the GPU detection found.
 #[derive(Clone, Debug)]

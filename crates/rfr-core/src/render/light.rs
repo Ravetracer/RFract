@@ -53,6 +53,8 @@ pub struct LightPlan {
     pub height_range: f32,
     /// Whether the layer is lit (else a layer with effects keeps its colors).
     pub shading: bool,
+    /// Output the surface normal as a color (n / 2 + ½) instead of shading.
+    pub normal_output: bool,
     /// The layer's effects (2D layers only).
     pub fx: Option<FxPlan>,
 }
@@ -134,6 +136,7 @@ impl LightPlan {
             terrain_height: l.terrain_height.max(0.0) as f32,
             height_range: 1.0,
             shading: true,
+            normal_output: l.normal_output,
             fx: None,
             camera: l.terrain.then(|| {
                 let c = &l.camera;
@@ -248,6 +251,9 @@ pub fn shade(l: &LightPlan, color: [f32; 4], gx: f32, gy: f32, k: f32, light_see
 
 /// [`shade`] with the surface normal `n` (unit length; x right, y up, z toward the sky).
 pub fn shade_normal(l: &LightPlan, color: [f32; 4], n: [f32; 3], light_seen: &[f32], open: f32, v: [f32; 3]) -> [f32; 4] {
+    if l.normal_output {
+        return [n[0] * 0.5 + 0.5, n[1] * 0.5 + 0.5, n[2] * 0.5 + 0.5, color[3]];
+    }
     let nv = dot(n, v).max(0.05);
     let a = l.roughness * l.roughness;
     let mut diffuse = [l.ambient * open; 3];

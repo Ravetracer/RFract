@@ -31,6 +31,8 @@ struct Job {
     path: PathBuf,
     samples: u32,
     start: Instant,
+    /// The GPU of the export (the denoiser's helper images render there too).
+    gpu: Option<GpuContext>,
 }
 
 #[derive(Default)]
@@ -47,7 +49,7 @@ impl Export {
     pub fn start(&mut self, doc: &Document, path: PathBuf, gpu: Option<GpuContext>) -> Result<(), String> {
         let plan = Plan::new(doc)?;
         let samples = doc.image.samples.max(1);
-        let engine = match gpu {
+        let engine = match gpu.clone() {
             Some(ctx) => {
                 let mut r = GpuRenderer::new(ctx);
                 r.set_band_target(Duration::from_millis(30));
@@ -58,14 +60,17 @@ impl Export {
                 let (tx, rx) = channel();
                 let d = doc.clone();
                 std::thread::spawn(move || {
-                    let r = rfr_core::render::cpu::render(&d, d.image.width, d.image.height, d.image.samples.max(1))
-                        .map(|r| rfr_core::render::post::finish_export(r.linear(), d.image.width, d.image.height, &d.post));
+                    let (w, h, s) = (d.image.width, d.image.height, d.image.samples.max(1));
+                    let r = rfr_core::render::cpu::render(&d, w, h, s).map(|r| {
+                        let aux = if d.post.denoise { rfr_gpu::render_aux(&d, w, h, s, None) } else { None };
+                        rfr_core::render::post::finish_export(r.linear(), w, h, &d.post, aux.as_ref())
+                    });
                     let _ = tx.send(r);
                 });
                 Engine::Cpu(rx)
             }
         };
-        self.job = Some(Job { engine, doc: doc.clone(), path, samples, start: Instant::now() });
+        self.job = Some(Job { engine, doc: doc.clone(), path, samples, start: Instant::now(), gpu });
         Ok(())
     }
 
@@ -85,9 +90,10 @@ impl Export {
                         Some(lin) => {
                             // Denoising can take seconds: off the interface thread.
                             let (tx, rx) = channel();
-                            let (w, h, post) = (job.doc.image.width, job.doc.image.height, job.doc.post.clone());
+                            let (w, h, s, doc, gpu) = (job.doc.image.width, job.doc.image.height, job.samples, job.doc.clone(), job.gpu.clone());
                             std::thread::spawn(move || {
-                                let _ = tx.send(Ok(rfr_core::render::post::finish_export(lin, w, h, &post)));
+                                let aux = if doc.post.denoise { rfr_gpu::render_aux(&doc, w, h, s, gpu.as_ref()) } else { None };
+                                let _ = tx.send(Ok(rfr_core::render::post::finish_export(lin, w, h, &doc.post, aux.as_ref())));
                             });
                             finishing = Some(rx);
                         }

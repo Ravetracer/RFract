@@ -296,7 +296,7 @@ fn layer_uni(plan: &Plan, lp: &LayerPlan) -> Uni {
         // The environment image follows the layer's image parameters.
         lenv: light_of(lp).map_or([0.0; 4], |l| {
             let slot = if l.environment.is_some() { codegen::layer_images(lp).len() as f32 } else { -1.0 };
-            [l.reflection, slot, 0.0, 0.0]
+            [l.reflection, slot, l.normal_output as u32 as f32, 0.0]
         }),
         lsky0: light_of(lp).map_or([0.0; 4], |l| [l.horizon[0], l.horizon[1], l.horizon[2], 0.0]),
         lsky1: light_of(lp).map_or([0.0; 4], |l| [l.zenith[0], l.zenith[1], l.zenith[2], 0.0]),
@@ -1682,4 +1682,25 @@ pub fn render_blocking(ctx: GpuContext, plan: &Plan, samples: u32, mut progress:
         }
     }
     r.read_linear().ok_or_else(|| "could not read the image back from the GPU".into())
+}
+
+/// The denoiser's helper images of `doc` at `width` × `height` (`rfr_core::render::post::
+/// aux_documents`), rendered with at most 8 samples on the GPU of `ctx`, else on the CPU. None
+/// when the document has no lit layers or objects, or a render failed.
+pub fn render_aux(
+    doc: &rfr_core::doc::Document,
+    width: u32,
+    height: u32,
+    samples: u32,
+    ctx: Option<&GpuContext>,
+) -> Option<rfr_core::render::post::Aux> {
+    let docs = rfr_core::render::post::aux_documents(doc)?;
+    let s = samples.clamp(1, 8);
+    let render = |d: &rfr_core::doc::Document| -> Option<Vec<[f32; 4]>> {
+        match ctx {
+            Some(ctx) => render_blocking(ctx.clone(), &Plan::sized(d, width, height).ok()?, s, |_| true).ok(),
+            None => Some(rfr_core::render::cpu::render(d, width, height, s).ok()?.linear()),
+        }
+    };
+    Some((render(&docs[0])?, render(&docs[1])?))
 }

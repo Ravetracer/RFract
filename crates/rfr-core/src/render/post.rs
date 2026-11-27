@@ -555,13 +555,92 @@ pub fn finish(lin: &[[f32; 4]], w: u32, h: u32, post: &Post) -> Vec<u8> {
     apply(lin, w, h, post).iter().flat_map(|c| [q(c[0]), q(c[1]), q(c[2]), q(c[3])]).collect()
 }
 
+/// The denoiser's helper images of a render: albedo (surface colors without lighting) and
+/// normals (linear, straight alpha, like the image).
+pub type Aux = (Vec<[f32; 4]>, Vec<[f32; 4]>);
+
+/// The documents whose renders are the denoiser's helper images, when `doc` has lit layers or
+/// 3D objects (else None): the albedo (lights replaced by ambient light 1, no highlights,
+/// reflections, shadows, occlusion or layer effects) and the normals (lit layers and objects
+/// show their surface normals, other layers are hidden, the background is the flat normal).
+/// Both without effects.
+pub fn aux_documents(doc: &crate::doc::Document) -> Option<[crate::doc::Document; 2]> {
+    use crate::doc::{Layer, LayerEffects, LayerKind};
+    fn lit(l: &Layer) -> bool {
+        l.kind == LayerKind::Object || (l.kind == LayerKind::Fractal && l.light.enabled)
+    }
+    fn any(list: &[Layer]) -> bool {
+        list.iter().any(|l| l.visible && (lit(l) || any(&l.children)))
+    }
+    fn albedo(list: &mut [Layer]) {
+        for l in list {
+            if lit(l) {
+                let li = &mut l.light;
+                li.ambient = 1.0;
+                li.lights.clear();
+                li.specular = 0.0;
+                li.reflection = 0.0;
+                li.shadows = false;
+                li.occlusion = 0.0;
+            }
+            l.effects = LayerEffects::default();
+            albedo(&mut l.children);
+        }
+    }
+    fn normals(list: &mut [Layer]) {
+        for l in list {
+            if lit(l) {
+                l.light.normal_output = true;
+                l.light.shadows = false;
+                l.light.occlusion = 0.0;
+            } else if l.kind != LayerKind::Group {
+                l.visible = false;
+            }
+            l.effects = LayerEffects::default();
+            normals(&mut l.children);
+        }
+    }
+    if !any(&doc.layers) {
+        return None;
+    }
+    let mut a = doc.clone();
+    a.post = Post::default();
+    albedo(&mut a.layers);
+    let mut n = doc.clone();
+    n.post = Post::default();
+    n.image.background = [0.5, 0.5, 1.0, 1.0];
+    normals(&mut n.layers);
+    Some([a, n])
+}
+
 /// Denoises the averaged image `lin` (linear, straight alpha) in place with OIDN (its light,
-/// premultiplied), mixed with the original by `blend`. Returns the device used.
-pub fn denoise(lin: &mut [[f32; 4]], w: u32, h: u32, blend: f64) -> Result<super::oidn::DeviceType, String> {
+/// premultiplied), helped by the albedo and normal images when given, mixed with the original
+/// by `blend`. Returns the device used.
+pub fn denoise(lin: &mut [[f32; 4]], w: u32, h: u32, blend: f64, aux: Option<&Aux>) -> Result<super::oidn::DeviceType, String> {
     let ok = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
     let orig: Vec<f32> = lin.iter().flat_map(|c| [ok(c[0]) * c[3], ok(c[1]) * c[3], ok(c[2]) * c[3]]).collect();
     let mut color = orig.clone();
-    let used = super::oidn::denoise(&mut color, w as usize, h as usize, true, false, super::oidn::DeviceType::Default, None, None)?;
+    let albedo: Option<Vec<f32>> = aux.map(|(a, _)| a.iter().flat_map(|c| [c[0], c[1], c[2]].map(|v| (ok(v) * c[3]).clamp(0.0, 1.0))).collect());
+    // Normals from the colors (n / 2 + ½), unit length; transparent parts face the viewer.
+    let normal: Option<Vec<f32>> = aux.map(|(_, n)| {
+        n.iter()
+            .flat_map(|c| {
+                let v = [c[0] * 2.0 - 1.0, c[1] * 2.0 - 1.0, c[2] * 2.0 - 1.0];
+                let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+                if c[3] > 1e-3 && l > 1e-3 && l.is_finite() { [v[0] / l, v[1] / l, v[2] / l] } else { [0.0, 0.0, 1.0] }
+            })
+            .collect()
+    });
+    let used = super::oidn::denoise(
+        &mut color,
+        w as usize,
+        h as usize,
+        true,
+        false,
+        super::oidn::DeviceType::Default,
+        albedo.as_deref(),
+        normal.as_deref(),
+    )?;
     let k = blend.clamp(0.0, 1.0) as f32;
     for (i, c) in lin.iter_mut().enumerate() {
         let a = c[3];
@@ -575,11 +654,12 @@ pub fn denoise(lin: &mut [[f32; 4]], w: u32, h: u32, blend: f64) -> Result<super
     Ok(used)
 }
 
-/// The finished image for saving: denoised first when the effects ask for it, then
-/// [`finish`]. The note says how the denoising went (None without it).
-pub fn finish_export(mut lin: Vec<[f32; 4]>, w: u32, h: u32, post: &Post) -> (Vec<u8>, Option<String>) {
-    let note = post.denoise.then(|| match denoise(&mut lin, w, h, post.denoise_blend) {
-        Ok(dev) => format!("denoised ({})", dev.label()),
+/// The finished image for saving: denoised first when the effects ask for it (with the
+/// helper images of [`aux_documents`] when given), then [`finish`]. The note says how the
+/// denoising went (None without it).
+pub fn finish_export(mut lin: Vec<[f32; 4]>, w: u32, h: u32, post: &Post, aux: Option<&Aux>) -> (Vec<u8>, Option<String>) {
+    let note = post.denoise.then(|| match denoise(&mut lin, w, h, post.denoise_blend, aux) {
+        Ok(dev) => format!("denoised ({}{})", dev.label(), if aux.is_some() { ", with albedo and normals" } else { "" }),
         Err(e) => format!("not denoised: {e}"),
     });
     (finish(&lin, w, h, post), note)
@@ -653,11 +733,32 @@ mod tests {
             (a.iter().zip(&clean).map(|(p, q)| (0..3).map(|k| (p[k] - q[k]).powi(2)).sum::<f32>()).sum::<f32>() / a.len() as f32).sqrt()
         };
         let mut den = noisy.clone();
-        denoise(&mut den, w, h, 1.0).unwrap();
+        denoise(&mut den, w, h, 1.0, None).unwrap();
         assert!(rms(&den) < rms(&noisy) * 0.5, "{} -> {}", rms(&noisy), rms(&den));
         // Half the amount lands between.
         let mut half = noisy.clone();
-        denoise(&mut half, w, h, 0.5).unwrap();
+        denoise(&mut half, w, h, 0.5, None).unwrap();
         assert!(rms(&half) < rms(&noisy) && rms(&half) > rms(&den));
+    }
+
+    #[test]
+    fn helper_documents_for_lit_layers_only() {
+        let mut doc = crate::doc::Document::default();
+        assert!(aux_documents(&doc).is_none(), "no lit layer, no helper images");
+        doc.layers[0].light.enabled = true;
+        doc.layers[0].light.shadows = true;
+        doc.post.bloom = 1.0;
+        let [a, n] = aux_documents(&doc).unwrap();
+        assert!(a.layers[0].light.lights.is_empty() && a.layers[0].light.ambient == 1.0 && a.post.is_neutral());
+        assert!(n.layers[0].light.normal_output && !n.layers[0].light.shadows);
+        // The normal image of a lit Mandelbrot: unit normals facing up everywhere (encoded
+        // n / 2 + ½); the set itself is flat.
+        let r = crate::render::cpu::render(&n, 48, 32, 1).unwrap().linear();
+        for c in &r {
+            let v = [c[0] * 2.0 - 1.0, c[1] * 2.0 - 1.0, c[2] * 2.0 - 1.0];
+            let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+            assert!((l - 1.0).abs() < 0.02 && v[2] > 0.0, "{c:?}");
+        }
+        assert!(r.iter().any(|c| c[2] > 0.999), "the flat set faces straight up");
     }
 }

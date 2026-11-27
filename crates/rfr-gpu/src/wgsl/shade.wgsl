@@ -23,6 +23,10 @@ fn l_environment(r: vec3<f32>) -> vec3<f32> {
 
 // rfr_core::render::light::shade_normal
 fn l_shade_n(color: vec4<f32>, n: vec3<f32>, seen: array<f32, 4>, open: f32, v: vec3<f32>) -> vec4<f32> {
+    // The denoiser's normal image (LightPlan::normal_output).
+    if U.lenv.z > 0.5 {
+        return vec4<f32>(n * 0.5 + vec3<f32>(0.5), color.w);
+    }
     let nv = max(dot(n, v), 0.05);
     let a = U.light.w * U.light.w;
     var diffuse = vec3<f32>(U.light.x * open);

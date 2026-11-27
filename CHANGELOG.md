@@ -25,7 +25,8 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
 - Effects: god rays toward a light position, lens flares (ghosts and halo), levels (black
   and white point, midtones), a five-point tone curve and spectral chromatic aberration.
 - *Denoise exports* (Effects): exports and command line renders through Intel Open Image
-  Denoise, with an amount; the export message names the device.
+  Denoise, with an amount; with lit layers or 3D objects helped by albedo and normal images
+  (fine detail stays sharp); the export message names the device.
 - Procedural noise in the formula language (`noise`, `perlin`, `voronoi`) and the colorings
   *Noise pattern* (value, Perlin, Voronoi or fractal noise; as lit heights a bump texture)
   and *Image along the bands*.
