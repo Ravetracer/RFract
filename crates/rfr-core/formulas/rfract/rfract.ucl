@@ -660,3 +660,136 @@ default:
     hint = "Factor of real(z); positions beyond 1 show the end of the gradient."
   endparam
 }
+
+NoisePattern {
+; Procedural patterns over a point of the orbit or the pixel: value noise, Perlin noise,
+; Voronoi cells or fractal noise (several octaves of Perlin noise), optionally added to the
+; smooth iteration bands. As the heights of a lit layer (Coloring) the pattern becomes a bump
+; texture.
+init:
+  float dmin = 1e30
+  complex zmin = (0, 0)
+loop:
+  if @source == 2
+    float d = cabs(#z)
+    if d < dmin
+      dmin = d
+      zmin = #z
+    endif
+  endif
+final:
+  complex p = #z
+  if @source == 1
+    p = #pixel
+  elseif @source == 2
+    p = zmin
+  endif
+  p = p * @scale + @shift
+  float v = 0
+  if @pattern == 0
+    v = noise(p)
+  elseif @pattern == 1
+    v = perlin(p) * 0.5 + 0.5
+  elseif @pattern == 2
+    v = voronoi(p)
+  else
+    ; Each octave twice as fine and half as strong.
+    float amp = 0.5
+    complex q = p
+    int k = 0
+    while k < @octaves
+      v = v + amp * perlin(q)
+      q = q * 2 + (17.3, 9.1)
+      amp = amp * 0.5
+      k = k + 1
+    endwhile
+    v = v + 0.5
+  endif
+  float bands = 0
+  float r = cabs(#z)
+  if @bands != 0 && r > 1
+    bands = (#numiter + 1 - log(log(r)) / log(2)) * @bands
+  endif
+  #index = v * @strength + bands
+default:
+  title = "Noise pattern"
+  int param pattern
+    caption = "Pattern"
+    enum = "Value noise" "Perlin noise" "Voronoi cells" "Fractal noise"
+    default = 3
+    hint = "Value noise: soft blobs; Perlin: smooth waves; Voronoi: cells; fractal noise: several octaves of Perlin noise (clouds, rock)."
+  endparam
+  int param source
+    caption = "Point"
+    enum = "Final z" "Pixel" "Closest approach"
+    default = 1
+    hint = "Where the pattern is looked up: the last z of the orbit, the pixel itself, or the orbit point closest to the origin."
+  endparam
+  float param scale
+    caption = "Scale"
+    default = 8
+    hint = "Pattern cells per unit of the plane (larger: finer pattern)."
+  endparam
+  complex param shift
+    caption = "Shift"
+    default = (0, 0)
+    hint = "Moves the pattern."
+  endparam
+  int param octaves
+    caption = "Octaves"
+    default = 5
+    min = 1
+    max = 10
+    hint = "Layers of the fractal noise (more: finer detail)."
+  endparam
+  float param strength
+    caption = "Strength"
+    default = 1
+    hint = "Gradient positions per unit of the pattern."
+  endparam
+  float param bands
+    caption = "Iteration bands"
+    default = 0
+    hint = "Adds the smooth iteration count times this (0: the pattern alone)."
+  endparam
+}
+
+ImageBands {
+; An image laid along the iteration bands: across each band by the smooth iteration count,
+; around the set by the angle of the final z. Where the image is transparent or missing, the
+; gradient shows.
+global:
+  Image img = new @image
+final:
+  float s = #numiter
+  float r = cabs(#z)
+  if r > 1
+    s = #numiter + 1 - log(log(r)) / log(2)
+  endif
+  float u = s * @across
+  u = u - floor(u)
+  float v = (atan2(#z) / (2 * #pi) + 0.5) * @around
+  v = v - floor(v)
+  #color = compose(gradient(s * @density), img.getColor((u * 2 - 1, 1 - v * 2)), 1)
+default:
+  title = "Image along the bands"
+  Image param image
+    caption = "Image"
+    hint = "The image file (PNG or JPEG): its width runs across a band, its height around the set."
+  endparam
+  float param across
+    caption = "Across the bands"
+    default = 1
+    hint = "Image repeats per iteration band."
+  endparam
+  float param around
+    caption = "Around"
+    default = 4
+    hint = "Image repeats around the set."
+  endparam
+  float param density
+    caption = "Gradient density"
+    default = 0.05
+    hint = "Gradient positions per iteration for the color where the image is transparent."
+  endparam
+}

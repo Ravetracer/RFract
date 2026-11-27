@@ -127,6 +127,9 @@ rfr-cli formulas --check path/to/formulas
   on colors (`c1 * t + c2 * (1 - t)`); a number counts for all four channels. A coloring
   formula that writes `#color` colors the region directly; the gradient then only serves
   `gradient()`.
+- Noise: `noise(p)` (value noise, 0 to 1), `perlin(p)` (gradient noise, about −1 to 1) and
+  `voronoi(p)` (distance to the nearest of random points, one per unit cell, 0 to about 1)
+  of a complex point `p`; scale `p` for finer or coarser patterns.
 - Symbols `#pixel`, `#z`, `#c`, `#zprev`, `#numiter`, `#maxiter`, `#ismand`, `#center`,
   `#magn`, `#x`, `#y`, `#width`, `#height`, `#screenpixel`, `#screenmax`, `#angle`,
   `#random` (a new random complex number per use) and `#randomrange`; `random(seed)` gives

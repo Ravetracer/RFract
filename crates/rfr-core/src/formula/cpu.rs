@@ -217,9 +217,19 @@ pub fn complex_fn<S: Scalar>(f: Func, z: Cx<S>) -> Cx<S> {
         Func::Real => Cx::real(z.re),
         Func::Imag => Cx::real(z.im),
         Func::Cabs => Cx::real(z.cabs()),
+        Func::Noise | Func::Perlin | Func::Voronoi => Cx::real(S::from_f64(noise_fn(f, z.re.v(), z.im.v()))),
         Func::Norm => Cx::real(z.norm()),
         Func::Arg => Cx::real(z.arg()),
         Func::Atan2 | Func::Min | Func::Max => Cx::real(z.re),
+    }
+}
+
+/// The noise functions of the formula language at (x, y).
+pub fn noise_fn(f: Func, x: f64, y: f64) -> f64 {
+    match f {
+        Func::Perlin => crate::math::noise::perlin(x, y),
+        Func::Voronoi => crate::math::noise::voronoi(x, y),
+        _ => crate::math::noise::value(x, y),
     }
 }
 
@@ -656,6 +666,13 @@ impl<'a, S: Scalar + Send + Sync + 'static> Cc<'a, S> {
                         if y.v() > x.v() { y } else { x }
                     }),
                 })
+            }
+            Func::Noise | Func::Perlin | Func::Voronoi => {
+                let a = self.c(&args[0]);
+                E::R(Box::new(move |f| {
+                    let z = a(f);
+                    S::from_f64(noise_fn(func, z.re.v(), z.im.v()))
+                }))
             }
             Func::Real | Func::Imag | Func::Cabs | Func::Norm | Func::Arg => {
                 let a = self.c(&args[0]);

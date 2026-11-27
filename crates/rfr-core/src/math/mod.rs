@@ -5,4 +5,5 @@
 pub mod big;
 pub mod complex;
 pub mod fx;
+pub mod noise;
 pub mod scalar;

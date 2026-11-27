@@ -110,11 +110,15 @@ pub enum Func {
     /// (real, real) → real
     Min,
     Max,
+    /// Procedural noise of a point (complex → real; `crate::math::noise`).
+    Noise,
+    Perlin,
+    Voronoi,
 }
 
 impl Func {
     /// Functions that can fill a function parameter (unary, complex in and out).
-    pub const UNARY: [(&'static str, Func); 33] = [
+    pub const UNARY: [(&'static str, Func); 36] = [
         ("abs", Func::Abs),
         ("sqr", Func::Sqr),
         ("sqrt", Func::Sqrt),
@@ -148,6 +152,9 @@ impl Func {
         ("real", Func::Real),
         ("imag", Func::Imag),
         ("cabs", Func::Cabs),
+        ("noise", Func::Noise),
+        ("perlin", Func::Perlin),
+        ("voronoi", Func::Voronoi),
     ];
 
     pub fn by_name(name: &str) -> Option<Func> {
@@ -173,7 +180,20 @@ impl Func {
 
     /// Complex → real functions.
     pub fn returns_real(self) -> bool {
-        matches!(self, Func::Real | Func::Imag | Func::Cabs | Func::Norm | Func::Arg | Func::Atan2 | Func::Min | Func::Max)
+        matches!(
+            self,
+            Func::Real
+                | Func::Imag
+                | Func::Cabs
+                | Func::Norm
+                | Func::Arg
+                | Func::Atan2
+                | Func::Min
+                | Func::Max
+                | Func::Noise
+                | Func::Perlin
+                | Func::Voronoi
+        )
     }
 
     /// Functions whose result on a real argument is real (so the UFM real overload is

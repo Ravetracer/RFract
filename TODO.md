@@ -12,8 +12,10 @@ that come up along the way.
       chromatic aberration.
 - [x] Layer effects: DE-based edge glow (neon), drop shadow, outer and inner glow (emboss:
       lit layers with brightness heights).
-- [ ] Texture mapping: image textures through coloring coordinates (orbit traps, iteration ×
-      angle, Droste), procedural patterns (Perlin, Voronoi, value noise), textures as bumps.
+- [x] Texture mapping: image textures through coloring coordinates (final z, pixel, orbit
+      trap, iteration × angle), procedural patterns (value, Perlin, Voronoi, fractal noise),
+      textures as bumps (lit layers with coloring heights).
+- [ ] Droste (log-polar spiral) as a transformation.
 - [ ] Denoiser (OIDN) for exports, with albedo and normal images where layers have them.
 - [ ] Exit: effects available in preview and export with identical results.
 

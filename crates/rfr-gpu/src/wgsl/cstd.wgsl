@@ -28,6 +28,69 @@ fn c_conj(a: Cx) -> Cx { return Cx(a.re, s_neg(a.im)); }
 fn c_flip(a: Cx) -> Cx { return Cx(a.im, a.re); }
 fn c_cabs(a: Cx) -> S { return s_sqrt(c_norm(a)); }
 fn c_arg(a: Cx) -> S { return s_atan2(a.im, a.re); }
+
+// Procedural noise (rfr_core::math::noise, in f32 on both sides).
+fn n_lattice(ix: i32, iy: i32, k: u32) -> f32 {
+    let h = hash(bitcast<u32>(ix) * 0x8DA6B343u ^ hash(bitcast<u32>(iy) * 0xD8163841u ^ k));
+    return f32(h >> 8u) / 16777216.0;
+}
+fn n_value(x: f32, y: f32) -> f32 {
+    let x0 = floor(x);
+    let y0 = floor(y);
+    let fx = x - x0;
+    let fy = y - y0;
+    let ix = i32(x0);
+    let iy = i32(y0);
+    let sx = fx * fx * (3.0 - 2.0 * fx);
+    let sy = fy * fy * (3.0 - 2.0 * fy);
+    let a = n_lattice(ix, iy, 0u);
+    let b = n_lattice(ix + 1, iy, 0u);
+    let c = n_lattice(ix, iy + 1, 0u);
+    let d = n_lattice(ix + 1, iy + 1, 0u);
+    let top = a + (b - a) * sx;
+    let bottom = c + (d - c) * sx;
+    return top + (bottom - top) * sy;
+}
+fn n_grad(i: i32, j: i32, dx: f32, dy: f32) -> f32 {
+    let a = n_lattice(i, j, 1u) * 6.283185307179586;
+    return cos(a) * dx + sin(a) * dy;
+}
+fn n_fade(t: f32) -> f32 { return t * t * t * (t * (t * 6.0 - 15.0) + 10.0); }
+fn n_perlin(x: f32, y: f32) -> f32 {
+    let x0 = floor(x);
+    let y0 = floor(y);
+    let fx = x - x0;
+    let fy = y - y0;
+    let ix = i32(x0);
+    let iy = i32(y0);
+    let sx = n_fade(fx);
+    let sy = n_fade(fy);
+    let a = n_grad(ix, iy, fx, fy);
+    let b = n_grad(ix + 1, iy, fx - 1.0, fy);
+    let c = n_grad(ix, iy + 1, fx, fy - 1.0);
+    let d = n_grad(ix + 1, iy + 1, fx - 1.0, fy - 1.0);
+    let top = a + (b - a) * sx;
+    let bottom = c + (d - c) * sx;
+    return (top + (bottom - top) * sy) * 1.4142135623730951;
+}
+fn n_voronoi(x: f32, y: f32) -> f32 {
+    let ix = i32(floor(x));
+    let iy = i32(floor(y));
+    var best = 3.4e38;
+    for (var j = -1; j <= 1; j = j + 1) {
+        for (var i = -1; i <= 1; i = i + 1) {
+            let cx = ix + i;
+            let cy = iy + j;
+            let px = f32(cx) + n_lattice(cx, cy, 2u);
+            let py = f32(cy) + n_lattice(cx, cy, 3u);
+            best = min(best, (px - x) * (px - x) + (py - y) * (py - y));
+        }
+    }
+    return sqrt(best);
+}
+fn c_noise(a: Cx) -> S { return s_c(n_value(s_v(a.re), s_v(a.im))); }
+fn c_perlin(a: Cx) -> S { return s_c(n_perlin(s_v(a.re), s_v(a.im))); }
+fn c_voronoi(a: Cx) -> S { return s_c(n_voronoi(s_v(a.re), s_v(a.im))); }
 fn c_scale(a: Cx, s: S) -> Cx { return Cx(s_mul(a.re, s), s_mul(a.im, s)); }
 fn c_sqr(a: Cx) -> Cx {
     return Cx(s_sub(s_mul(a.re, a.re), s_mul(a.im, a.im)), s_mul(s_mul(a.re, a.im), s_c(2.0)));

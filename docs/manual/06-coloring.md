@@ -51,9 +51,16 @@ The *Formula* method runs a coloring algorithm along every orbit. Pick it under
 | Lyapunov exponent | For the *Lyapunov* formula: stable points along the gradient, chaotic ones solid |
 | Gradient fill | The gradient across the plane, linear, radial or conical (with the *Pixel* formula: a fill layer) |
 | Image | An image file, looked up by the final *z*, the pixel or the orbit's closest approach to a center (an image trap); with size, angle, proportions and tiling. The gradient shows where the image is transparent |
+| Image along the bands | An image laid along the iteration bands: its width across each band (smooth iteration count), its height around the set (angle of *z*) |
+| Noise pattern | Value noise, Perlin noise, Voronoi cells or fractal noise (octaves of Perlin noise) over the final *z*, the pixel or the closest approach; optionally added to the smooth iteration bands |
 
 Algorithms can mark points as *solid* (for example outside a trap): those get the solid color
 below the gradient, which can also be transparent.
+
+!!! tip
+    Textures as bumps: color a layer with *Noise pattern* (or any algorithm), switch on
+    *Lighting* and take the heights from *Coloring*: the pattern becomes a relief. A small
+    *Relief* (0.02 to 0.1) suits fine patterns.
 
 ![Orbit traps: a cross outside, a circle inside](images/example-traps.jpg)
 

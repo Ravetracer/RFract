@@ -246,6 +246,7 @@ impl Gen<'_> {
             Func::Cabs => format!("c_real(c_cabs({a}))"),
             Func::Norm => format!("c_real(c_norm({a}))"),
             Func::Arg => format!("c_real(c_arg({a}))"),
+            Func::Noise | Func::Perlin | Func::Voronoi => format!("c_real(c_{}({a}))", fname(f)),
             Func::Atan2 | Func::Min | Func::Max => format!("c_real(({a}).re)"),
             f => format!("c_{}({a})", fname(f)),
         }
@@ -261,6 +262,7 @@ impl Gen<'_> {
             Func::Cabs => format!("c_cabs({})", self.expr(&args[0])),
             Func::Norm => format!("c_norm({})", self.expr(&args[0])),
             Func::Arg => format!("c_arg({})", self.expr(&args[0])),
+            Func::Noise | Func::Perlin | Func::Voronoi => format!("c_{}({})", fname(f), self.expr(&args[0])),
             _ if ty == Ty::Real => {
                 let a = self.expr(&args[0]);
                 match f {

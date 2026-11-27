@@ -525,6 +525,8 @@ impl D<'_> {
                     }
                 }
             }
+            // Noise counts as constant (its slopes are not part of the language).
+            Func::Noise | Func::Perlin | Func::Voronoi => zero(Ty::Real),
             Func::Real | Func::Imag | Func::Cabs | Func::Norm | Func::Arg => {
                 let a = &args[0];
                 let da = self.d(a);
@@ -586,7 +588,17 @@ impl D<'_> {
                     Func::Atanh => div(da, sub(one(), sq(a))),
                     // cosxx(z) = conj(cos(z))
                     Func::Cosxx => call(Func::Conj, neg(mul(call(Func::Sin, a), call(Func::Conj, da)))),
-                    Func::Real | Func::Imag | Func::Cabs | Func::Norm | Func::Arg | Func::Atan2 | Func::Min | Func::Max => unreachable!(),
+                    Func::Real
+                    | Func::Imag
+                    | Func::Cabs
+                    | Func::Norm
+                    | Func::Arg
+                    | Func::Atan2
+                    | Func::Min
+                    | Func::Max
+                    | Func::Noise
+                    | Func::Perlin
+                    | Func::Voronoi => unreachable!(),
                 }
             }
         }
