@@ -3,17 +3,31 @@
 A 2D fractal generator in Rust: layered fractals rendered on the GPU (wgpu), with denoising,
 post effects and animation.
 
-Status: early development. Version 0.2 renders one fractal layer with 552 built-in formulas,
-smooth, banded and distance-estimate coloring, a gradient editor, double precision for deep
-views and PNG export. Layers, effects, deep zoom and animation follow stage by stage (see
-[PLAN.md](PLAN.md)).
+Status: development versions (0.x) on the way to 1.0. RFract has:
+
+- Layers with merge modes, groups and masks; escape-time fractals (hundreds of built-in
+  formulas), density layers (Buddhabrot, attractors, IFS, L-systems), Lyapunov, Kleinian
+  limit sets, root finding, Truchet tiles.
+- A formula language that reads `.ufm`, `.ucl`, `.uxf`, `.ulb` and `.frm` formula files and
+  `.upr` and `.par` parameter files; a formula editor.
+- Deep zoom to any depth (perturbation with linear approximation), automatic iteration
+  counts, location bookmarks.
+- Lighting and reliefs, 3D terrains and 3D objects, light sources with lens flares, effects
+  (bloom, tone mapping, grading), the Intel Open Image Denoise denoiser.
+- Animation (keyframes, flights, drivers, sound), video export through ffmpeg, an explore
+  lane, posters beyond 20000 pixels, a render queue and a command line tool.
+
+The stages and what comes next are in [PLAN.md](PLAN.md); the user manual is in
+[docs/manual](docs/manual) (also inside the program, Help › Manual, and as a PDF with each
+release).
 
 ## Download
 
-The first public release (1.0.0) follows once all stages of the plan are done. Until then,
-development builds for Linux, Windows and macOS are attached as artifacts to the "Release"
-workflow runs of the `v0.*` tags (Actions tab). The builds are not signed; see INSTALL.txt in
-each package.
+Development versions are published as pre-releases on the
+[releases page](https://github.com/Ravetracer/RFract/releases) for Linux (tar.gz, AppImage),
+Windows (zip) and macOS (Apple silicon and Intel); the first full release (1.0.0) follows once
+all stages of the plan are done. The builds are not signed; see INSTALL.txt in each package
+and the notes on the releases page.
 
 ## Build
 

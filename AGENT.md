@@ -26,9 +26,9 @@ next concrete steps are in `TODO.md`. Siblings with code to reuse: `../RWildFire
   `tools/package.py` + `packaging/`, release notes from the changelog section, PDF manual from
   `tools/build_manual.py`). Running the workflow by hand only builds the packages as
   artifacts. CI (`ci.yml`) runs rustfmt, clippy `-D warnings` and the tests without GPU.
-- Development versions: stage N ends with tag `v0.(N+1).0`; `v0.*` tags only build the
-  packages (workflow artifacts), no GitHub release. The first public release is 1.0.0, after
-  all stages of PLAN.md.
+- Development versions: stage N ends with tag `v0.(N+1).0`; `v0.*` tags publish GitHub
+  pre-releases with all packages. The first full release is 1.0.0, after all stages of
+  PLAN.md.
 - Linux builds run on Ubuntu 22.04 (glibc 2.35). macOS: arm64 and x86_64 `.app` bundles with
   an ad-hoc signature (unsigned); Windows: zip, no Authenticode.
 - Platform folders: `rfr_core::paths`. OIDN is looked up in `RFR_OIDN_DIR`, next to the

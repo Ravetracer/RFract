@@ -197,8 +197,9 @@ RFract stage 2 – the APIs should settle first.
 
 Each stage ends with a tag built by the pipeline from stage 0, a manual update and a CHANGELOG
 entry. Versions during development: stage N ends with `v0.N.0` (`v0.1.0` = stage 0, …,
-`v0.12.0` = stage 11); `v0.*` tags build all packages as workflow artifacts but publish no
-GitHub release. The first public release is **1.0.0**, after all stages. Sizes are relative (S < M < L < XL).
+`v0.12.0` = stage 11); `v0.*` tags publish GitHub pre-releases with all packages (from
+v0.11.0 on; earlier ones were workflow artifacts only). The first full release is **1.0.0**,
+after all stages. Sizes are relative (S < M < L < XL).
 
 ### Stage 0 – Foundation and distribution (S)
 
