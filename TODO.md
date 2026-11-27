@@ -15,7 +15,12 @@ that come up along the way.
       "window of a larger frame" in both renderers).
 - [x] Render queue polish: settings per job (size, samples, frames, output); posters above
       8K render in tiles as jobs.
-- [ ] Performance: adaptive AA, CPU guessing/boundary tracing, shader cache on disk.
+- [x] Adaptive sampling: running mean per pixel, statistics (Σ√L, Σ L), done after 32
+      samples when the pixel and its four neighbours are settled; layer kernels and the
+      accumulation skip done pixels (CPU and GPU). 1080p, 256 spp: 19 s → 6 s, same error.
+- [x] Shader cache on disk: not needed, the drivers cache compiled shaders (NVIDIA: 130–720 ms
+      first, 20–80 ms after).
+- [ ] CPU guessing/boundary tracing (CPU renderer only; low priority with the GPU).
 - [ ] Complete manual with how-tos and example documents.
 - [ ] Optional: network rendering (`rfr-net`), Lua scripting, shared crate extraction.
 

@@ -254,8 +254,10 @@ pub struct CpuRenderer {
     plan: Plan,
     /// One kernel per layer of `plan.layers()` (same order).
     kernels: Vec<Kernel>,
-    /// Premultiplied linear RGBA sums per pixel, row-major.
+    /// Premultiplied linear RGBA means per pixel, row-major.
     accum: Vec<[f32; 4]>,
+    /// Per pixel: samples, Σ s, Σ s², done (see [`super::adaptive_update`]).
+    stats: Vec<[f32; 4]>,
     samples: u32,
     /// Passes of the density layers' orbits so far.
     density_passes: u32,
@@ -315,7 +317,16 @@ impl CpuRenderer {
         let kernels: Vec<Kernel> = plan.layers().iter().map(|l| Kernel::new(l, &plan)).collect();
         let n = (plan.frame.width * plan.frame.height) as usize;
         let fields = kernels.iter().map(|_| None).collect();
-        CpuRenderer { plan, kernels, accum: vec![[0.0; 4]; n], samples: 0, density_passes: 0, target_samples: u32::MAX, fields }
+        CpuRenderer {
+            plan,
+            kernels,
+            accum: vec![[0.0; 4]; n],
+            stats: vec![[0.0; 4]; n],
+            samples: 0,
+            density_passes: 0,
+            target_samples: u32::MAX,
+            fields,
+        }
     }
 
     pub fn plan(&self) -> &Plan {
@@ -359,6 +370,7 @@ impl CpuRenderer {
             self.density_passes += 1;
             if density::restart_due(self.density_passes, self.target_samples) {
                 self.accum.iter_mut().for_each(|a| *a = [0.0; 4]);
+                self.stats.iter_mut().for_each(|a| *a = [0.0; 4]);
                 self.samples = 0;
             }
         }
@@ -408,28 +420,48 @@ impl CpuRenderer {
         let s = self.samples;
         let proto: Vec<KernelF> = self.kernels.iter().map(|k| k.frames()).collect();
         let mut accum = std::mem::take(&mut self.accum);
+        let mut stats = std::mem::take(&mut self.stats);
         let this = &*self;
-        accum.par_chunks_mut(w).enumerate().for_each_init(
+        let tolerance = self.plan.adaptive;
+        // The neighbours as they were before this pass.
+        let before = if tolerance > 0.0 { stats.clone() } else { Vec::new() };
+        let h = self.plan.frame.height as usize;
+        accum.par_chunks_mut(w).zip(stats.par_chunks_mut(w)).enumerate().for_each_init(
             || proto.clone(),
-            |frames, (y, row)| {
-                for (x, acc) in row.iter_mut().enumerate() {
+            |frames, (y, (row, st_row))| {
+                for (x, (acc, st)) in row.iter_mut().zip(st_row.iter_mut()).enumerate() {
+                    // Adaptive sampling: done pixels take no more samples.
+                    if st[3] > 0.5 {
+                        continue;
+                    }
                     let (u, v, turn) = sample_offset(x as u32, y as u32, s);
                     let c = this.sample(frames, x as f64 + u, y as f64 + v, turn, (x as u32, y as u32, s));
-                    acc[0] += c[0] * c[3];
-                    acc[1] += c[1] * c[3];
-                    acc[2] += c[2] * c[3];
-                    acc[3] += c[3];
+                    let around = if before.is_empty() {
+                        [[0.0; 4]; 4]
+                    } else {
+                        let at = |dx: i64, dy: i64| {
+                            let (nx, ny) = ((x as i64 + dx).clamp(0, w as i64 - 1) as usize, (y as i64 + dy).clamp(0, h as i64 - 1) as usize);
+                            before[ny * w + nx]
+                        };
+                        [at(-1, 0), at(1, 0), at(0, -1), at(0, 1)]
+                    };
+                    super::adaptive_update(acc, st, [c[0] * c[3], c[1] * c[3], c[2] * c[3], c[3]], tolerance, around);
                 }
             },
         );
         self.accum = accum;
+        self.stats = stats;
         self.samples += 1;
     }
 
     /// Averaged linear RGB with straight alpha per pixel.
     pub fn linear(&self) -> Vec<[f32; 4]> {
-        let k = 1.0 / self.samples.max(1) as f32;
-        self.accum.iter().map(|a| unpremultiply(*a, k)).collect()
+        self.accum.iter().map(|a| unpremultiply(*a, 1.0)).collect()
+    }
+
+    /// Adaptive sampling: the share of the pixels that are done.
+    pub fn done_share(&self) -> f64 {
+        self.stats.iter().filter(|s| s[3] > 0.5).count() as f64 / self.stats.len().max(1) as f64
     }
 
     /// The image as 8-bit sRGB RGBA (straight alpha).
@@ -519,5 +551,24 @@ mod tests {
         let mut alone = doc.clone();
         alone.layers.truncate(1);
         assert_ne!(render(&alone, 32, 18, 2).unwrap().rgba8(), img, "the group changes the image");
+    }
+
+    #[test]
+    fn adaptive_sampling_finishes_flat_pixels_early() {
+        let mut doc = Document::for_formula("rfract:Mandelbrot");
+        doc.image.adaptive = 0.0;
+        let (w, h, n) = (64u32, 36u32, 48u32);
+        let mut full = CpuRenderer::new(crate::render::Plan::sized(&doc, w, h).unwrap());
+        let mut adaptive = CpuRenderer::new(crate::render::Plan::sized(&doc, w, h).unwrap().with_adaptive(0.005));
+        for _ in 0..n {
+            full.pass();
+            adaptive.pass();
+        }
+        assert_eq!(full.done_share(), 0.0);
+        let done = adaptive.done_share();
+        assert!(done > 0.3, "only {done} done");
+        let (a, b) = (full.rgba8(), adaptive.rgba8());
+        let diff = a.iter().zip(&b).map(|(x, y)| x.abs_diff(*y) as f64).sum::<f64>() / a.len() as f64;
+        assert!(diff < 1.0, "{diff}");
     }
 }

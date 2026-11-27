@@ -100,6 +100,8 @@ struct Params {
 // then 3 vec4 per step: M, N (2 × 2, row-major), (M exponent, N exponent, r mantissa, r
 // exponent) with the exponents as i32 bits.
 @group(0) @binding(6) var<storage, read> bla: array<vec4<f32>>;
+// Adaptive sampling per pixel: samples, Σ s, Σ s², done (composite.wgsl).
+@group(0) @binding(8) var<storage, read> stats: array<vec4<f32>>;
 
 const LUT_SIZE: u32 = 1024u;
 // The last region color's gradient position before the offset (lit layers' heights).
@@ -355,6 +357,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let x = gid.x;
     let y = gid.y + U.size.w;
     if x >= U.size.x || gid.y >= U.band.x || y >= U.size.y {
+        return;
+    }
+    // Adaptive sampling: done pixels take no more samples (lit fields still fill every pixel).
+    if U.band.y < 2u && stats[y * U.size.x + x].w > 0.5 {
         return;
     }
     let s = U.size.z;

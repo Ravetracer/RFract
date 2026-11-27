@@ -12,6 +12,9 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
 - Posters: images above 8K UHD render in tiles (export, command line, render queue) and
   are written a band at a time, so 20000 px and more fit on any graphics card.
 - Render queue: settings per job (name, size, samples, frames, output file).
+- Adaptive sampling (*Image › Adaptive*, on by default): pixels stop taking samples once
+  they and their neighbours are smooth; renders with many samples are about three times
+  faster.
 
 ## [0.9.0] - 2026-11-27
 

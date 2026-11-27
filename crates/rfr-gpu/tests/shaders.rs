@@ -614,3 +614,28 @@ fn tiled_posters_match_whole_renders() {
     assert_eq!(rfr_core::io::open(&path).unwrap().view, doc.view);
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// Adaptive sampling on the GPU gives the image of the CPU renderer (and of full sampling).
+#[test]
+fn adaptive_sampling_matches_the_cpu() {
+    let Ok(ctx) = rfr_gpu::GpuContext::new_headless() else {
+        eprintln!("no GPU: skipped");
+        return;
+    };
+    let mut doc = Document::for_formula("rfract:Mandelbrot");
+    doc.view.set_center([-0.745, 0.11]);
+    doc.view.radius = 0.05.into();
+    let (w, h, s) = (160u32, 90u32, 48u32);
+    let plan = Plan::sized(&doc, w, h).unwrap().with_adaptive(0.005);
+    let gpu = rfr_core::render::cpu::rgba8(&rfr_gpu::render_blocking(ctx.clone(), &plan, s, |_| true).unwrap());
+    let mut cpu = rfr_core::render::cpu::CpuRenderer::new(plan);
+    for _ in 0..s {
+        cpu.pass();
+    }
+    assert!(cpu.done_share() > 0.2, "{}", cpu.done_share());
+    let full =
+        rfr_core::render::cpu::rgba8(&rfr_gpu::render_blocking(ctx, &Plan::sized(&doc, w, h).unwrap().with_adaptive(0.0), s, |_| true).unwrap());
+    let (d1, d2) = (block_diff(&gpu, &cpu.rgba8(), w as usize, h as usize), block_diff(&gpu, &full, w as usize, h as usize));
+    eprintln!("adaptive GPU vs CPU {d1:.2}, vs full {d2:.2}");
+    assert!(d1 < 2.0 && d2 < 2.0, "{d1:.2} {d2:.2}");
+}

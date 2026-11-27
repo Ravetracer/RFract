@@ -19,11 +19,7 @@ struct BP {
 
 // The premultiplied light display.wgsl `pre` shows (invalid values as 0).
 fn radiance(x: u32, y: u32) -> vec3<f32> {
-    var n = bp.img.z;
-    if y < bp.img.w {
-        n = n + 1u;
-    }
-    let s = accum[y * bp.img.x + x] / f32(max(n, 1u));
+    let s = accum[y * bp.img.x + x];
     if !(s.w > 1e-6) || !(abs(s.x) < 3.4e38 && abs(s.y) < 3.4e38 && abs(s.z) < 3.4e38) {
         return vec3<f32>(0.0);
     }

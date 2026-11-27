@@ -50,6 +50,13 @@ and saves a PNG. The PNG carries the document, so every exported picture opens a
 its settings. More samples smooth the edges (anti-aliasing); 64 is a good start, fine detail
 may need 256 or more.
 
+**Adaptive** sampling (*Image* section) saves most of that time: after 32 samples a pixel
+stops once it and its four neighbours are smooth, that is when the noise of its brightness is
+below the *Adaptive* value. Flat parts finish early, edges and fine detail get every sample.
+At the default of 0.005 a 1080p image with 256 samples renders about three times faster and
+looks the same; 0 gives every pixel every sample. It works in the preview, exports, animations
+and the command line (not for density layers, whose image restarts while it fills).
+
 ### Posters
 
 Images larger than about 8K UHD (7680 × 4320 pixels) render in tiles of 2048 × 2048 pixels,

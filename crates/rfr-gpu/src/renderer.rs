@@ -581,7 +581,10 @@ struct OpRes {
 struct Target {
     width: u32,
     height: u32,
+    /// Premultiplied light, the running mean per pixel.
     accum: wgpu::Buffer,
+    /// Adaptive sampling per pixel: samples, Σ s, Σ s², done.
+    stats: wgpu::Buffer,
     texture: wgpu::Texture,
     view: wgpu::TextureView,
 }
@@ -623,6 +626,8 @@ pub struct GpuRenderer {
     last_plan: Option<Plan>,
     /// Passes of the density layers' orbits since the plan was set.
     density_passes: u32,
+    /// Adaptive sampling tolerance of the plan (0: off).
+    adaptive: f32,
 }
 
 /// Most bytes of scratch slots (the band height is limited by it).
@@ -644,6 +649,7 @@ impl GpuRenderer {
                 entry(5, buffer(wgpu::BufferBindingType::Storage { read_only: true })),
                 entry(6, buffer(wgpu::BufferBindingType::Storage { read_only: true })),
                 entry(7, buffer(wgpu::BufferBindingType::Storage { read_only: false })),
+                entry(8, buffer(wgpu::BufferBindingType::Storage { read_only: true })),
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -720,6 +726,7 @@ impl GpuRenderer {
             empty_rw: empty_storage(device),
             last_plan: None,
             density_passes: 0,
+            adaptive: 0.0,
             ctx,
         }
     }
@@ -766,6 +773,7 @@ impl GpuRenderer {
     pub fn set_plan(&mut self, plan: &Plan) {
         self.last_plan = Some(plan.clone());
         self.density_passes = 0;
+        self.adaptive = plan.adaptive;
         let device = self.ctx.device.clone();
         // Buffers too large for the GPU (memory or limits) become a message instead of a panic.
         let invalid = device.push_error_scope(wgpu::ErrorFilter::Validation);
@@ -1067,6 +1075,7 @@ impl GpuRenderer {
         if let Some(t) = &self.target {
             let mut enc = self.ctx.device.create_command_encoder(&Default::default());
             enc.clear_buffer(&t.accum, 0, None);
+            enc.clear_buffer(&t.stats, 0, None);
             self.ctx.queue.submit(Some(enc.finish()));
         }
     }
@@ -1075,6 +1084,12 @@ impl GpuRenderer {
         let device = &self.ctx.device;
         let accum = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("accum"),
+            size: (width as u64 * height as u64 * 16).max(16),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let stats = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("stats"),
             size: (width as u64 * height as u64 * 16).max(16),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -1090,13 +1105,14 @@ impl GpuRenderer {
             view_formats: &[],
         });
         let view = texture.create_view(&Default::default());
-        Target { width, height, accum, texture, view }
+        Target { width, height, accum, stats, texture, view }
     }
 
     /// One pass of every density layer's orbits into its counts, then their largest counts
     /// (density.wgsl `scatter`, `dmax`).
     fn density_pass(&self, scratch: &wgpu::Buffer) {
         let device = &self.ctx.device;
+        let Some(stats) = self.target.as_ref().map(|t| &t.stats) else { return };
         let mut enc = device.create_command_encoder(&Default::default());
         for l in &self.layers {
             let Some(d) = &l.density else { continue };
@@ -1118,6 +1134,7 @@ impl GpuRenderer {
                     wgpu::BindGroupEntry { binding: 5, resource: l.orbit.as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 6, resource: l.bla.as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 7, resource: l.hist.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 8, resource: stats.as_entire_binding() },
                 ],
             });
             let mut pass = enc.begin_compute_pass(&Default::default());
@@ -1137,6 +1154,7 @@ impl GpuRenderer {
         let device = &self.ctx.device;
         let Some(t) = self.target.as_ref() else { return };
         let (width, height) = (t.width, t.height);
+        let stats = &t.stats;
         for l in &self.layers {
             let Some(uniform) = &l.light else { continue };
             let Some(Ok(main)) = self.pipeline(l.signature) else { continue };
@@ -1152,6 +1170,7 @@ impl GpuRenderer {
                     wgpu::BindGroupEntry { binding: 5, resource: l.orbit.as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 6, resource: l.bla.as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 7, resource: l.hist.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 8, resource: stats.as_entire_binding() },
                 ],
             });
             let mut row = 0;
@@ -1337,6 +1356,7 @@ impl GpuRenderer {
                             wgpu::BindGroupEntry { binding: 5, resource: l.orbit.as_entire_binding() },
                             wgpu::BindGroupEntry { binding: 6, resource: l.bla.as_entire_binding() },
                             wgpu::BindGroupEntry { binding: 7, resource: l.hist.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 8, resource: t.stats.as_entire_binding() },
                         ],
                     });
                     steps.push((p, bind));
@@ -1349,6 +1369,7 @@ impl GpuRenderer {
                             wgpu::BindGroupEntry { binding: 0, resource: op.uniform.as_entire_binding() },
                             wgpu::BindGroupEntry { binding: 1, resource: scratch.as_entire_binding() },
                             wgpu::BindGroupEntry { binding: 2, resource: t.accum.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 3, resource: t.stats.as_entire_binding() },
                         ],
                     });
                     steps.push((self.composite_pipeline.clone(), bind));
@@ -1364,6 +1385,7 @@ impl GpuRenderer {
                 if rfr_core::render::density::restart_due(self.density_passes, max_samples) {
                     let mut enc = device.create_command_encoder(&Default::default());
                     enc.clear_buffer(&t.accum, 0, None);
+                    enc.clear_buffer(&t.stats, 0, None);
                     self.ctx.queue.submit(Some(enc.finish()));
                     self.samples = 0;
                 }
@@ -1396,7 +1418,11 @@ impl GpuRenderer {
                                 u.mode = [blend.mode.index(), 0, 0, 0];
                                 u.blend = [blend.opacity, 0.0, 0.0, 0.0];
                             }
-                            OpKind::Accumulate { src } => u.slots = [2, 0, *src, NONE],
+                            OpKind::Accumulate { src } => {
+                                u.slots = [2, 0, *src, NONE];
+                                u.mode = [0, 0, height, 0];
+                                u.blend = [0.0, self.adaptive, 0.0, 0.0];
+                            }
                             OpKind::Layer { .. } => unreachable!(),
                         }
                         self.ctx.queue.write_buffer(&op.uniform, 0, bytemuck::bytes_of(&u));
@@ -1638,15 +1664,7 @@ impl GpuRenderer {
         rx.recv().ok()?.ok()?;
         let data = slice.get_mapped_range().ok()?;
         let px: &[[f32; 4]] = bytemuck::cast_slice(&data[..]);
-        let w = t.width as usize;
-        let out = px
-            .iter()
-            .enumerate()
-            .map(|(i, a)| {
-                let n = self.samples + ((i / w) < self.row as usize) as u32;
-                rfr_core::render::cpu::unpremultiply(*a, 1.0 / n.max(1) as f32)
-            })
-            .collect();
+        let out = px.iter().map(|a| rfr_core::render::cpu::unpremultiply(*a, 1.0)).collect();
         drop(data);
         staging.unmap();
         Some(out)

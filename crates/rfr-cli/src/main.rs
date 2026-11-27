@@ -694,6 +694,7 @@ fn render_check(prog: rfr_core::formula::Program, kind: rfr_core::formula::Progr
             frame: rfr_core::render::ViewFrame { width: 4, height: 3, center: [-0.5, 0.0], radius: 1.5, radius_fx: 1.5.into(), cos: 1.0, sin: 0.0 },
             center_text: ["-0.5".into(), "0".into()],
             background: [0.0, 0.0, 0.0, 1.0],
+            adaptive: 0.0,
             nodes: vec![rfr_core::render::Node::Layer {
                 layer: Box::new(lp),
                 blend: rfr_core::render::Blend { mode: Default::default(), opacity: 1.0 },

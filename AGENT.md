@@ -69,6 +69,9 @@ cargo fmt --all --check
   estimation come from dual numbers, never from hand-written rules.
 - Precision by zoom: `render::Plan::precision` (`SINGLE_LIMIT` 1e-6, `DOUBLE_LIMIT` 2e-15 of
   the coordinates per pixel, both measured); `rfr_gpu::renderer::renderer_mode` picks the shader.
+- Accumulation: the image holds the running mean of premultiplied light per pixel; adaptive
+  sampling keeps per-pixel statistics (`render::adaptive_update`, `composite.wgsl`) and skips
+  done pixels in the layer kernels and the accumulation.
 - Smooth coloring: divergent orbits by the last radius with the growth rate estimated (and
   snapped to integers), convergent ones by the step before the last (f32 cannot resolve the
   last one). CPU and GPU must keep the same formulas (`render/mod.rs`, `kernel.wgsl`).

@@ -1483,6 +1483,14 @@ fn view_and_image(ui: &mut Ui, doc: &mut Document, sel: &Selection) {
             widgets::label(ui, "Samples", "Samples per pixel of exported images: more samples give smoother edges (anti-aliasing)");
             ui.add(egui::Slider::new(&mut doc.image.samples, 1..=4096).logarithmic(true)).on_hover_text("Samples per pixel for exports");
             ui.end_row();
+            widgets::slider(
+                ui,
+                "Adaptive",
+                "Adaptive sampling: a pixel stops taking samples once it and its neighbours are smooth (noise below this, after at least 32 samples). Flat parts finish early, edges get all samples: renders with many samples are several times faster. 0: every pixel takes every sample",
+                &mut doc.image.adaptive,
+                0.0..=0.02,
+                rfr_core::doc::Image::default().adaptive,
+            );
             let mut bg = [doc.image.background[0], doc.image.background[1], doc.image.background[2]];
             if widgets::color(ui, "Background", "Color below all layers", &mut bg).changed() {
                 doc.image.background[0] = bg[0];

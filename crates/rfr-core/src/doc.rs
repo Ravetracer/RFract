@@ -209,6 +209,9 @@ pub struct Image {
     pub samples: u32,
     /// Below all layers (linear RGB and alpha; alpha 0 exports transparent PNGs).
     pub background: [f32; 4],
+    /// Adaptive sampling: a pixel stops taking samples once its noise is below this (0: off;
+    /// see `render::adaptive_update`).
+    pub adaptive: f64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1207,7 +1210,7 @@ impl Default for Lighting {
 
 impl Default for Image {
     fn default() -> Self {
-        Image { width: 1920, height: 1080, samples: 64, background: [0.0, 0.0, 0.0, 1.0] }
+        Image { width: 1920, height: 1080, samples: 64, background: [0.0, 0.0, 0.0, 1.0], adaptive: 0.005 }
     }
 }
 

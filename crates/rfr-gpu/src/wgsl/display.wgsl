@@ -59,11 +59,8 @@ fn hash(v: u32) -> u32 {
 
 // The averaged premultiplied light of pixel (x, y), as CpuRenderer::linear then premultiplied.
 fn pre(x: u32, y: u32) -> vec4<f32> {
-    var n = D.size.z;
-    if y < D.size.w {
-        n = n + 1u;
-    }
-    let s = accum[y * D.size.x + x] / f32(max(n, 1u));
+    // The accumulation holds the running mean per pixel.
+    let s = accum[y * D.size.x + x];
     let a = clamp(s.w, 0.0, 1.0);
     if !(s.w > 1e-6) {
         return vec4<f32>(0.0);
@@ -295,11 +292,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Checkerboard (linear grays) behind transparent parts.
     let check = select(0.06, 0.11, ((gid.x / 8u) + (gid.y / 8u)) % 2u == 0u);
     if D.bloom.w < 0.5 {
-        var n = D.size.z;
-        if gid.y < D.size.w {
-            n = n + 1u;
-        }
-        let a = accum[gid.y * D.size.x + gid.x] / f32(max(n, 1u));
+        let a = accum[gid.y * D.size.x + gid.x];
         let c = a.xyz + vec3<f32>(check) * (1.0 - clamp(a.w, 0.0, 1.0));
         textureStore(out_tex, vec2<i32>(i32(gid.x), i32(gid.y)), vec4<f32>(to_srgb(c.x), to_srgb(c.y), to_srgb(c.z), 1.0));
         return;

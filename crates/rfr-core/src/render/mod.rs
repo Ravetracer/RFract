@@ -143,6 +143,39 @@ impl ColorPlan {
     }
 }
 
+/// Adaptive sampling: pixels take at least this many samples.
+pub const ADAPTIVE_MIN_SAMPLES: u32 = 32;
+
+/// Adaptive sampling: whether the statistics `st` (samples, Σ s, Σ s², done) of a pixel
+/// say its noise is below `tolerance`: enough samples and a small standard error of s.
+pub fn adaptive_settled(st: [f32; 4], tolerance: f32) -> bool {
+    let n = st[0];
+    if n < ADAPTIVE_MIN_SAMPLES as f32 {
+        return false;
+    }
+    let m = st[1] / n;
+    ((st[2] / n - m * m).max(0.0) / n).sqrt() < tolerance
+}
+
+/// Adaptive sampling, one sample of a pixel: the running mean of the premultiplied light
+/// `mean` takes sample `c` (premultiplied) and the pixel's statistics `st` (samples, Σ s,
+/// Σ s², done) take s = √luma(c). The pixel is done (no more samples) once it and its four
+/// neighbours (`around`, their statistics) are settled ([`adaptive_settled`]); `tolerance`
+/// 0 never stops. The GPU does the same in `composite.wgsl`.
+pub fn adaptive_update(mean: &mut [f32; 4], st: &mut [f32; 4], c: [f32; 4], tolerance: f32, around: [[f32; 4]; 4]) {
+    let n = st[0] + 1.0;
+    for k in 0..4 {
+        mean[k] += (c[k] - mean[k]) / n;
+    }
+    let s = (0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]).max(0.0).sqrt();
+    st[0] = n;
+    st[1] += s;
+    st[2] += s * s;
+    if tolerance > 0.0 && adaptive_settled(*st, tolerance) && around.iter().all(|a| a[3] > 0.5 || adaptive_settled(*a, tolerance)) {
+        st[3] = 1.0;
+    }
+}
+
 /// Pixel → plane mapping.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ViewFrame {
@@ -285,6 +318,8 @@ pub struct Plan {
     pub center_text: [String; 2],
     /// Linear RGB and alpha below all layers.
     pub background: [f32; 4],
+    /// Adaptive sampling: noise tolerance (0: every pixel takes every sample).
+    pub adaptive: f32,
     /// Bottom first.
     pub nodes: Vec<Node>,
 }
@@ -337,8 +372,17 @@ impl Plan {
             },
             center_text: doc.view.center.clone(),
             background: doc.image.background,
+            adaptive: 0.0,
             nodes: nodes(&doc.layers)?,
-        })
+        }
+        .with_adaptive(doc.image.adaptive as f32))
+    }
+
+    /// The plan with adaptive sampling at noise tolerance `tolerance` (0: off; never with
+    /// density layers, whose image restarts while their counts fill).
+    pub fn with_adaptive(mut self, tolerance: f32) -> Plan {
+        self.adaptive = if self.layers().iter().any(|l| l.density.is_some()) { 0.0 } else { tolerance.max(0.0) };
+        self
     }
 
     /// Every layer of the plan (masks included), in render order.
