@@ -90,6 +90,9 @@ struct Uni {
     ldir: [[f32; 4]; 4],
     lrad: [[f32; 4]; 4],
     lshadow: [f32; 4],
+    lenv: [f32; 4],
+    lsky0: [f32; 4],
+    lsky1: [f32; 4],
 }
 
 /// Compositing uniforms (composite.wgsl `Op`).
@@ -174,6 +177,13 @@ fn layer_uni(plan: &Plan, lp: &LayerPlan) -> Uni {
             let h = f.height as f32;
             [l.shadow * h, l.softness, l.occlusion, l.occlusion_radius * h]
         }),
+        // The environment image follows the layer's image parameters.
+        lenv: lp.light.as_ref().map_or([0.0; 4], |l| {
+            let slot = if l.environment.is_some() { codegen::layer_images(lp).len() as f32 } else { -1.0 };
+            [l.reflection, slot, 0.0, 0.0]
+        }),
+        lsky0: lp.light.as_ref().map_or([0.0; 4], |l| [l.horizon[0], l.horizon[1], l.horizon[2], 0.0]),
+        lsky1: lp.light.as_ref().map_or([0.0; 4], |l| [l.zenith[0], l.zenith[1], l.zenith[2], 0.0]),
     }
 }
 
@@ -599,13 +609,17 @@ impl GpuRenderer {
             }
             let mut prev = old.next();
             // Images: uploaded again only when they change (they can be large).
-            let image_src: Vec<_> = codegen::layer_images(lp)
+            let mut image_src: Vec<_> = codegen::layer_images(lp)
                 .into_iter()
                 .map(|v| match v {
                     rfr_core::formula::ParamValue::Image { path } => rfr_core::images::get(path),
                     _ => None,
                 })
                 .collect();
+            // A lit layer's environment image takes the slot after them.
+            if let Some(env) = lp.light.as_ref().and_then(|l| l.environment.clone()) {
+                image_src.push(Some(env));
+            }
             let same = |a: &[Option<Arc<rfr_core::images::ImageData>>]| {
                 a.len() == image_src.len()
                     && a.iter().zip(&image_src).all(|(x, y)| match (x, y) {

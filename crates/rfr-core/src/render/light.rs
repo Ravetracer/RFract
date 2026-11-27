@@ -14,10 +14,14 @@
 //! horizon in eight directions. Both jitter their steps per pixel and pass, so the passes
 //! average the steps out. Lengths are shares of the image height.
 
+use std::sync::Arc;
+
+use super::OrbitResult;
 use crate::doc::{HeightSource, Lighting, SpecularModel};
+use crate::images::ImageData;
 
 /// A layer's lighting, resolved for rendering.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct LightPlan {
     pub source: HeightSource,
     pub relief: f32,
@@ -35,6 +39,11 @@ pub struct LightPlan {
     /// Ambient occlusion strength (0: off) and radius (share of the image height).
     pub occlusion: f32,
     pub occlusion_radius: f32,
+    /// Reflection strength, the environment image (equirectangular) or the sky colors.
+    pub reflection: f32,
+    pub environment: Option<Arc<ImageData>>,
+    pub horizon: [f32; 3],
+    pub zenith: [f32; 3],
 }
 
 impl LightPlan {
@@ -62,6 +71,28 @@ impl LightPlan {
             softness: l.softness.max(0.0) as f32,
             occlusion: l.occlusion.max(0.0) as f32,
             occlusion_radius: l.occlusion_radius.max(0.0) as f32,
+            reflection: l.reflection.clamp(0.0, 1.0) as f32,
+            environment: if l.reflection > 0.0 { crate::images::get(&l.environment) } else { None },
+            horizon: l.horizon,
+            zenith: l.zenith,
+        }
+    }
+
+    /// The environment seen in direction `r` (x right, y up, z toward the viewer): the image
+    /// as longitude and latitude (zenith at the top), else the sky from the horizon (and
+    /// below) to the zenith. Linear RGB.
+    pub fn environment(&self, r: [f32; 3]) -> [f32; 3] {
+        match &self.environment {
+            Some(img) => {
+                let u = r[1].atan2(r[0]) / std::f32::consts::TAU + 0.5;
+                let v = 0.5 - r[2].clamp(-1.0, 1.0).asin() / std::f32::consts::PI;
+                let c = crate::images::color(Some(img), (2.0 * u - 1.0) as f64, (1.0 - 2.0 * v) as f64);
+                std::array::from_fn(|k| super::composite::srgb_decode(c[k] as f32))
+            }
+            None => {
+                let t = r[2].clamp(0.0, 1.0);
+                std::array::from_fn(|k| self.horizon[k] + (self.zenith[k] - self.horizon[k]) * t)
+            }
         }
     }
 
@@ -77,14 +108,27 @@ pub fn luminance(c: [f32; 4]) -> f32 {
     (0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]) * c[3]
 }
 
+/// The height by distance estimation: −ln(1 + distance / pixel size) for escaped orbits with
+/// a derivative, 0 (the top) otherwise.
+pub fn distance_height(o: &OrbitResult, pixel_size: f64) -> f64 {
+    let r2 = o.z.norm();
+    if o.escaped && r2 > 4.0 && o.dz > 0.0 && o.dz.is_finite() {
+        let r = r2.sqrt();
+        -(r * r.ln() / o.dz / pixel_size).max(0.0).ln_1p()
+    } else {
+        0.0
+    }
+}
+
 /// The height of a sample: `smooth` is the smooth iteration count (the iteration limit for
 /// points that stay), `value` the coloring's gradient position before the offset (0 for
-/// solid and direct colors).
-pub fn height(source: HeightSource, smooth: f64, value: f64, color: [f32; 4]) -> f32 {
+/// solid and direct colors), `distance` the [`distance_height`].
+pub fn height(source: HeightSource, smooth: f64, value: f64, distance: f64, color: [f32; 4]) -> f32 {
     let h = match source {
         HeightSource::Smooth => smooth.max(0.0).ln_1p() as f32,
         HeightSource::Value => value as f32,
         HeightSource::Luminance => luminance(color),
+        HeightSource::Distance => distance as f32,
     };
     if h.is_finite() { h } else { 0.0 }
 }
@@ -138,6 +182,15 @@ pub fn shade(l: &LightPlan, color: [f32; 4], gx: f32, gy: f32, k: f32, light_see
     let mut out = [0.0; 4];
     for c in 0..3 {
         out[c] = color[c] * diffuse[c] + l.specular * spec[c];
+    }
+    // Reflection of the environment, stronger at grazing angles.
+    if l.reflection > 0.0 {
+        let r = [2.0 * n[2] * n[0], 2.0 * n[2] * n[1], 2.0 * n[2] * n[2] - 1.0];
+        let env = l.environment(r);
+        let f = l.reflection + (1.0 - l.reflection) * l.reflection * (1.0 - nv).powi(5);
+        for c in 0..3 {
+            out[c] = out[c] * (1.0 - f) + env[c] * f;
+        }
     }
     out[3] = color[3];
     out

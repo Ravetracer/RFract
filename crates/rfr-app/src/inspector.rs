@@ -581,6 +581,7 @@ fn lighting_section(ui: &mut Ui, l: &mut Layer) {
             (HeightSource::Smooth, "Iterations", "Heights from the smooth iteration count (logarithmic); the set is a plateau"),
             (HeightSource::Value, "Coloring", "Heights from the coloring value (the gradient position): the relief follows the color bands"),
             (HeightSource::Luminance, "Brightness", "Heights from the layer's brightness: bump maps from images and colorings"),
+            (HeightSource::Distance, "Distance", "Heights from the estimated distance to the set (logarithmic): smooth slopes rising to the set"),
         ],
     );
     widgets::grid(ui, "light-grid2", |ui| {
@@ -630,6 +631,44 @@ fn lighting_section(ui: &mut Ui, l: &mut Layer) {
                 0.005..=0.2,
                 def.occlusion_radius,
             );
+        }
+        widgets::slider(
+            ui,
+            "Reflection",
+            "How much the relief mirrors its surroundings (0: not at all, 1: a mirror)",
+            &mut li.reflection,
+            0.0..=1.0,
+            def.reflection,
+        );
+        if li.reflection > 0.0 {
+            widgets::label(ui, "Environment", "What the relief reflects: a panorama image (2:1, equirectangular) or the sky colors below");
+            ui.horizontal(|ui| {
+                let path = &mut li.environment;
+                let name = if path.is_empty() { "Sky colors".to_string() } else { path.rsplit(['/', '\\']).next().unwrap_or(path).to_string() };
+                let hover = if path.is_empty() {
+                    "Choose a panorama image (PNG or JPEG)".to_string()
+                } else {
+                    format!("{path}\nClick to choose another panorama.")
+                };
+                if ui.button(format!("{} {name}", icons::OPEN)).on_hover_text(hover).clicked()
+                    && let Some(f) = rfd::FileDialog::new().add_filter("Images", &["png", "jpg", "jpeg"]).pick_file()
+                {
+                    *path = f.display().to_string();
+                }
+                if !path.is_empty() {
+                    if ui.small_button(icons::X).on_hover_text("Reflect the sky colors instead").clicked() {
+                        path.clear();
+                    } else if let Err(e) = rfr_core::images::load(path) {
+                        ui.label(RichText::new(icons::WARNING).color(theme::WARN))
+                            .on_hover_text(format!("{e}\nThe sky colors are reflected instead."));
+                    }
+                }
+            });
+            ui.end_row();
+            if li.environment.is_empty() {
+                widgets::color(ui, "Sky horizon", "Color of the sky at the horizon (reflected by steep slopes)", &mut li.horizon);
+                widgets::color(ui, "Sky zenith", "Color of the sky straight up (reflected by flat parts)", &mut li.zenith);
+            }
         }
     });
     let mut remove = None;

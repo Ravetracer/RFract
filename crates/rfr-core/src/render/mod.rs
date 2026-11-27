@@ -232,9 +232,9 @@ impl LayerPlan {
         })
     }
 
-    /// The outside coloring needs the orbit's derivative (distance estimation).
+    /// The outside coloring or the lighting needs the orbit's derivative (distance estimation).
     pub fn needs_derivative(&self) -> bool {
-        matches!(self.outside.method, ColorMethod::Distance)
+        matches!(self.outside.method, ColorMethod::Distance) || self.light.as_ref().is_some_and(|l| l.source == crate::doc::HeightSource::Distance)
     }
 }
 

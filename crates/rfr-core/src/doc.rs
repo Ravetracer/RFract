@@ -782,10 +782,13 @@ pub enum HeightSource {
     Value,
     /// The luminance of the layer's color (bump maps from images).
     Luminance,
+    /// The estimated distance to the set (logarithmic, falling away from it; needs the
+    /// orbit's derivative).
+    Distance,
 }
 
 impl HeightSource {
-    pub const ALL: [HeightSource; 3] = [HeightSource::Smooth, HeightSource::Value, HeightSource::Luminance];
+    pub const ALL: [HeightSource; 4] = [HeightSource::Smooth, HeightSource::Value, HeightSource::Luminance, HeightSource::Distance];
 
     pub fn index(self) -> u32 {
         HeightSource::ALL.iter().position(|v| *v == self).unwrap_or(0) as u32
@@ -846,6 +849,12 @@ pub struct Lighting {
     /// the image height).
     pub occlusion: f64,
     pub occlusion_radius: f64,
+    /// Reflections of the environment (0: none … 1: a mirror): an equirectangular image
+    /// (`environment`, a file path) or a sky from `horizon` to `zenith` (linear RGB).
+    pub reflection: f64,
+    pub environment: String,
+    pub horizon: [f32; 3],
+    pub zenith: [f32; 3],
 }
 
 impl Default for Lighting {
@@ -864,6 +873,10 @@ impl Default for Lighting {
             softness: 0.05,
             occlusion: 0.0,
             occlusion_radius: 0.03,
+            reflection: 0.0,
+            environment: String::new(),
+            horizon: [0.85, 0.8, 0.75],
+            zenith: [0.15, 0.3, 0.7],
         }
     }
 }

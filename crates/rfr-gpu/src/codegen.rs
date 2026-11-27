@@ -795,6 +795,12 @@ pub fn kernel(lp: &LayerPlan, mode: Mode) -> String {
                 "            }\n",
                 "        } else if U.lighti.x == 1u {\n",
                 "            hgt = g_value;\n",
+                "        } else if U.lighti.x == 3u {\n",
+                "            let r2 = norm2(zv);\n",
+                "            if escaped && r2 > 4.0 && dzv > 0.0 && dzv <= 3.4e38 {\n",
+                "                let r = sqrt(r2);\n",
+                "                hgt = -log(1.0 + max(r * log(r) / dzv / U.rot.z, 0.0));\n",
+                "            }\n",
                 "        }",
             ),
             concat!(

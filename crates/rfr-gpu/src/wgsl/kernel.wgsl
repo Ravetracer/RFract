@@ -58,6 +58,11 @@ struct Uni {
     lrad: array<vec4<f32>, 4>,
     // shadow length (pixels, 0: none), softness, occlusion strength, occlusion radius (pixels)
     lshadow: vec4<f32>,
+    // reflection, environment image slot (-1: the sky colors), unused…
+    lenv: vec4<f32>,
+    // sky at the horizon and at the zenith (linear RGB)
+    lsky0: vec4<f32>,
+    lsky1: vec4<f32>,
 }
 
 struct Params {

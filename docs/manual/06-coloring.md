@@ -101,6 +101,7 @@ shine on it from above. Switch on **Lit** and choose where the heights come from
 | Iterations | The smooth iteration count (logarithmic). Points near the set lie higher; the set itself is a plateau. |
 | Coloring | The coloring value, the position in the gradient: the relief follows the color bands. |
 | Brightness | The brightness of the layer's color. On an image layer this gives a bump map of the image. |
+| Distance | The estimated distance to the set (logarithmic): smooth slopes that rise toward the set, independent of the iteration bands. Needs derivatives like the *Distance* coloring; in very deep views it falls back to flat ground. |
 
 - **Relief** sets how steep the slopes are; negative values turn the relief inside out. The
   relief keeps its look when you render the same view at another size.
@@ -114,6 +115,10 @@ shine on it from above. Switch on **Lit** and choose where the heights come from
   0 gives sharp edges, larger values soft ones. Low lights cast long shadows.
 - **Occlusion** darkens hollows and the foot of slopes, where less light comes from all
   around; *Occlusion radius* is how far around each point it looks.
+- **Reflection** mirrors the surroundings: 0 not at all, 1 like a mirror (a little more where
+  the slopes are steep). *Environment* is a panorama image (2:1, equirectangular, the sky at
+  the top) or, without one, a sky from *Sky horizon* (reflected by steep slopes) to *Sky
+  zenith* (reflected by flat parts).
 - Up to four **lights**, each with a direction (degrees counterclockwise from the right edge of
   the image), a height above the image (low lights rake across the relief), an intensity and a
   color. *+ Light* adds one from the opposite side.

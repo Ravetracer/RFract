@@ -12,7 +12,7 @@ that come up along the way.
 - [x] Shadows marched over the height field, ambient occlusion.
       Open: beyond the image border the heights continue the edge (a high edge casts shadows
       from outside); a field margin of the shadow length would fix that.
-- [ ] Environment reflections (gradient sky or image), distance estimation as height source.
+- [x] Environment reflections (gradient sky or image), distance estimation as height source.
 - [ ] 3D height view: the field as a terrain under a perspective camera (height-field
       raymarching on the GPU), optional path tracing into OIDN.
 - [ ] 3D object layers: Mandelbulb, quaternion/bicomplex Julia and a few DE formulas,

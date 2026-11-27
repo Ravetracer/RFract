@@ -88,6 +88,18 @@ fn l_occlusion(px: f32, py: f32, z0: f32, k: f32, radius: f32, strength: f32, tu
     return clamp(1.0 - strength * sum / 8.0, 0.0, 1.0);
 }
 
+// rfr_core::render::light::LightPlan::environment
+fn l_environment(r: vec3<f32>) -> vec3<f32> {
+    if U.lenv.y >= 0.0 {
+        let u = atan2(r.y, r.x) / 6.283185307179586 + 0.5;
+        let v = 0.5 - asin(clamp(r.z, -1.0, 1.0)) / 3.141592653589793;
+        let c = k_image_color(u32(U.lenv.y), c_f(2.0 * u - 1.0, 1.0 - 2.0 * v));
+        return vec3<f32>(srgb_dec(c.x), srgb_dec(c.y), srgb_dec(c.z));
+    }
+    let t = clamp(r.z, 0.0, 1.0);
+    return mix(U.lsky0.xyz, U.lsky1.xyz, t);
+}
+
 // rfr_core::render::light::shade
 fn l_shade(color: vec4<f32>, gx: f32, gy: f32, seen: array<f32, 4>, open: f32) -> vec4<f32> {
     let k = U.light.y;
@@ -120,7 +132,15 @@ fn l_shade(color: vec4<f32>, gx: f32, gy: f32, seen: array<f32, 4>, open: f32) -
         diffuse = diffuse + rad * nl;
         spec = spec + rad * s;
     }
-    return vec4<f32>(color.xyz * diffuse + U.light.z * spec, color.w);
+    var out = color.xyz * diffuse + U.light.z * spec;
+    // Reflection of the environment, stronger at grazing angles.
+    let refl = U.lenv.x;
+    if refl > 0.0 {
+        let r = vec3<f32>(2.0 * n.z * n.x, 2.0 * n.z * n.y, 2.0 * n.z * n.z - 1.0);
+        let f = refl + (1.0 - refl) * refl * pow(1.0 - nv, 5.0);
+        out = out * (1.0 - f) + l_environment(r) * f;
+    }
+    return vec4<f32>(out, color.w);
 }
 
 @compute @workgroup_size(8, 8)

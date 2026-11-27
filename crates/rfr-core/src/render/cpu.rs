@@ -151,7 +151,8 @@ impl<S: Scalar + Send + Sync + 'static> LayerK<S> {
         };
         let height = lp.light.as_ref().map_or(0.0, |l| {
             let smooth = if o.escaped { smooth_iter(&r) } else { maxit as f64 };
-            light::height(l.source, smooth, value, color)
+            let distance = if l.source == crate::doc::HeightSource::Distance { light::distance_height(&r, plan.frame.pixel_size()) } else { 0.0 };
+            light::height(l.source, smooth, value, distance, color)
         });
         (color, height)
     }

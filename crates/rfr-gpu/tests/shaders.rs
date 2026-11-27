@@ -180,6 +180,19 @@ fn gpu_matches_the_cpu_renderer() {
         l.lights[0].elevation = 25.0;
         l.lights.push(Light { azimuth: 330.0, elevation: 15.0, color: [0.3, 0.5, 1.0], intensity: 0.6 });
         cases.push(("lit shadows".into(), sh));
+        // Distance heights (derivatives) with the sky reflected, and an environment image.
+        let mut de = lit.clone();
+        de.layers[0].light.height = HeightSource::Distance;
+        de.layers[0].light.reflection = 0.4;
+        cases.push(("lit distance sky".into(), de.clone()));
+        let env = std::env::temp_dir().join(format!("rfr-test-env-{}.png", std::process::id()));
+        let (ew, eh) = (32u32, 16u32);
+        let px: Vec<u8> = (0..ew * eh).flat_map(|k| [(k % ew * 8) as u8, (k / ew * 16) as u8, 200, 255]).collect();
+        rfr_core::io::png::write_rgba8(&env, ew, eh, &px, None).unwrap();
+        let mut im = lit.clone();
+        im.layers[0].light.reflection = 0.6;
+        im.layers[0].light.environment = env.display().to_string();
+        cases.push(("lit environment image".into(), im));
     }
     let mut julia = Document::for_formula("rfract:Mandelbrot");
     julia.layers[0].julia = true;
