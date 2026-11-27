@@ -542,3 +542,44 @@ fn preview_effects_match_the_export() {
         assert!(d < 0.5 && max <= 8, "{name}: mean {d:.3}, max {max} of 255");
     }
 }
+
+/// A frame of a zoom sequence (composed from images at doublings of the zoom) looks like a
+/// frame rendered directly at its zoom.
+#[test]
+fn zoom_sequence_frames_match_direct_renders() {
+    let Ok(ctx) = rfr_gpu::GpuContext::new_headless() else {
+        eprintln!("no GPU: skipped");
+        return;
+    };
+    use rfr_core::animation::{Animation, Keyframe, Timing, ZoomPath};
+    let mut a = Document::for_formula("rfract:Mandelbrot");
+    a.view.set_center([-0.6, 0.0]);
+    let mut b = a.clone();
+    b.view.set_center([-0.743643887037151, 0.131825904205330]);
+    b.view.radius = 1.5e-4.into();
+    let anim = Animation {
+        keyframes: vec![Keyframe { doc: a, ..Keyframe::default() }, Keyframe { doc: b, ..Keyframe::default() }],
+        timing: Timing::Steady,
+        length_s: 1.0,
+        fps: 20.0,
+        ease_in_s: 0.0,
+        ease_out_s: 0.0,
+        zoom_sequence: true,
+        ..Animation::default()
+    };
+    let path = ZoomPath::new(&anim).unwrap();
+    let (w, h, s) = (128, 72, 16);
+    let mut seq = rfr_gpu::animation::ZoomSequence::new(Some(ctx.clone()), ZoomPath::new(&anim).unwrap(), w, h, s);
+    for f in [5usize, 12, 19] {
+        let (frame, _) = seq.finished(f).unwrap();
+        let mut d = path.doc.clone();
+        let l = path.log2_radius_at(f as f64);
+        let e = l.floor();
+        d.view.radius = rfr_core::math::fx::Fx::new(2f64.powf(l - e), e as i32);
+        let direct = rfr_core::render::cpu::rgba8(&rfr_gpu::render_blocking(ctx.clone(), &Plan::sized(&d, w, h).unwrap(), s, |_| true).unwrap());
+        let diff = block_diff(&frame, &direct, w as usize, h as usize);
+        eprintln!("frame {f}: block difference {diff:.2}");
+        assert!(diff < 8.0, "frame {f}: {diff:.2}");
+    }
+    assert!(seq.rendered <= 16, "{} images for a zoom by 10^4", seq.rendered);
+}

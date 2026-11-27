@@ -40,6 +40,10 @@ pub struct Animation {
     /// Motion blur: how long each frame is exposed, as a share of the frame time (0: off, 0.5:
     /// a film camera's 180° shutter).
     pub shutter: f64,
+    /// Zoom sequence: a straight zoom from the first keyframe's size into the last keyframe
+    /// (its center and settings), composed from one image per doubling of the zoom (much
+    /// faster for long zooms; no palette rotation).
+    pub zoom_sequence: bool,
 }
 
 impl Default for Animation {
@@ -53,6 +57,7 @@ impl Default for Animation {
             ease_out_s: 1.0,
             palette_speed: 0.0,
             shutter: 0.0,
+            zoom_sequence: false,
         }
     }
 }
@@ -127,6 +132,38 @@ impl Timing {
             Timing::Keyframes => "Per keyframe",
             Timing::Steady => "Steady",
         }
+    }
+}
+
+/// A straight zoom for the zoom sequence: the last keyframe's document (its center fixed) and
+/// the log2 radius of every frame, from the first keyframe's radius to the last one's at a
+/// steady pace with the animation's ease in and out (frame count of the animation's timing).
+pub struct ZoomPath {
+    pub doc: Document,
+    pub log2_radius: Vec<f64>,
+    pub fps: f64,
+    pub shutter: f64,
+}
+
+impl ZoomPath {
+    pub fn new(anim: &Animation) -> Result<ZoomPath, String> {
+        let plan = AnimationPlan::new(anim)?;
+        let first = &anim.keyframes[0].doc;
+        let mut doc = anim.keyframes[anim.keyframes.len() - 1].doc.clone();
+        doc.animation = None;
+        let (l0, l1) = (first.view.radius.log2(), doc.view.radius.log2());
+        let n = plan.frame_count().max(2);
+        let len = (n - 1) as f64 / plan.fps();
+        let prof = ease_profile(n, len, anim.ease_in_s, anim.ease_out_s, plan.fps());
+        Ok(ZoomPath { doc, log2_radius: prof.iter().map(|p| l0 + (l1 - l0) * p).collect(), fps: plan.fps(), shutter: plan.shutter() })
+    }
+
+    /// The log2 radius at frame time `t` (between frames for motion blur).
+    pub fn log2_radius_at(&self, t: f64) -> f64 {
+        let n = self.log2_radius.len();
+        let f = (t.floor().max(0.0) as usize).min(n - 2);
+        let a = t - f as f64;
+        self.log2_radius[f] + (self.log2_radius[f + 1] - self.log2_radius[f]) * a
     }
 }
 

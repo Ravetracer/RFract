@@ -28,6 +28,8 @@ Commands:
       -W, -H, -s             Size and samples per pixel (default: the document's)
       --format <name>        mp4, hevc, av1, prores, webm, gif or png (default: by extension)
       --from <n>, --to <n>   First and last frame (default: all)
+      --sequence             Zoom sequence: a straight zoom into the last keyframe composed
+                             from one image per doubling (fast; no palette rotation)
       --cpu                  Render on the CPU
       --ffmpeg <program>     The ffmpeg program (default: found on the search path)
   formulas                   List the built-in formulas with their ids
@@ -71,7 +73,7 @@ fn animate(args: &[String]) -> Result<(), String> {
     use rfr_core::video::{VideoFormat, VideoSink};
     let (mut input, mut output, mut format, mut ffmpeg) = (None, None, None, None);
     let (mut width, mut height, mut samples, mut from, mut to) = (None, None, None, None, None);
-    let mut cpu = false;
+    let (mut cpu, mut sequence) = (false, false);
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -79,6 +81,7 @@ fn animate(args: &[String]) -> Result<(), String> {
             "-W" | "--width" => width = Some(number::<u32>(value(args, &mut i, "--width")?, "--width")?),
             "-H" | "--height" => height = Some(number::<u32>(value(args, &mut i, "--height")?, "--height")?),
             "-s" | "--samples" => samples = Some(number::<u32>(value(args, &mut i, "--samples")?, "--samples")?),
+            "--sequence" => sequence = true,
             "--from" => from = Some(number::<usize>(value(args, &mut i, "--from")?, "--from")?),
             "--to" => to = Some(number::<usize>(value(args, &mut i, "--to")?, "--to")?),
             "--ffmpeg" => ffmpeg = Some(PathBuf::from(value(args, &mut i, "--ffmpeg")?)),
@@ -128,12 +131,20 @@ fn animate(args: &[String]) -> Result<(), String> {
         }
     };
     let how = ctx.as_ref().map_or("the CPU".to_string(), |c| c.adapter_name.clone());
-    let mut renderer = rfr_gpu::animation::FrameRenderer::new(ctx);
+    let sequence = sequence || anim.zoom_sequence;
+    if sequence && anim.palette_speed != 0.0 {
+        eprintln!("note: the zoom sequence cannot rotate the palette; it keeps the colors of the last keyframe");
+    }
+    let mut renderer = rfr_gpu::animation::FrameRenderer::new(if sequence { None } else { ctx.clone() });
+    let mut seq = if sequence { Some(rfr_gpu::animation::ZoomSequence::new(ctx, rfr_core::animation::ZoomPath::new(anim)?, w, h, s)) } else { None };
     let mut sink = VideoSink::new(&output, format, w, h, plan.fps(), &ffmpeg, None)?;
     let t = Instant::now();
     let count = last + 1 - first;
     for (k, f) in (first..=last).enumerate() {
-        let (rgba, note) = renderer.finished(&plan, f, w, h, s)?;
+        let (rgba, note) = match seq.as_mut() {
+            Some(z) => z.finished(f)?,
+            None => renderer.finished(&plan, f, w, h, s)?,
+        };
         sink.write_frame(k, &rgba)?;
         let done = k + 1;
         let left = t.elapsed().as_secs_f64() / done as f64 * (count - done) as f64;
@@ -142,8 +153,9 @@ fn animate(args: &[String]) -> Result<(), String> {
     eprintln!();
     sink.finish()?;
     println!(
-        "rendered {count} frames of {w} × {h}, {s} samples per pixel{} on {how} in {:.1} s → {}",
+        "rendered {count} frames of {w} × {h}, {s} samples per pixel{}{} on {how} in {:.1} s → {}",
         if plan.shutter() > 0.0 { format!(", motion blur {:.0}°", plan.shutter() * 360.0) } else { String::new() },
+        seq.as_ref().map(|z| format!(", zoom sequence of {} images", z.rendered)).unwrap_or_default(),
         t.elapsed().as_secs_f64(),
         output.display()
     );

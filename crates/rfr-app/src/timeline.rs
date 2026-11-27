@@ -339,6 +339,12 @@ fn timing_ui(ui: &mut Ui, a: &mut Animation) {
             -2.0..=2.0,
             d.palette_speed,
         );
+        widgets::checkbox(
+            ui,
+            "Zoom sequence",
+            "Exports a straight zoom from the first keyframe's size into the last keyframe (its center and settings), composed from one image per doubling of the zoom: much faster for long zooms. Palette rotation does not apply.",
+            &mut a.zoom_sequence,
+        );
         widgets::slider(
             ui,
             "Motion blur",

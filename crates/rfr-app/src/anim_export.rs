@@ -57,6 +57,7 @@ impl AnimExport {
         }
         let (w, h, s) = (doc.image.width.max(1), doc.image.height.max(1), doc.image.samples.max(1));
         let frames = plan.frame_count();
+        let zoom = anim.zoom_sequence.then(|| anim.clone());
         let (tx, rx) = channel();
         let cancel = Arc::new(AtomicBool::new(false));
         let stop = cancel.clone();
@@ -64,7 +65,11 @@ impl AnimExport {
         std::thread::spawn(move || {
             let run = || -> Result<String, String> {
                 let t = Instant::now();
-                let mut renderer = rfr_gpu::animation::FrameRenderer::new(gpu);
+                let mut seq = match &zoom {
+                    Some(z) => Some(rfr_gpu::animation::ZoomSequence::new(gpu.clone(), rfr_core::animation::ZoomPath::new(z)?, w, h, s)),
+                    None => None,
+                };
+                let mut renderer = rfr_gpu::animation::FrameRenderer::new(if seq.is_some() { None } else { gpu });
                 let mut sink = VideoSink::new(&out, format, w, h, plan.fps(), &ffmpeg, None)?;
                 let mut note = None;
                 for f in 0..frames {
@@ -72,7 +77,10 @@ impl AnimExport {
                         let _ = sink.finish();
                         return Err("cancelled".into());
                     }
-                    let (rgba, n) = renderer.finished(&plan, f, w, h, s)?;
+                    let (rgba, n) = match seq.as_mut() {
+                        Some(z) => z.finished(f)?,
+                        None => renderer.finished(&plan, f, w, h, s)?,
+                    };
                     note = note.or(n);
                     sink.write_frame(f, &rgba)?;
                     let _ = tx.send(Progress::Frame(f + 1));

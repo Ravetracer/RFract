@@ -12,7 +12,8 @@ that come up along the way.
       through ffmpeg (H.264, H.265, AV1, ProRes, VP9, GIF) or PNG frames, `rfr-cli animate`.
 - [x] Timeline in the app: keyframes from the current document, scrubbing, preview playback,
       animation export with progress.
-- [ ] Deep-zoom sequence mode: one image per 2× zoom step, frames composed by scaling.
+- [x] Deep-zoom sequence mode: one image per 2× zoom step (at twice the frame size, kept in
+      memory two at a time), frames composed by scaling; motion blur by blending zooms.
 - [ ] Flight recording → keyframes, cameraman smoothing.
 - [ ] Drivers and expressions, audio-reactive values, render queue.
 - [ ] Exit: 1-minute 1080p deep zoom with palette rotation and motion blur (app and CLI);

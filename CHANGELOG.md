@@ -13,7 +13,8 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
   motion blur (shutter); `rfr-cli animate` writes MP4 (H.264, H.265, AV1), MOV (ProRes),
   WebM, GIF through ffmpeg, or PNG frames. In the app: *View › Timeline* with keyframes,
   scrubbing, playback in the view, timing, palette rotation, motion blur and *Export
-  animation…*.
+  animation…*. *Zoom sequence*: a straight deep zoom composed from one image per doubling
+  of the zoom (many times faster for long zooms).
 
 ## [0.8.0] - 2026-11-27
 

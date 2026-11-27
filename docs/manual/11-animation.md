@@ -39,6 +39,18 @@ The time bar marks the seconds and the keyframes.
   180° shutter): the samples of a frame spread over that time, so fast zooms and turns blur
   as in a film.
 
+## Zoom sequence
+
+Long zooms into the depths take many frames, and every frame renders the fractal anew.
+**Zoom sequence** makes them much faster: the export zooms straight from the first
+keyframe's size into the last keyframe (its center and all its settings), at the steady
+pace of *Length* with *Ease in* and *Ease out*. It renders one image per doubling of the zoom,
+at twice the frame size, and composes every frame from the two images around its zoom:
+the finer one in the middle, the coarser one around it. A zoom by 10³⁰ needs about 100
+images however many frames it has. Motion blur still works (the images are blended at
+several zooms within the shutter); palette rotation does not (the colors are in the
+images), and the keyframes between the first and the last are not used.
+
 ## Export
 
 **Export animation…** renders every frame at the document's image size and samples (see
@@ -57,4 +69,5 @@ rfr-cli animate zoom.rfr -o zoom.mp4 --format av1 --from 100 --to 199
 ```
 
 `--format` also takes `hevc` (H.265 in MP4), `av1`, `prores`, `webm` and `gif`; `--from`
-and `--to` render part of the frames.
+and `--to` render part of the frames; `--sequence` renders a zoom sequence even when the
+animation does not ask for one.
