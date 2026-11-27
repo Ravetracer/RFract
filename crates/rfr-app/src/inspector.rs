@@ -594,6 +594,43 @@ fn lighting_section(ui: &mut Ui, l: &mut Layer) {
             ui.radio_value(&mut li.model, SpecularModel::BlinnPhong, "Blinn-Phong").on_hover_text("Classic highlights with a tighter falloff");
         });
         ui.end_row();
+        widgets::checkbox(ui, "Shadows", "Higher parts of the relief cast shadows away from each light", &mut li.shadows);
+        if li.shadows {
+            widgets::slider(
+                ui,
+                "Shadow length",
+                "How far shadows reach, as a share of the image height",
+                &mut li.shadow_length,
+                0.01..=1.0,
+                def.shadow_length,
+            );
+            widgets::slider(
+                ui,
+                "Softness",
+                "Size of the lights: 0 gives sharp shadow edges, larger values soft ones",
+                &mut li.softness,
+                0.0..=0.5,
+                def.softness,
+            );
+        }
+        widgets::slider(
+            ui,
+            "Occlusion",
+            "Darkens hollows and the foot of slopes, where less light comes from all around (0: off)",
+            &mut li.occlusion,
+            0.0..=2.0,
+            def.occlusion,
+        );
+        if li.occlusion > 0.0 {
+            widgets::slider(
+                ui,
+                "Occlusion radius",
+                "How far around each point the occlusion looks, as a share of the image height",
+                &mut li.occlusion_radius,
+                0.005..=0.2,
+                def.occlusion_radius,
+            );
+        }
     });
     let mut remove = None;
     for (k, light) in li.lights.iter_mut().enumerate() {

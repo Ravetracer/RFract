@@ -173,6 +173,13 @@ fn gpu_matches_the_cpu_renderer() {
         let mut m = lit.clone();
         m.layers[0].light.height = HeightSource::Luminance;
         cases.push(("lit luminance".into(), m));
+        let mut sh = lit.clone();
+        let l = &mut sh.layers[0].light;
+        l.shadows = true;
+        l.occlusion = 1.0;
+        l.lights[0].elevation = 25.0;
+        l.lights.push(Light { azimuth: 330.0, elevation: 15.0, color: [0.3, 0.5, 1.0], intensity: 0.6 });
+        cases.push(("lit shadows".into(), sh));
     }
     let mut julia = Document::for_formula("rfract:Mandelbrot");
     julia.layers[0].julia = true;

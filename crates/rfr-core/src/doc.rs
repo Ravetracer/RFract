@@ -837,6 +837,15 @@ pub struct Lighting {
     pub roughness: f64,
     pub model: SpecularModel,
     pub lights: Vec<Light>,
+    /// Shadows cast over the relief, how far they reach (share of the image height) and how
+    /// soft their edges are (the lights' apparent size).
+    pub shadows: bool,
+    pub shadow_length: f64,
+    pub softness: f64,
+    /// Ambient occlusion: how much hollows darken (0: off) and how far they look (share of
+    /// the image height).
+    pub occlusion: f64,
+    pub occlusion_radius: f64,
 }
 
 impl Default for Lighting {
@@ -850,6 +859,11 @@ impl Default for Lighting {
             roughness: 0.4,
             model: SpecularModel::Ggx,
             lights: vec![Light::default()],
+            shadows: false,
+            shadow_length: 0.3,
+            softness: 0.05,
+            occlusion: 0.0,
+            occlusion_radius: 0.03,
         }
     }
 }

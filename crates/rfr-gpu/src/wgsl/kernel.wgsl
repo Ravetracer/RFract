@@ -56,6 +56,8 @@ struct Uni {
     // per light: direction toward it (x, y, z, unused) and color times intensity (r, g, b, unused)
     ldir: array<vec4<f32>, 4>,
     lrad: array<vec4<f32>, 4>,
+    // shadow length (pixels, 0: none), softness, occlusion strength, occlusion radius (pixels)
+    lshadow: vec4<f32>,
 }
 
 struct Params {

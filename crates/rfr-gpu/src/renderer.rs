@@ -89,6 +89,7 @@ struct Uni {
     lighti: [u32; 4],
     ldir: [[f32; 4]; 4],
     lrad: [[f32; 4]; 4],
+    lshadow: [f32; 4],
 }
 
 /// Compositing uniforms (composite.wgsl `Op`).
@@ -169,6 +170,10 @@ fn layer_uni(plan: &Plan, lp: &LayerPlan) -> Uni {
             .map_or([0; 4], |l| [l.source.index(), l.lights.len() as u32, (l.model == rfr_core::doc::SpecularModel::Ggx) as u32, 0]),
         ldir: light_rows(lp, |(d, _)| *d),
         lrad: light_rows(lp, |(_, r)| *r),
+        lshadow: lp.light.as_ref().map_or([0.0; 4], |l| {
+            let h = f.height as f32;
+            [l.shadow * h, l.softness, l.occlusion, l.occlusion_radius * h]
+        }),
     }
 }
 

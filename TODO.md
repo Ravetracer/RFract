@@ -9,7 +9,9 @@ that come up along the way.
       normals from neighboring heights, ambient + diffuse + specular (Blinn-Phong, GGX), up to
       four colored lights; CPU and GPU (field pre-pass like density layers). Luminance on image
       layers gives bump maps.
-- [ ] Shadows marched over the height field, ambient occlusion.
+- [x] Shadows marched over the height field, ambient occlusion.
+      Open: beyond the image border the heights continue the edge (a high edge casts shadows
+      from outside); a field margin of the shadow length would fix that.
 - [ ] Environment reflections (gradient sky or image), distance estimation as height source.
 - [ ] 3D height view: the field as a terrain under a perspective camera (height-field
       raymarching on the GPU), optional path tracing into OIDN.

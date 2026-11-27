@@ -21,15 +21,85 @@ fn l_height(x: i32, y: i32) -> f32 {
     return bitcast<f32>(field[yy * U.size.x + xx].z);
 }
 
+// rfr_core::render::light::Field::height_at: bilinear, the border continued.
+fn l_height_at(x: f32, y: f32) -> f32 {
+    let x0 = floor(x);
+    let y0 = floor(y);
+    let fx = x - x0;
+    let fy = y - y0;
+    let xi = i32(x0);
+    let yi = i32(y0);
+    let top = l_height(xi, yi) + (l_height(xi + 1, yi) - l_height(xi, yi)) * fx;
+    let bottom = l_height(xi, yi + 1) + (l_height(xi + 1, yi + 1) - l_height(xi, yi + 1)) * fx;
+    return top + (bottom - top) * fy;
+}
+
+fn l_rnd(state: ptr<function, u32>) -> f32 {
+    *state = hash(*state);
+    return f32(*state >> 8u) / 16777216.0;
+}
+
+// rfr_core::render::light::Field::shadow
+fn l_shadow(dir: vec3<f32>, px: f32, py: f32, z0: f32, k: f32, len: f32, soft: f32, jitter: f32) -> f32 {
+    let hl = length(dir.xy);
+    if hl < 1e-4 || dir.z <= 0.0 {
+        if dir.z > 0.0 {
+            return 1.0;
+        }
+        return 0.0;
+    }
+    let sx = dir.x / hl;
+    let sy = -dir.y / hl;
+    let rise = dir.z / hl;
+    var seen = 1.0;
+    for (var i = 0u; i < 32u; i = i + 1u) {
+        let f = (f32(i) + jitter) / 32.0;
+        let t = max(len * f * f, 0.5);
+        let clear = z0 + rise * t - k * l_height_at(px + sx * t, py + sy * t);
+        var v = 1.0;
+        if soft > 0.0 {
+            v = clamp(clear / (soft * t), 0.0, 1.0);
+        } else if clear < 0.0 {
+            v = 0.0;
+        }
+        seen = min(seen, v);
+        if seen <= 0.0 {
+            break;
+        }
+    }
+    return seen;
+}
+
+// rfr_core::render::light::Field::occlusion
+fn l_occlusion(px: f32, py: f32, z0: f32, k: f32, radius: f32, strength: f32, turn: f32, jitter: f32) -> f32 {
+    var sum = 0.0;
+    for (var d = 0u; d < 8u; d = d + 1u) {
+        let a = (f32(d) + turn) / 8.0 * 6.283185307179586;
+        let sx = cos(a);
+        let sy = sin(a);
+        var best = 0.0;
+        for (var j = 0u; j < 6u; j = j + 1u) {
+            let t = max(radius * (f32(j) + jitter) / 6.0, 0.5);
+            let rise = (k * l_height_at(px + sx * t, py + sy * t) - z0) / t;
+            best = max(best, rise);
+        }
+        sum = sum + best / sqrt(1.0 + best * best);
+    }
+    return clamp(1.0 - strength * sum / 8.0, 0.0, 1.0);
+}
+
 // rfr_core::render::light::shade
-fn l_shade(color: vec4<f32>, gx: f32, gy: f32) -> vec4<f32> {
+fn l_shade(color: vec4<f32>, gx: f32, gy: f32, seen: array<f32, 4>, open: f32) -> vec4<f32> {
     let k = U.light.y;
     let n = normalize(vec3<f32>(-k * gx, -k * gy, 1.0));
     let nv = max(n.z, 0.05);
     let a = U.light.w * U.light.w;
-    var diffuse = vec3<f32>(U.light.x);
+    var diffuse = vec3<f32>(U.light.x * open);
     var spec = vec3<f32>(0.0);
     for (var i = 0u; i < U.lighti.y; i = i + 1u) {
+        if seen[i] <= 0.0 {
+            continue;
+        }
         let dir = U.ldir[i].xyz;
         let nl = dot(n, dir);
         if nl <= 0.0 {
@@ -46,7 +116,7 @@ fn l_shade(color: vec4<f32>, gx: f32, gy: f32) -> vec4<f32> {
             let t = nh * nh * (a2 - 1.0) + 1.0;
             s = a2 / (3.141592653589793 * t * t) / (4.0 * nv);
         }
-        let rad = U.lrad[i].xyz;
+        let rad = U.lrad[i].xyz * seen[i];
         diffuse = diffuse + rad * nl;
         spec = spec + rad * s;
     }
@@ -66,7 +136,25 @@ fn lit(@builtin(global_invocation_id) gid: vec3<u32>) {
     let yi = i32(y);
     let gx = (l_height(xi + 1, yi) - l_height(xi - 1, yi)) * 0.5;
     let gy = (l_height(xi, yi - 1) - l_height(xi, yi + 1)) * 0.5;
-    let col = l_shade(color, gx, gy);
+    // Shadows and ambient occlusion (the same random numbers as the CPU).
+    let k = U.light.y;
+    let z0 = k * bitcast<f32>(c.z);
+    let px = f32(x);
+    let py = f32(y);
+    var rng = hash(x ^ hash(y ^ hash(U.size.z ^ 0x3C6EF372u)));
+    var seen = array<f32, 4>(1.0, 1.0, 1.0, 1.0);
+    if U.lshadow.x > 0.0 {
+        for (var i = 0u; i < U.lighti.y; i = i + 1u) {
+            seen[i] = l_shadow(U.ldir[i].xyz, px, py, z0, k, U.lshadow.x, U.lshadow.y, l_rnd(&rng));
+        }
+    }
+    var open = 1.0;
+    if U.lshadow.z > 0.0 && U.lshadow.w > 0.0 {
+        let turn = l_rnd(&rng);
+        let jitter = l_rnd(&rng);
+        open = l_occlusion(px, py, z0, k, U.lshadow.w, U.lshadow.z, turn, jitter);
+    }
+    let col = l_shade(color, gx, gy, seen, open);
     let li = gid.y * U.size.x + x;
     let dst = U.band.z * U.blend.y + li;
     if U.band.y == 1u {

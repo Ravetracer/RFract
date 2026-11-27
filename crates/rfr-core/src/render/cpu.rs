@@ -270,7 +270,7 @@ impl Ctx<'_> {
         let i = self.next;
         self.next += 1;
         if let (Some(field), Some(l)) = (&self.fields[i], &lp.light) {
-            return field.shade(l, self.pix.0, self.pix.1);
+            return field.shade(l, self.pix.0, self.pix.1, self.pix.2);
         }
         self.kernels[i].eval(&mut self.frames[i], lp, self.plan, (self.p, self.d), self.turn, self.pix).0
     }

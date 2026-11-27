@@ -109,12 +109,18 @@ shine on it from above. Switch on **Lit** and choose where the heights come from
 - **Highlights** and **Roughness** shape the shine: low roughness gives small, glossy
   highlights, high roughness wide and dull ones. *GGX* highlights have soft tails,
   *Blinn-Phong* ones a tighter falloff.
+- **Shadows**: higher parts of the relief cast shadows away from each light. *Shadow length*
+  is how far they reach (a share of the image height), *Softness* the size of the lights:
+  0 gives sharp edges, larger values soft ones. Low lights cast long shadows.
+- **Occlusion** darkens hollows and the foot of slopes, where less light comes from all
+  around; *Occlusion radius* is how far around each point it looks.
 - Up to four **lights**, each with a direction (degrees counterclockwise from the right edge of
   the image), a height above the image (low lights rake across the relief), an intensity and a
   color. *+ Light* adds one from the opposite side.
 
 Every render pass computes the layer's heights over the whole image before it shades it, so
-a lit layer costs a little more than an unlit one. Editing the lights and the relief does
+a lit layer costs a little more than an unlit one; shadows and occlusion sample the heights
+around each pixel and get smoother with every pass. Editing the lights and the relief does
 not recompile anything.
 
 !!! tip
