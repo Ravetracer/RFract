@@ -4,6 +4,8 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-27
+
 ### Added
 
 - Animation (core and command line): keyframes are whole documents, every number blends
