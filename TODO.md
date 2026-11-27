@@ -21,8 +21,8 @@ that come up along the way.
 - [x] Shader cache on disk: not needed, the drivers cache compiled shaders (NVIDIA: 130–720 ms
       first, 20–80 ms after).
 - [ ] CPU guessing/boundary tracing (CPU renderer only; low priority with the GPU).
-- [x] Manual: how-tos chapter, introduction updated; example documents as explore presets.
-      Open: screenshots for the newer chapters (timeline, explore lane, render queue).
+- [x] Manual: how-tos chapter, introduction updated, screenshots of the timeline, explore lane
+      and render queue; example documents as explore presets.
 - [ ] Optional: network rendering (`rfr-net`), Lua scripting, shared crate extraction.
 
 ## Stage 8 – Animation
