@@ -21,6 +21,7 @@ Commands:
       -s, --samples <n>      Samples per pixel (default: the document's)
       --cpu                  Render on the CPU (the reference renderer)
       --entry <name>         The image of a parameter file (.upr, .par; default: the first)
+      --bookmark <name>      Render the view of one of the document's bookmarks
   animate <input.rfr> [options]
                              Render the document's animation: a movie through ffmpeg (.mp4,
                              .mov, .webm, .gif) or numbered PNG files in a folder
@@ -249,6 +250,7 @@ fn render(args: &[String]) -> Result<(), String> {
     let mut output = None;
     let mut cpu = false;
     let mut entry: Option<String> = None;
+    let mut bookmark: Option<String> = None;
     let (mut width, mut height, mut samples) = (None, None, None);
     let mut i = 0;
     while i < args.len() {
@@ -259,6 +261,7 @@ fn render(args: &[String]) -> Result<(), String> {
             "-s" | "--samples" => samples = Some(number::<u32>(value(args, &mut i, "--samples")?, "--samples")?),
             "--cpu" => cpu = true,
             "--entry" => entry = Some(value(args, &mut i, "--entry")?.to_string()),
+            "--bookmark" => bookmark = Some(value(args, &mut i, "--bookmark")?.to_string()),
             a if a.starts_with('-') => return Err(format!("unknown option '{a}'")),
             a => input = Some(a.to_string()),
         }
@@ -286,6 +289,18 @@ fn render(args: &[String]) -> Result<(), String> {
     } else {
         return Err(format!("'{input}' is neither a file nor a formula id (see 'rfr-cli formulas')"));
     };
+    let mut doc = doc;
+    if let Some(name) = &bookmark {
+        let b = doc.bookmark(name).ok_or_else(|| {
+            let names: Vec<&str> = doc.bookmarks.iter().map(|b| b.name.as_str()).collect();
+            if names.is_empty() {
+                format!("{input} has no bookmarks")
+            } else {
+                format!("no bookmark '{name}' in {input}; it has: {}", names.join(", "))
+            }
+        })?;
+        doc.view = b.view.clone();
+    }
     let w = width.unwrap_or(doc.image.width).max(1);
     let h = height.unwrap_or(doc.image.height).max(1);
     let s = samples.unwrap_or(doc.image.samples).max(1);
@@ -298,7 +313,10 @@ fn render(args: &[String]) -> Result<(), String> {
         } else {
             input.replace([':', '/'], "_")
         };
-        PathBuf::from(format!("{stem}.png"))
+        match &bookmark {
+            Some(b) => PathBuf::from(format!("{stem}-{}.png", b.trim().replace(['/', '\\', ' '], "_"))),
+            None => PathBuf::from(format!("{stem}.png")),
+        }
     });
     if output.exists() && output.canonicalize().ok() == path.canonicalize().ok() {
         return Err(format!("refusing to overwrite the input {}", output.display()));

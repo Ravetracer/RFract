@@ -97,6 +97,8 @@ that way; `--no-guess` (before the command, for all of them) computes every pixe
 *Animation*). `rfr-cli batch` works through a render queue file or a list of documents (see
 *Render queue*).
 
+`--bookmark <name>` renders the view of one of the document's bookmarks (see *View*).
+
 `render` also takes a `.upr` file; `--entry <name>` picks its image (default: the first),
 and the notes of the conversion go to the terminal.
 

@@ -31,6 +31,15 @@ The *View* section of the inspector shows the center (as text, with as many digi
 zoom needs), the magnification and the rotation. Type exact coordinates there to go to a known
 place, and any magnification such as `1e500` (the status bar shows it as `zoom 1.500e30×`).
 
+## Bookmarks
+
+*View › Bookmarks* keeps places of the document to come back to. **Ctrl+B** (or *Add the
+current view* in the window) saves the view (center, zoom and rotation) as a bookmark; each one
+shows a thumbnail, its name and zoom. Click the thumbnail to go there, type a new name,
+**Update** it to the current view, move it up or down, or remove it. Bookmarks are saved with
+the document, at any depth. On the command line, `rfr-cli render picture.rfr --bookmark
+"Seahorse"` renders a bookmark's view (into `picture-Seahorse.png` without `-o`).
+
 ## Julia sets
 
 Formulas with a Mandelbrot/Julia switch iterate in two ways:

@@ -33,7 +33,9 @@ Open points of the earlier stages (their notes below stay for the details).
       the object, one image height = its diameter), projection/drag/occlusion for terrains
       and objects (`flare::View3d`, `visibility`), falloff (`reach`), ghost list editor.
       Open: posters use the light image at the glow size (soft at 20k).
-- [ ] Location bookmarks.
+- [x] Location bookmarks: `doc.bookmarks` (name + view, saved in the document, skipped by
+      keyframe blending), *View › Bookmarks* window with thumbnails (explore renderer),
+      Ctrl+B, `rfr-cli render --bookmark`.
 - [ ] Histogram coloring.
 - [ ] Post-transformations.
 - [ ] Orbit display, Julia preview inset.

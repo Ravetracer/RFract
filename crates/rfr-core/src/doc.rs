@@ -26,6 +26,9 @@ pub struct Document {
     /// Light sources in the plane: glows and lens flares ([`crate::flare`]).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub lights: Vec<LightSource>,
+    /// Saved locations: named views to come back to.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub bookmarks: Vec<Bookmark>,
     /// The animation (keyframes are whole documents).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub animation: Option<Box<crate::animation::Animation>>,
@@ -1227,8 +1230,24 @@ impl Default for Document {
             layers: vec![Layer::default()],
             post: Post::default(),
             lights: Vec::new(),
+            bookmarks: Vec::new(),
             animation: None,
         }
+    }
+}
+
+/// A saved location: a name and a view.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Bookmark {
+    pub name: String,
+    pub view: View,
+}
+
+impl Document {
+    /// The bookmark called `name` (case does not matter).
+    pub fn bookmark(&self, name: &str) -> Option<&Bookmark> {
+        self.bookmarks.iter().find(|b| b.name.eq_ignore_ascii_case(name.trim()))
     }
 }
 
@@ -1361,6 +1380,19 @@ impl Document {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bookmarks_are_saved_and_found_by_name() {
+        let mut d = Document::default();
+        let deep =
+            View { center: ["-0.743643887037151".into(), "0.131825904205330".into()], radius: crate::math::fx::Fx::from_f64(1e-40), rotation: 30.0 };
+        d.bookmarks.push(Bookmark { name: "Seahorse".into(), view: deep.clone() });
+        let back = Document::from_json(&d.to_json()).unwrap();
+        assert_eq!(back.bookmark(" seahorse").map(|b| &b.view), Some(&deep));
+        assert!(back.bookmark("elephant").is_none());
+        // No bookmarks, no field.
+        assert!(!Document::default().to_json().contains("bookmarks"));
+    }
 
     #[test]
     fn json_round_trip_and_version_check() {

@@ -18,6 +18,9 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
   height, seen through the camera, and fade out behind them. Lights can fall off with
   distance (*Reach*), and flare ghosts can be edited one by one.
 
+- Location bookmarks (*View › Bookmarks*, Ctrl+B adds the current view): named views with
+  thumbnails, saved with the document; `rfr-cli render --bookmark <name>`.
+
 ### Removed
 
 - The lens flare of the effects (ghosts of bright pixels); flares now come from lights.

@@ -18,8 +18,8 @@ use rfr_gpu::{GpuContext, GpuRenderer};
 
 use crate::{icons, theme};
 
-const THUMB_W: u32 = 192;
-const THUMB_H: u32 = 108;
+pub(crate) const THUMB_W: u32 = 192;
+pub(crate) const THUMB_H: u32 = 108;
 const THUMB_SAMPLES: u32 = 8;
 /// Most thumbnails a strip keeps.
 const MAX_THUMBS: usize = 96;
@@ -139,7 +139,7 @@ fn doc_of(source: &Source, attempt: u64) -> Document {
 
 /// Renders a thumbnail (RGBA8 with the effects) and its contrast and noise
 /// (`explore::thumb_quality`; no noise on the CPU).
-fn render(r: &mut Option<GpuRenderer>, doc: &Document) -> Option<(Vec<u8>, f64, f64)> {
+pub(crate) fn render(r: &mut Option<GpuRenderer>, doc: &Document) -> Option<(Vec<u8>, f64, f64)> {
     let mut d = doc.clone();
     d.post.denoise = false;
     let plan = Plan::sized(&d, THUMB_W, THUMB_H).ok()?;

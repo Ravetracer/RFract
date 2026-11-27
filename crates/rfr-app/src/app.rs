@@ -35,6 +35,7 @@ enum Action {
     Redo,
     ResetView,
     ToggleJulia,
+    AddBookmark,
     Quit,
 }
 
@@ -79,6 +80,7 @@ pub struct App {
     import_notes: Option<(String, Vec<String>)>,
     status: Option<(String, Instant, bool)>,
     auto_iter: crate::auto_iter::AutoIterations,
+    bookmarks: crate::bookmarks::Bookmarks,
 }
 
 struct UprPicker {
@@ -97,7 +99,7 @@ impl UprPicker {
 }
 
 /// A magnification with four significant digits at any size (`1.234e250`).
-fn fmt_zoom(z: rfr_core::math::fx::Fx) -> String {
+pub fn fmt_zoom(z: rfr_core::math::fx::Fx) -> String {
     let l = z.log10();
     if !l.is_finite() {
         return "0".into();
@@ -153,6 +155,7 @@ impl App {
             import_notes: None,
             status: None,
             auto_iter: Default::default(),
+            bookmarks: Default::default(),
         };
         app.rescan_formulas(&cc.egui_ctx);
         if let Some(p) = initial {
@@ -472,6 +475,10 @@ impl App {
                     self.notify("Nothing to redo");
                 }
             }
+            Action::AddBookmark => {
+                let m = crate::bookmarks::add_current(&mut self.doc.doc);
+                self.notify(m);
+            }
             Action::ResetView => {
                 let id = self.doc.doc.active_layer().map(|l| l.formula.clone()).unwrap_or_default();
                 if let Some(e) = rfr_core::formula::library::library().get(&id) {
@@ -525,6 +532,9 @@ impl App {
             }
             if !typing && i.consume_key(M::COMMAND, Key::Z) {
                 return Some(Action::Undo);
+            }
+            if i.consume_key(M::COMMAND, Key::B) {
+                return Some(Action::AddBookmark);
             }
             if i.consume_key(M::COMMAND, Key::Q) {
                 return Some(Action::Quit);
@@ -653,6 +663,8 @@ impl App {
                 ui.checkbox(&mut self.show_explore, "Explore lane")
                     .on_hover_text("Show the explore lane below the view: presets, random fractals, mutations of the document and snapshots");
                 ui.separator();
+                ui.checkbox(&mut self.bookmarks.open, "Bookmarks")
+                    .on_hover_text("Saved locations of this document: go back to them, update, rename, reorder (Ctrl+B adds the current view)");
                 ui.checkbox(&mut self.viewport.show_lights, "Light gizmos")
                     .on_hover_text("Show the circles of the light sources in the view (drag one to move its light)");
             });
@@ -1115,6 +1127,9 @@ impl eframe::App for App {
             if m.contains("failed") { self.warn(m) } else { self.notify(m) }
         }
 
+        if let Some(m) = self.bookmarks.show(&ctx, &mut self.doc.doc, self.viewport.gpu_context()) {
+            self.notify(m);
+        }
         self.gradient_editor(&ctx);
         self.help.show(&ctx);
         self.prefs_window(&ctx);

@@ -1202,7 +1202,7 @@ fn blend(v0: &Value, v1: &Value, v2: &Value, v3: &Value, t: f64, path: &str) -> 
             let mut out = a.clone();
             for (key, va) in a {
                 // The view has its own path; image size and samples come from the render.
-                if path.is_empty() && matches!(key.as_str(), "view" | "animation" | "version") {
+                if path.is_empty() && matches!(key.as_str(), "view" | "animation" | "version" | "bookmarks") {
                     continue;
                 }
                 let Some(vb) = b.get(key) else { continue };
