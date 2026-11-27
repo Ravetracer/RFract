@@ -365,7 +365,8 @@ impl CpuRenderer {
     }
 
     /// Lit layers: their fields for this pass, every pixel at the pass's sub-pixel offset of
-    /// pixel (0, 0) (a regular grid for the normals).
+    /// pixel (0, 0) (a regular grid for the normals); a 3D terrain's field stays at the pixel
+    /// centers (moving it would move the ground).
     fn light_pass(&mut self) {
         let s = self.samples;
         let (u, v, turn) = sample_offset(0, 0, s);
@@ -377,6 +378,7 @@ impl CpuRenderer {
                 fields.push(None);
                 continue;
             }
+            let (u, v, turn) = if lp.light.as_ref().is_some_and(|l| l.camera.is_some()) { (0.5, 0.5, 0.0) } else { (u, v, turn) };
             let mut data = vec![[0.0f32; 6]; (w * h) as usize];
             let proto = k.frames();
             let plan = &self.plan;

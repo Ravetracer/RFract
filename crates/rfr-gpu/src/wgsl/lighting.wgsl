@@ -227,7 +227,8 @@ fn l_trace(o: vec3<f32>, d: vec3<f32>, k: f32) -> vec3<f32> {
     }
     var t = t0;
     var level = top;
-    for (var it = 0u; it < 1024u; it = it + 1u) {
+    let steps = 4u * (U.size.x + U.size.y) + 64u;
+    for (var it = 0u; it < steps; it = it + 1u) {
         if t > t1 {
             return vec3<f32>(0.0);
         }
@@ -276,6 +277,10 @@ fn l_trace(o: vec3<f32>, d: vec3<f32>, k: f32) -> vec3<f32> {
         }
         t = te + 1e-3;
         level = min(1u, top);
+    }
+    // Out of steps: the ray skims the surface here.
+    if t <= t1 {
+        return vec3<f32>(oa + da * t, 1.0);
     }
     return vec3<f32>(0.0);
 }

@@ -371,9 +371,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let ha = hash(jx ^ hash(jy + 0x68E31DA4u));
     let hb = hash(ha);
     let hc = hash(hb);
-    let ju = f32(ha + s * 0xC13FA9A9u) / 4294967296.0;
-    let jv = f32(hb + s * 0x91E10DA6u) / 4294967296.0;
-    let turn = f32(hc + s * 0x9E3779B9u) / 4294967296.0;
+    var ju = f32(ha + s * 0xC13FA9A9u) / 4294967296.0;
+    var jv = f32(hb + s * 0x91E10DA6u) / 4294967296.0;
+    var turn = f32(hc + s * 0x9E3779B9u) / 4294967296.0;
+    // A 3D terrain's field stays in place (pixel centers): moving it would move the ground.
+    if U.band.y == 2u && U.lighti.w != 0u {
+        ju = 0.5;
+        jv = 0.5;
+        turn = 0.0;
+    }
     let w = f32(U.size.x);
     let h = f32(U.size.y);
     let dx = (f32(x) + ju - w * 0.5) * U.view.z;

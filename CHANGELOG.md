@@ -10,6 +10,12 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
   with heights normalized per source; before, the set rose as a column thousands of pixels
   high and the walls looked like streaks.
 
+### Fixed
+
+- 3D terrain: the ground no longer moves between render passes (its heights stay at the
+  pixel centers), which left translucent, blurred stair steps along edges seen from low
+  cameras; rays that skim the ground no longer run out of steps on large images.
+
 ### Added
 
 - Effects on the finished image (inspector section *Effects*): exposure, tone mapping

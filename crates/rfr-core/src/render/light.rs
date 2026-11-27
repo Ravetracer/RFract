@@ -307,8 +307,9 @@ pub struct Field {
     pub mips: Vec<Vec<f32>>,
 }
 
-/// Limits of the terrain ray: cell visits, search steps in a level-0 cell, bisections.
-pub const TRACE_ITERATIONS: u32 = 1024;
+/// Limits of the terrain ray: cell visits (per pixel of the field's width and height: a ray
+/// skimming the heights walks the finest cells), search steps in a level-0 cell, bisections.
+pub const TRACE_ITERATIONS_PER_PIXEL: u32 = 4;
 pub const TRACE_STEPS: u32 = 4;
 pub const TRACE_REFINE: u32 = 8;
 
@@ -581,7 +582,7 @@ impl Field {
         }
         let mut t = t0;
         let mut level = top;
-        for _ in 0..TRACE_ITERATIONS {
+        for _ in 0..TRACE_ITERATIONS_PER_PIXEL * (self.width + self.height) + 64 {
             if t > t1 {
                 return None;
             }
@@ -632,7 +633,8 @@ impl Field {
             t = te + 1e-3;
             level = 1.min(top);
         }
-        None
+        // Out of steps: the ray skims the surface here.
+        (t <= t1).then(|| at(t))
     }
 
     /// The share of a light reaching (px, py) at height `z0` (pixel units): along the ray
