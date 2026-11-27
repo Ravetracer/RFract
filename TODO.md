@@ -13,7 +13,8 @@ that come up along the way.
       11250 in 76 s, 0.7 GB memory).
       Open: lit layers, layer effects, density layers and 3D objects in tiles (needs a
       "window of a larger frame" in both renderers).
-- [ ] Render queue polish (job settings: size, samples, frames; tiled posters as jobs).
+- [x] Render queue polish: settings per job (size, samples, frames, output); posters above
+      8K render in tiles as jobs.
 - [ ] Performance: adaptive AA, CPU guessing/boundary tracing, shader cache on disk.
 - [ ] Complete manual with how-tos and example documents.
 - [ ] Optional: network rendering (`rfr-net`), Lua scripting, shared crate extraction.

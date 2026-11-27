@@ -107,6 +107,11 @@ files…** queues documents from disk, read when their turn comes: their animati
 when they have keyframes, else a PNG image, saved next to them. Images and animations use the
 document's image size and samples.
 
+The gear button of a job opens its settings: name, size (0 takes the document's; one side 0
+keeps the aspect), samples per pixel (0: the document's), the frames of an animation and the
+output file. Changing a finished job sets it to waiting again. Images above 8K UHD render in
+tiles (see *Posters*).
+
 **Start** renders the waiting jobs from the top while the preview pauses; **Stop** pauses the
 current job. Move jobs up and down, **Pause** one to skip it, **Again** to render it once
 more. The queue is kept in the settings folder and stays when RFract closes; a job that was

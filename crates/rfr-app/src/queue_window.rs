@@ -34,6 +34,8 @@ pub struct QueueWindow {
     active: bool,
     running: Option<Running>,
     message: Option<String>,
+    /// The job whose settings are open.
+    editing: Option<u64>,
 }
 
 fn queue_file() -> PathBuf {
@@ -43,7 +45,7 @@ fn queue_file() -> PathBuf {
 impl QueueWindow {
     pub fn new() -> Self {
         let queue = Queue::load(&queue_file()).unwrap_or_default();
-        QueueWindow { open: false, queue, active: false, running: None, message: None }
+        QueueWindow { open: false, queue, active: false, running: None, message: None, editing: None }
     }
 
     /// A job renders (the preview pauses).
@@ -257,6 +259,14 @@ impl QueueWindow {
                                 if ui.add_enabled(idle, egui::Button::new(label).small()).on_hover_text(tip).clicked() {
                                     action = Some((i, "toggle"));
                                 }
+                                let open = self.editing == Some(j.id);
+                                if ui
+                                    .add_enabled(idle, egui::Button::new(ph::GEAR).small().selected(open))
+                                    .on_hover_text("Settings of the job: size, samples, frames, output file")
+                                    .clicked()
+                                {
+                                    action = Some((i, "edit"));
+                                }
                                 if ui.add_enabled(idle, egui::Button::new(icons::TRASH).small()).on_hover_text("Remove the job").clicked() {
                                     action = Some((i, "remove"));
                                 }
@@ -269,6 +279,10 @@ impl QueueWindow {
                     match a {
                         "up" => self.queue.jobs.swap(i, i - 1),
                         "down" => self.queue.jobs.swap(i, i + 1),
+                        "edit" => {
+                            let id = self.queue.jobs[i].id;
+                            self.editing = if self.editing == Some(id) { None } else { Some(id) };
+                        }
                         "toggle" => {
                             let j = &mut self.queue.jobs[i];
                             j.state = if j.state == JobState::Waiting { JobState::Paused } else { JobState::Waiting };
@@ -279,6 +293,10 @@ impl QueueWindow {
                     }
                     changed = true;
                 }
+                if let Some(j) = self.editing.filter(|id| Some(*id) != running_id).and_then(|id| self.queue.jobs.iter_mut().find(|j| j.id == id)) {
+                    ui.separator();
+                    changed |= job_settings(ui, j, prefs);
+                }
             },
         );
         if changed {
@@ -286,4 +304,74 @@ impl QueueWindow {
         }
         self.open = open;
     }
+}
+
+/// The settings of a job; true when something changed.
+fn job_settings(ui: &mut egui::Ui, j: &mut QueueJob, prefs: &Prefs) -> bool {
+    let before = j.clone();
+    ui.label(RichText::new(format!("SETTINGS OF {}", j.name.to_uppercase())).size(theme::fs(11.0)).color(theme::TEXT_MUTED));
+    crate::widgets::grid(ui, "queue-job", |ui| {
+        crate::widgets::label(ui, "Name", "Name of the job in the list");
+        ui.text_edit_singleline(&mut j.name);
+        ui.end_row();
+        crate::widgets::label(
+            ui,
+            "Size",
+            "Width and height in pixels; 0 takes the document's (one side 0: from the other by the aspect). Above 8K UHD the image renders in tiles",
+        );
+        ui.horizontal(|ui| {
+            ui.add(egui::DragValue::new(&mut j.width).range(0..=100_000).suffix(" px")).on_hover_text("Width (0: the document's)");
+            ui.label("×");
+            ui.add(egui::DragValue::new(&mut j.height).range(0..=100_000).suffix(" px")).on_hover_text("Height (0: the document's)");
+        });
+        ui.end_row();
+        crate::widgets::label(ui, "Samples", "Samples per pixel; 0 takes the document's");
+        ui.add(egui::DragValue::new(&mut j.samples).range(0..=65_536)).on_hover_text("Samples per pixel (0: the document's)");
+        ui.end_row();
+        if let JobWhat::Animation { from, to, .. } = &mut j.what {
+            crate::widgets::label(ui, "Frames", "First and last frame to render");
+            ui.horizontal(|ui| {
+                ui.add(egui::DragValue::new(from).range(0..=1_000_000)).on_hover_text("First frame");
+                ui.label("to");
+                let mut end = *to == usize::MAX;
+                if ui.checkbox(&mut end, "the end").on_hover_text("Up to the last frame of the animation").changed() {
+                    *to = if end { usize::MAX } else { (*from).max(100) };
+                }
+                if !end {
+                    ui.add(egui::DragValue::new(to).range(*from..=1_000_000)).on_hover_text("Last frame");
+                }
+            });
+            ui.end_row();
+        }
+        crate::widgets::label(ui, "Output", "The file (or folder of PNG frames) the job writes");
+        ui.horizontal(|ui| {
+            let mut text = j.output.display().to_string();
+            if ui.add(egui::TextEdit::singleline(&mut text).desired_width(320.0)).on_hover_text("Output file").changed() {
+                j.output = PathBuf::from(text);
+            }
+            if ui.button("…").on_hover_text("Choose the output file").clicked() {
+                let mut dlg = prefs.dialog().set_title("Output of the job");
+                if let Some(n) = j.output.file_name() {
+                    dlg = dlg.set_file_name(n.to_string_lossy());
+                }
+                if let Some(d) = j.output.parent().filter(|d| d.is_dir()) {
+                    dlg = dlg.set_directory(d);
+                }
+                if let Some(p) = dlg.save_file() {
+                    if let JobWhat::Animation { format, .. } = &mut j.what {
+                        *format = VideoFormat::from_path(&p);
+                    }
+                    j.output = p;
+                }
+            }
+        });
+        ui.end_row();
+    });
+    if let JobWhat::Animation { format, .. } = &mut j.what {
+        *format = VideoFormat::from_path(&j.output);
+    }
+    if *j != before && j.state != JobState::Waiting {
+        j.state = JobState::Waiting;
+    }
+    *j != before
 }

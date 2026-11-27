@@ -11,6 +11,7 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
   document (parameters, colors, view, formula), a quality filter and snapshots.
 - Posters: images above 8K UHD render in tiles (export, command line, render queue) and
   are written a band at a time, so 20000 px and more fit on any graphics card.
+- Render queue: settings per job (name, size, samples, frames, output file).
 
 ## [0.9.0] - 2026-11-27
 
