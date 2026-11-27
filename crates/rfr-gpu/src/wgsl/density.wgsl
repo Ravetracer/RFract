@@ -8,7 +8,8 @@
 // Counts per channel and pixel, then the largest count per channel.
 @group(0) @binding(7) var<storage, read_write> hist: array<atomic<u32>>;
 
-fn d_plot(z: Cx, mask: u32) {
+// The pixel index of a plane point, or 0xffffffff outside the image.
+fn d_pixel(z: Cx) -> u32 {
     let s = U.view.z;
     let dx = s_v(z.re) - U.view.x;
     let dy = s_v(z.im) - U.view.y;
@@ -17,13 +18,21 @@ fn d_plot(z: Cx, mask: u32) {
     let px = u + f32(U.size.x) * 0.5;
     let py = f32(U.size.y) * 0.5 - v;
     if !(px >= 0.0 && py >= 0.0 && px < f32(U.size.x) && py < f32(U.size.y)) {
+        return 0xffffffffu;
+    }
+    return u32(py) * U.size.x + u32(px);
+}
+
+// Adds `w` to the pixel of z in the channels of `mask`.
+fn d_plot(z: Cx, mask: u32, w: u32) {
+    let at = d_pixel(z);
+    if at == 0xffffffffu {
         return;
     }
-    let at = u32(py) * U.size.x + u32(px);
     let plane = U.size.x * U.size.y;
     for (var c = 0u; c < U.densx.x; c = c + 1u) {
         if (mask & (1u << c)) != 0u {
-            atomicAdd(&hist[c * plane + at], 1u);
+            atomicAdd(&hist[c * plane + at], w);
         }
     }
 }
@@ -74,7 +83,7 @@ fn d_ifs(i: u32, start: vec2<f32>) {
             return;
         }
         if it >= U.densi.z {
-            d_plot(c_f(p.x, p.y), 1u);
+            d_plot(c_f(p.x, p.y), 1u, 1u);
         }
     }
 }
@@ -117,7 +126,7 @@ fn d_klein(i: u32, start: vec2<f32>) {
             return;
         }
         if it >= U.densi.z {
-            d_plot(c_f(z.x, z.y), 1u);
+            d_plot(c_f(z.x, z.y), 1u, 1u);
         }
     }
 }
@@ -156,7 +165,7 @@ fn d_lsys(i: u32) {
         let len = max(length(d), 1e-12);
         let nrm = vec2<f32>(-d.y, d.x) / len;
         let p = g.xy + d * t + nrm * (v * w);
-        d_plot(c_f(p.x, p.y), 1u);
+        d_plot(c_f(p.x, p.y), 1u, 1u);
     }
 }
 
@@ -184,13 +193,44 @@ fn scatter(@builtin(global_invocation_id) gid: vec3<u32>) {
         d_lsys(i);
         return;
     }
+    // Metropolis chains (rfr_core::render::density, scatter_orbit): the state of orbit i lies
+    // after the counts and maxima (start point bits, points in the view, channels in the low
+    // three bits and the score of the chain's first state above them).
+    let mh = U.densb.w > 0.5 && U.densi.x < 2u;
+    var r = array<f32, 5>(0.0, 0.0, 0.0, 0.0, 0.0);
+    var rr = hb ^ 0x27D4EB2Fu;
+    for (var k = 0u; k < 5u; k = k + 1u) {
+        rr = hash(rr);
+        r[k] = f32(rr) / 4294967296.0;
+    }
+    let chain_at = U.densx.x * U.size.x * U.size.y + 4u + 4u * i;
+    var cur = vec2<f32>(0.0);
+    var cur_score = 0u;
+    var cur_mask = 0u;
+    var cur_first = 0u;
+    var prop = start;
+    if mh {
+        cur = vec2<f32>(bitcast<f32>(atomicLoad(&hist[chain_at])), bitcast<f32>(atomicLoad(&hist[chain_at + 1u])));
+        cur_score = atomicLoad(&hist[chain_at + 2u]);
+        let packed = atomicLoad(&hist[chain_at + 3u]);
+        cur_mask = packed & 7u;
+        cur_first = packed >> 3u;
+        if cur_score > 0u && r[0] >= 0.1 {
+            let size = max(abs(U.dens.z - U.dens.x), abs(U.dens.w - U.dens.y));
+            let len = size * 0.1 * pow(1e-4, r[1]);
+            let a = 6.283185307179586 * r[2];
+            prop = cur + len * vec2<f32>(cos(a), sin(a));
+        }
+    }
+    var score = 0u;
+    var weight = 1u;
     let x = 0u;
     let y = 0u;
     let ismand = U.iter.y == 0u;
     let center = c_f(U.view.x, U.view.y);
     let magn = s_c(U.view.w);
     let maxit = U.densx.y;
-    var pixel = c_f(start.x, start.y);
+    var pixel = c_f(prop.x, prop.y);
     var cval = pixel;
     if !ismand {
         cval = c_f(U.seed.x, U.seed.y);
@@ -225,6 +265,9 @@ fn scatter(@builtin(global_invocation_id) gid: vec3<u32>) {
                 escaped = true;
                 break;
             }
+            if mh && d_pixel(l0) != 0xffffffffu {
+                score = score + 1u;
+            }
         }
         if U.densi.x == 0u {
             record = escaped && iter >= U.densi.y;
@@ -243,6 +286,35 @@ fn scatter(@builtin(global_invocation_id) gid: vec3<u32>) {
             }
         }
         record = record && mask != 0u;
+        if mh {
+            let lo = min(U.dens.xy, U.dens.zw);
+            let hi = max(U.dens.xy, U.dens.zw);
+            if !(record && all(prop >= lo) && all(prop <= hi)) {
+                score = 0u;
+            }
+            if score > 0u && (cur_score == 0u || r[3] * f32(cur_score) < f32(score)) {
+                if cur_score == 0u {
+                    cur_first = score;
+                }
+                cur = prop;
+                cur_score = score;
+                cur_mask = mask;
+                atomicStore(&hist[chain_at], bitcast<u32>(cur.x));
+                atomicStore(&hist[chain_at + 1u], bitcast<u32>(cur.y));
+                atomicStore(&hist[chain_at + 2u], cur_score);
+                atomicStore(&hist[chain_at + 3u], cur_mask | (cur_first << 3u));
+            }
+            record = false;
+            if cur_score > 0u {
+                weight = u32(f32(cur_first) / f32(cur_score) + r[4]);
+                record = weight > 0u;
+            }
+            mask = cur_mask;
+            pixel = c_f(cur.x, cur.y);
+            if ismand {
+                cval = pixel;
+            }
+        }
     }
     if record {
 //@MODE_INIT
@@ -267,7 +339,7 @@ fn scatter(@builtin(global_invocation_id) gid: vec3<u32>) {
                 break;
             }
             if iter > skip {
-                d_plot(l0, mask);
+                d_plot(l0, mask, weight);
             }
         }
     }

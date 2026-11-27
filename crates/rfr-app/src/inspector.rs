@@ -762,6 +762,14 @@ fn density_section(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
         widgets::label(ui, "Orbits per pass", "Start points per render pass: more fill the image faster, each pass takes longer");
         ui.add(egui::DragValue::new(&mut d.orbits).range(256..=4_000_000).speed(256.0)).on_hover_text("Start points per pass");
         ui.end_row();
+        if matches!(d.mode, DensityMode::Escaping | DensityMode::Captive) {
+            widgets::label(ui, "Metropolis", "Start points from Metropolis chains: favors orbits that pass through the view");
+            ui.checkbox(&mut d.metropolis, "").on_hover_text(
+                "For zoomed views: each orbit slot keeps a start point and moves it in small steps, keeping steps whose orbits \
+                 cross the view more often. The image shows the same density as with uniform start points, much sooner.",
+            );
+            ui.end_row();
+        }
         widgets::label(ui, "Nebulabrot", "Red, green and blue count orbits up to their own iteration limits");
         ui.checkbox(&mut d.nebula, "").on_hover_text("Three channels with their own iteration limits instead of the gradient");
         ui.end_row();

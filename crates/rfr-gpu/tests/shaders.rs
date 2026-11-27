@@ -315,6 +315,14 @@ fn gpu_density_matches_the_cpu() {
     b.layers[0].density.orbits = 40000;
     b.layers[0].outside.gradient = rfr_core::gradient::preset("Ember").unwrap();
     cases.push(("buddhabrot", b.clone()));
+    // Metropolis chains in a zoomed view (the CPU and the GPU chains differ, the density not).
+    let mut m = b.clone();
+    m.view.center = ["-0.15".into(), "0.75".into()];
+    m.view.radius = 0.3.into();
+    m.layers[0].max_iter = 200;
+    m.layers[0].density.orbits = 65536;
+    m.layers[0].density.metropolis = true;
+    cases.push(("metropolis", m));
     let mut n = b.clone();
     n.layers[0].density.nebula = true;
     n.layers[0].density.nebula_iter = [300, 100, 30];
@@ -353,8 +361,11 @@ fn gpu_density_matches_the_cpu() {
     rfr_core::render::density::fit_view(&mut koch, &[0]);
     koch.layers[0].density.orbits = 2000;
     cases.push(("koch", koch));
-    let (w, h, s) = (96, 64, 8);
+    let (w, h) = (96, 64);
     for (name, doc) in cases {
+        // Metropolis: the CPU and the GPU run their own chains, so only the noise differs; more
+        // passes make it small.
+        let s = if name == "metropolis" { 32 } else { 8 };
         let plan = Plan::sized(&doc, w, h).unwrap();
         let cpu = rfr_core::render::cpu::render(&doc, w, h, s).unwrap().rgba8();
         let gpu = rfr_core::render::cpu::rgba8(&rfr_gpu::render_blocking(ctx.clone(), &plan, s, |_| true).unwrap());

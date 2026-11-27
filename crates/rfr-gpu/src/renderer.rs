@@ -676,7 +676,8 @@ impl GpuRenderer {
                     let pixels = plan.frame.width * plan.frame.height;
                     let hist = device.create_buffer(&wgpu::BufferDescriptor {
                         label: Some("density counts"),
-                        size: ((channels * pixels + 4) as u64) * 4,
+                        // Metropolis: four words per chain after the counts and maxima.
+                        size: ((channels * pixels + 4 + if rfr_core::render::density::metropolis(d) { 4 * d.orbits.max(1) } else { 0 }) as u64) * 4,
                         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                         mapped_at_creation: false,
                     });
@@ -684,7 +685,7 @@ impl GpuRenderer {
                     uni.densi = [d.mode.index(), d.min_iter, d.warmup, d.orbits.max(1)];
                     uni.densn = [d.nebula_iter[0], d.nebula_iter[1], d.nebula_iter[2], 0];
                     uni.densx = [channels, rfr_core::render::density::max_iter(lp, d), (channels == 3) as u32, d.ifs.len() as u32];
-                    uni.densb = [d.brightness as f32, d.gamma as f32, d.lsystem.width as f32, 0.0];
+                    uni.densb = [d.brightness as f32, d.gamma as f32, d.lsystem.width as f32, rfr_core::render::density::metropolis(d) as u32 as f32];
                     let uniform = device.create_buffer(&wgpu::BufferDescriptor {
                         label: Some("density"),
                         size: std::mem::size_of::<Uni>() as u64,

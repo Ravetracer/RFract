@@ -20,6 +20,9 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
   fractal flames), presets, view fitting, FractInt `.ifs` import.
 - Formulas *Truchet tiles*, *Sierpinski carpet* and *Root finding (polynomial)* (Newton,
   Halley or Schröder steps for any polynomial up to degree 6, relaxation, Nova).
+- Density layers: *Metropolis* sampling for zoomed Buddhabrots and anti-Buddhabrots (start
+  points from Markov chains that favor orbits through the view, weighted so the density stays
+  the same as with uniform start points).
 - Formula language: `deriv(e, x)` gives the derivative of an expression with respect to a
   variable (also through variables assigned before), the same on the GPU and the CPU.
 - Formula *Root finding (function)*: Newton, Halley, Schröder or Householder steps for

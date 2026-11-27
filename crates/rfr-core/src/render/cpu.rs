@@ -167,7 +167,12 @@ impl Kernel {
             let channels = density::channels(d);
             return Kernel::Density(Box::new(DensityK {
                 fractal: Compiled::new(&lp.fractal.program, &lp.fractal.values),
-                hist: density::Histogram::new(plan.frame.width, plan.frame.height, channels),
+                hist: density::Histogram::new(
+                    plan.frame.width,
+                    plan.frame.height,
+                    channels,
+                    if density::metropolis(d) { d.orbits as usize } else { 0 },
+                ),
                 strokes: density::Strokes::new(d),
             }));
         }

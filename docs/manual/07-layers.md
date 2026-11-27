@@ -96,6 +96,13 @@ arrowhead; FractInt `.l` files open like parameter files.
 - *Shortest orbit* leaves out orbits that escape at once (they only add a haze).
 - *Start region* is where the start points come from (plane units, independent of the view).
 - *Orbits per pass*: more fill the image faster; every render pass adds that many.
+- *Metropolis* (Escaping and Captive): for zoomed views. Uniform start points rarely send an
+  orbit through a small view, so most of the work is lost. With Metropolis sampling every orbit
+  slot keeps its start point from pass to pass and tries a small step (now and then a jump
+  anywhere in the start region), keeping steps whose orbits cross the view more often. The
+  counts are weighted so the image shows the same density as with uniform start points, only
+  much sooner. Until the slots have found orbits through the view the image stays empty, and
+  the first passes are grainier.
 - *Nebulabrot* counts three channels with their own iteration limits (red, green, blue) and
   shows them as RGB; otherwise the gradient colors the counts, from few (left) to many (right).
 - *Brightness* and *Gamma* shape the log density: the brightest pixel has full brightness.

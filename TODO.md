@@ -15,7 +15,7 @@ that come up along the way.
 - [x] Kleinian limit sets (Grandma's recipe, Riley; Maskit and the Apollonian gasket as cases).
 - [x] Truchet tiles and the Sierpinski carpet.
 - [x] L-systems (density layer of strokes, presets, `.l` import).
-- [ ] Density layers: Metropolis–Hastings sampling for zoomed Buddhabrots.
+- [x] Density layers: Metropolis–Hastings sampling for zoomed Buddhabrots.
 
 ## Stage 4 – Deep zoom
 

@@ -564,6 +564,9 @@ pub struct Density {
     pub region: [f64; 4],
     /// Orbits per pass.
     pub orbits: u32,
+    /// Escaping and captive orbits: start points from Metropolis chains that favor orbits
+    /// through the view (for zoomed views) instead of uniform ones.
+    pub metropolis: bool,
     /// Attractors: iterations before points are counted.
     pub warmup: u32,
     pub brightness: f64,
@@ -585,6 +588,7 @@ impl Default for Density {
             nebula_iter: [5000, 500, 50],
             region: [-2.0, -1.5, 1.0, 1.5],
             orbits: 65536,
+            metropolis: false,
             warmup: 20,
             brightness: 1.0,
             gamma: 1.5,

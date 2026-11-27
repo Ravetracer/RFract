@@ -5,6 +5,7 @@
 //! tone-mapped to a color. The GPU renderer (`density.wgsl`) follows the same steps: the same
 //! start points (integer hash), the same pixel mapping, the same tone curve.
 
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use super::{LayerPlan, ViewFrame, hash};
@@ -13,23 +14,37 @@ use crate::formula::cpu::{Compiled, Frame, Hook};
 use crate::math::complex::{C64, Cx};
 
 /// Counts per pixel and channel (1, or 3 for Nebulabrot) and the largest count per channel
-/// (updated after every pass).
+/// (updated after every pass); with Metropolis sampling the state of every orbit's chain.
 pub struct Histogram {
     pub width: u32,
     pub height: u32,
     pub channels: usize,
     pub counts: Vec<AtomicU32>,
     pub max: [AtomicU32; 3],
+    pub chains: Vec<Mutex<Chain>>,
+}
+
+/// The state of a Metropolis chain: its start point, how many of its orbit's points fall into
+/// the view (0: no state yet), the channels the orbit counts in and the score of the chain's
+/// first state (its importance weight).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Chain {
+    pub c: [f64; 2],
+    pub score: u32,
+    pub mask: u32,
+    pub first: u32,
 }
 
 impl Histogram {
-    pub fn new(width: u32, height: u32, channels: usize) -> Histogram {
+    /// `chains`: the orbits per pass when the layer samples with Metropolis chains, else 0.
+    pub fn new(width: u32, height: u32, channels: usize, chains: usize) -> Histogram {
         Histogram {
             width,
             height,
             channels,
             counts: (0..width as usize * height as usize * channels).map(|_| AtomicU32::new(0)).collect(),
             max: [AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0)],
+            chains: (0..chains).map(|_| Mutex::new(Chain::default())).collect(),
         }
     }
 
@@ -55,6 +70,46 @@ pub fn start_point(d: &Density, pass: u32, i: u32) -> C64 {
     let (u, v) = (a as f64 / 4294967296.0, b as f64 / 4294967296.0);
     let r = d.region;
     C64::new(r[0] + (r[2] - r[0]) * u, r[1] + (r[3] - r[1]) * v)
+}
+
+/// Whether a layer samples its start points with Metropolis chains (escaping and captive
+/// orbits only).
+pub fn metropolis(d: &Density) -> bool {
+    d.metropolis && matches!(d.mode, DensityMode::Escaping | DensityMode::Captive)
+}
+
+/// The random numbers (0..1) of the Metropolis step of orbit `i` in pass `pass`: whether to
+/// jump anywhere, the step's size and direction, the acceptance and the weight's rounding.
+pub fn mh_randoms(pass: u32, i: u32) -> [f64; 5] {
+    let a = hash(i ^ hash(pass.wrapping_mul(0x9E37_79B9) ^ 0x5bd1_e995));
+    let mut r = hash(a ^ 0x68E3_1DA4) ^ 0x27D4_EB2F;
+    let mut out = [0.0; 5];
+    for v in &mut out {
+        r = hash(r);
+        *v = r as f64 / 4294967296.0;
+    }
+    out
+}
+
+/// The proposed start point: a jump to `start` (one in ten, or without a state yet), else a
+/// step from the chain's point of log-uniform size (1e-5 to 0.1 of the region) in a random
+/// direction. Both proposals are symmetric, so the acceptance is the ratio of the scores.
+pub fn mh_proposal(d: &Density, r: &[f64; 5], start: C64, cur: Option<[f64; 2]>) -> C64 {
+    match cur {
+        Some(c) if r[0] >= 0.1 => {
+            let size = (d.region[2] - d.region[0]).abs().max((d.region[3] - d.region[1]).abs());
+            let len = size * 0.1 * 1e-4f64.powf(r[1]);
+            let a = std::f64::consts::TAU * r[2];
+            C64::new(c[0] + len * a.cos(), c[1] + len * a.sin())
+        }
+        _ => start,
+    }
+}
+
+/// Whether a point lies in the density's region.
+pub fn in_region(d: &Density, c: C64) -> bool {
+    let r = d.region;
+    c.re >= r[0].min(r[2]) && c.re <= r[0].max(r[2]) && c.im >= r[1].min(r[3]) && c.im <= r[1].max(r[3])
 }
 
 /// The pixel a plane point falls into (inverse of [`ViewFrame::plane`]).
@@ -351,42 +406,87 @@ fn scatter_orbit(s: &Scatter, f: &mut Frame<f64>, i: u32) {
     let Scatter { fractal: k, lp, density: d, frame, hist, pass, .. } = *s;
     let start = start_point(d, pass, i);
     let maxit = max_iter(lp, d);
-    let setup = |f: &mut Frame<f64>| {
-        f.pixel = Cx::new(start.re, start.im);
+    let setup = |f: &mut Frame<f64>, c: C64| {
+        f.pixel = Cx::new(c.re, c.im);
         f.ismand = !lp.julia;
         f.c = if lp.julia { Cx::new(lp.seed[0], lp.seed[1]) } else { f.pixel };
     };
-    let (record, mask, skip) = match d.mode {
-        DensityMode::Attractor => (true, 1, d.warmup),
-        mode => {
-            setup(f);
-            let o = k.run(f, maxit);
-            let keep = match mode {
-                DensityMode::Escaping => o.escaped && o.iter >= d.min_iter,
-                _ => !o.escaped,
-            };
-            let mask = if mode == DensityMode::Escaping { channel_mask(d, o.iter) } else { if d.nebula { 7 } else { 1 } };
-            (keep && mask != 0, mask, 0)
-        }
-    };
-    if !record {
-        return;
-    }
-    setup(f);
-    k.run_with(f, maxit, |h| {
-        if let Hook::Iter(it, z, _) = h
-            && it > skip
-            && let Some((x, y)) = pixel_of(frame, C64::new(z.re, z.im))
-        {
-            let at = (y * hist.width + x) as usize;
-            let plane = (hist.width * hist.height) as usize;
-            for c in 0..hist.channels {
-                if mask & (1 << c) != 0 {
-                    hist.counts[c * plane + at].fetch_add(1, Ordering::Relaxed);
+    // Counts the orbit of `c` from step `skip` on, `weight` per point.
+    let plot = |f: &mut Frame<f64>, c: C64, mask: u32, skip: u32, weight: u32| {
+        setup(f, c);
+        k.run_with(f, maxit, |h| {
+            if let Hook::Iter(it, z, _) = h
+                && it > skip
+                && let Some((x, y)) = pixel_of(frame, C64::new(z.re, z.im))
+            {
+                let at = (y * hist.width + x) as usize;
+                let plane = (hist.width * hist.height) as usize;
+                for c in 0..hist.channels {
+                    if mask & (1 << c) != 0 {
+                        hist.counts[c * plane + at].fetch_add(weight, Ordering::Relaxed);
+                    }
                 }
             }
+        });
+    };
+    if d.mode == DensityMode::Attractor {
+        return plot(f, start, 1, d.warmup, 1);
+    }
+    // Whether the orbit of `c` is drawn, its channels and (Metropolis) its points in the view.
+    let mh = metropolis(d);
+    let check = |f: &mut Frame<f64>, c: C64| -> (bool, u32, u32) {
+        setup(f, c);
+        let mut score = 0;
+        let o = k.run_with(f, maxit, |h| {
+            if mh
+                && let Hook::Iter(_, z, _) = h
+                && pixel_of(frame, C64::new(z.re, z.im)).is_some()
+            {
+                score += 1;
+            }
+        });
+        let keep = match d.mode {
+            DensityMode::Escaping => o.escaped && o.iter >= d.min_iter,
+            _ => !o.escaped,
+        };
+        let mask = if d.mode == DensityMode::Escaping {
+            channel_mask(d, o.iter)
+        } else if d.nebula {
+            7
+        } else {
+            1
+        };
+        (keep && mask != 0, mask, score)
+    };
+    if !mh {
+        let (record, mask, _) = check(f, start);
+        if record {
+            plot(f, start, mask, 0, 1);
         }
-    });
+        return;
+    }
+    // Metropolis: the chain's target density is the score (the orbit's points in the view); it
+    // moves to the proposal with the probability of the ratio of the scores. It starts at the
+    // first start point that scores, so it carries that score as importance weight (start
+    // density uniform, target density the score), and every point of its current orbit
+    // counts first score / current score (rounded at random). This estimates the image of
+    // uniform start points without bias from the start.
+    let r = mh_randoms(pass, i);
+    let Ok(mut ch) = hist.chains[i as usize].lock() else { return };
+    let prop = mh_proposal(d, &r, start, (ch.score > 0).then_some(ch.c));
+    let (keep, mask, score) = check(f, prop);
+    let score = if keep && in_region(d, prop) { score } else { 0 };
+    if score > 0 && (ch.score == 0 || r[3] * (ch.score as f64) < score as f64) {
+        let first = if ch.score == 0 { score } else { ch.first };
+        *ch = Chain { c: [prop.re, prop.im], score, mask, first };
+    }
+    if ch.score == 0 {
+        return;
+    }
+    let weight = (ch.first as f64 / ch.score as f64 + r[4]) as u32;
+    if weight > 0 {
+        plot(f, C64::new(ch.c[0], ch.c[1]), ch.mask, 0, weight);
+    }
 }
 
 /// Whether the accumulated image restarts after `passes` density passes for a render of
@@ -478,5 +578,61 @@ mod render_tests {
         let img = crate::render::cpu::render(&a, w, h, 2).unwrap().rgba8();
         let lit = img.chunks(4).filter(|p| p[3] > 20).count();
         assert!(lit > 100 && lit < (w * h) as usize, "{lit} pixels of the attractor");
+    }
+
+    /// Runs `passes` passes of a density layer of `doc` into a fresh histogram.
+    fn counts(doc: &Document, w: u32, h: u32, passes: u32) -> Vec<f64> {
+        use super::*;
+        let plan = crate::render::Plan::sized(doc, w, h).unwrap();
+        let lp = plan.layers()[0];
+        let d = lp.density.as_ref().unwrap();
+        let k = Compiled::<f64>::new(&lp.fractal.program, &lp.fractal.values);
+        let hist = Histogram::new(w, h, 1, if metropolis(d) { d.orbits as usize } else { 0 });
+        let strokes = Strokes::new(d);
+        let mut f = k.frame();
+        for pass in 0..passes {
+            let s = Scatter { fractal: &k, lp, density: d, frame: &plan.frame, hist: &hist, pass, strokes: &strokes };
+            (0..d.orbits).for_each(|i| s.orbit(&mut f, i));
+        }
+        hist.counts.iter().map(|c| c.load(Ordering::Relaxed) as f64).collect()
+    }
+
+    fn zoomed(radius: f64, metropolis: bool, orbits: u32) -> Document {
+        let mut d = Document::for_formula("rfract:Mandelbrot");
+        d.view.center = ["-0.15".into(), "0.75".into()];
+        d.view.radius = radius.into();
+        d.layers[0].kind = LayerKind::Density;
+        d.layers[0].max_iter = 200;
+        d.layers[0].density.orbits = orbits;
+        d.layers[0].density.metropolis = metropolis;
+        d
+    }
+
+    /// Metropolis chains give the same density as uniform start points (the counts are
+    /// weighted by the inverse of each orbit's points in the view) and fill a small view with
+    /// far fewer orbits.
+    #[test]
+    fn metropolis_matches_uniform_sampling() {
+        let (w, h) = (16, 16);
+        let uniform = counts(&zoomed(0.3, false, 50_000), w, h, 40);
+        let mh = counts(&zoomed(0.3, true, 2_000), w, h, 400);
+        // Compare the share of each 4 × 4 block.
+        let blocks = |c: &[f64]| {
+            let mut b = [0.0; 16];
+            for y in 0..h {
+                for x in 0..w {
+                    b[(y / 4 * 4 + x / 4) as usize] += c[(y * w + x) as usize];
+                }
+            }
+            let sum: f64 = b.iter().sum();
+            b.iter().map(|v| v / sum).collect::<Vec<_>>()
+        };
+        let (bu, bm) = (blocks(&uniform), blocks(&mh));
+        let diff: f64 = bu.iter().zip(&bm).map(|(a, b)| (a - b).abs()).sum();
+        assert!(diff < 0.12, "block shares differ by {diff:.3}: uniform {bu:.3?}, metropolis {bm:.3?}");
+        // A small view: the same number of orbits lights far more pixels with chains.
+        let lit = |c: Vec<f64>| c.iter().filter(|&&v| v > 0.0).count();
+        let (u, m) = (lit(counts(&zoomed(0.01, false, 2_000), w, h, 200)), lit(counts(&zoomed(0.01, true, 2_000), w, h, 200)));
+        assert!(m > 2 * u.max(10), "lit pixels: uniform {u}, metropolis {m}");
     }
 }
