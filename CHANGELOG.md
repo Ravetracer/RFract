@@ -11,6 +11,13 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
   light and highlights (GGX or Blinn-Phong) from up to four colored lights; on the GPU and
   the CPU. Brightness heights on image layers give bump maps.
 
+### Fixed
+
+- The app could crash at start with "wgpu error: Out of Memory" when the interface scale
+  was below 100 %: the first frames laid out the preview for a huge default screen. The
+  preview is now never larger than the window, and a render too large for the GPU shows a
+  message instead of crashing.
+
 ## [0.6.0] - 2026-11-27
 
 ### Added

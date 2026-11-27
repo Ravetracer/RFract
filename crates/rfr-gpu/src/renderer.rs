@@ -578,6 +578,9 @@ impl GpuRenderer {
         self.last_plan = Some(plan.clone());
         self.density_passes = 0;
         let device = self.ctx.device.clone();
+        // Buffers too large for the GPU (memory or limits) become a message instead of a panic.
+        let invalid = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let oom = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let layers = plan.layers();
         self.plan_mode = Some(renderer_mode(plan));
         self.error = None;
@@ -836,6 +839,18 @@ impl GpuRenderer {
             self.scratch = Some((b, max_rows));
         }
         self.band_rows = self.band_rows.min(max_rows).max(8);
+        let failed = pollster::block_on(oom.pop());
+        let failed = failed.or(pollster::block_on(invalid.pop()));
+        if let Some(e) = failed {
+            self.target = None;
+            self.scratch = None;
+            self.layers.clear();
+            self.ops.clear();
+            let why = e.to_string();
+            let why = why.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string();
+            self.error = Some(format!("The image is too large for the GPU: {w} × {h} pixels ({why})"));
+            return;
+        }
         self.update_ready();
         self.restart();
     }

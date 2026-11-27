@@ -396,3 +396,17 @@ fn gpu_density_matches_the_cpu() {
         assert!(d < 6.0, "{name}: block difference {d:.2} of 255");
     }
 }
+
+/// A render too large for the GPU reports an error instead of panicking.
+#[test]
+fn oversized_render_reports_an_error() {
+    let Ok(ctx) = rfr_gpu::GpuContext::new_headless() else {
+        eprintln!("no GPU: skipped");
+        return;
+    };
+    let doc = Document::for_formula("rfract:Mandelbrot");
+    let plan = Plan::sized(&doc, 60000, 60000).unwrap();
+    let r = rfr_gpu::render_blocking(ctx, &plan, 1, |_| true);
+    assert!(r.is_err(), "a 60000 × 60000 render cannot fit");
+    eprintln!("{}", r.err().unwrap());
+}

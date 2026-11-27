@@ -276,8 +276,19 @@ impl Viewport {
         let ppp = ui.ctx().pixels_per_point();
         let scale =
             prefs.preview_percent.clamp(10, 100) as f32 / 100.0 * if fast { prefs.navigate_percent.clamp(10, 100) as f32 / 100.0 } else { 1.0 };
-        let size = (((rect.width() * ppp * scale).round() as u32).max(16), ((rect.height() * ppp * scale).round() as u32).max(16));
-        let tex = self.update_gpu(frame, doc, size, fast, prefs);
+        // The preview is never larger than the window. Right after start (or a change of the
+        // interface scale) egui may lay out for a huge default screen; the window's own size
+        // bounds the render then, and nothing renders before it is known.
+        let window = ui.ctx().input(|i| i.viewport().inner_rect.map(|r| r.size() * i.viewport().native_pixels_per_point.unwrap_or(1.0)));
+        let side = |v: f32, max: f32| ((v * ppp * scale).round().min((max * scale).ceil()) as u32).max(16);
+        let size = window.map_or((16, 16), |w| (side(rect.width(), w.x), side(rect.height(), w.y)));
+        let window_known = window.is_some();
+        let tex = if window_known {
+            self.update_gpu(frame, doc, size, fast, prefs)
+        } else {
+            ui.ctx().request_repaint();
+            None
+        };
 
         let painter = ui.painter_at(avail);
         painter.rect_filled(rect, 0.0, theme::CANVAS);
