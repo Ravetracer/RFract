@@ -27,6 +27,11 @@ pub struct Viewport {
     /// (dragging orbits its camera).
     pub terrain: bool,
     pub object: bool,
+    /// An animation frame shown instead of the document (timeline preview): the document,
+    /// its palette phase, fast quality (playback).
+    pub preview: Option<(Document, f64, bool)>,
+    preview_phase: f64,
+    last_phase: f64,
     gpu: Option<GpuRenderer>,
     texture: Option<(egui::TextureId, u64)>,
     /// What the renderer currently has: document, size, fast mode.
@@ -99,6 +104,9 @@ impl Viewport {
         Viewport {
             terrain: false,
             object: false,
+            preview: None,
+            preview_phase: 0.0,
+            last_phase: 0.0,
             gpu,
             texture: None,
             last: None,
@@ -189,7 +197,41 @@ impl Viewport {
         }
     }
 
+    /// Shows an animation frame (no navigation): see [`Viewport::preview`].
+    fn show_preview(&mut self, ui: &mut Ui, frame: &eframe::Frame, doc: &Document, phase: f64, fast: bool, prefs: &Prefs) {
+        let avail = ui.available_rect_before_wrap();
+        let aspect = doc.image.width.max(1) as f32 / doc.image.height.max(1) as f32;
+        let rect = fit(avail.shrink(4.0), aspect);
+        ui.allocate_rect(avail, egui::Sense::hover());
+        let ppp = ui.ctx().pixels_per_point();
+        let scale =
+            prefs.preview_percent.clamp(10, 100) as f32 / 100.0 * if fast { prefs.navigate_percent.clamp(10, 100) as f32 / 100.0 } else { 1.0 };
+        let window = ui.ctx().input(|i| i.viewport().inner_rect.map(|r| r.size() * i.viewport().native_pixels_per_point.unwrap_or(1.0)));
+        let side = |v: f32, max: f32| ((v * ppp * scale).round().min((max * scale).ceil()) as u32).max(16);
+        let Some(w) = window else {
+            ui.ctx().request_repaint();
+            return;
+        };
+        let size = (side(rect.width(), w.x), side(rect.height(), w.y));
+        self.preview_phase = phase;
+        let tex = self.update_gpu(frame, doc, size, fast, prefs);
+        let painter = ui.painter_at(avail);
+        painter.rect_filled(rect, 0.0, theme::CANVAS);
+        if let Some(id) = tex {
+            painter.image(id, rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+        }
+        if let Some(e) = self.error() {
+            painter.text(rect.center(), egui::Align2::CENTER_CENTER, e, egui::FontId::proportional(theme::fs(13.0)), theme::WARN);
+        }
+        self.hovered = false;
+    }
+
     pub fn show(&mut self, ui: &mut Ui, frame: &eframe::Frame, doc: &mut Document, sel: &Selection, prefs: &Prefs) -> Option<String> {
+        if let Some((pdoc, phase, fast)) = self.preview.clone() {
+            self.show_preview(ui, frame, &pdoc, phase, fast, prefs);
+            return None;
+        }
+        self.preview_phase = 0.0;
         let mut message = None;
         let avail = ui.available_rect_before_wrap();
         let aspect = doc.image.width.max(1) as f32 / doc.image.height.max(1) as f32;
@@ -361,12 +403,15 @@ impl Viewport {
         }
         let gpu = self.gpu.as_mut()?;
         let generation = rfr_core::formula::library::generation();
-        let changed = self.cycling || self.last.as_ref().is_none_or(|(d, s, f, g)| d != doc || *s != size || *f != fast || *g != generation);
+        let changed = self.cycling
+            || self.preview_phase != self.last_phase
+            || self.last.as_ref().is_none_or(|(d, s, f, g)| d != doc || *s != size || *f != fast || *g != generation);
         if changed {
+            self.last_phase = self.preview_phase;
             match Plan::sized(doc, size.0, size.1) {
                 Ok(mut plan) => {
-                    if self.cycling {
-                        plan.shift_colors(self.phase);
+                    if self.cycling || self.preview_phase != 0.0 {
+                        plan.shift_colors(if self.cycling { self.phase } else { 0.0 } + self.preview_phase);
                     }
                     self.precision = Some(plan.precision());
                     self.unperturbed = if plan.precision() == Precision::Beyond {

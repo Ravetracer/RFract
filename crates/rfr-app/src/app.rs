@@ -57,6 +57,8 @@ pub struct App {
     viewport: Viewport,
     browser: Browser,
     export: Export,
+    timeline: crate::timeline::Timeline,
+    anim_export: crate::anim_export::AnimExport,
     /// Gradient editor window: outside (false) or inside (true) coloring.
     gradient_window: Option<bool>,
     title: String,
@@ -125,6 +127,8 @@ impl App {
             prefs_open: false,
             help: Help::default(),
             show_timeline: false,
+            timeline: Default::default(),
+            anim_export: Default::default(),
             show_explore: false,
             doc: Doc::new(Document::for_formula("rfract:Mandelbrot")),
             selection: Selection::layer(vec![0]),
@@ -628,7 +632,8 @@ impl App {
                 ui.add(egui::Slider::new(&mut self.viewport.cycle_speed, -2.0..=2.0).text("turns per second"))
                     .on_hover_text("Speed and direction of the color cycling");
                 ui.separator();
-                ui.checkbox(&mut self.show_timeline, "Timeline").on_hover_text("Show the animation timeline below the view (later stage)");
+                ui.checkbox(&mut self.show_timeline, "Timeline")
+                    .on_hover_text("Show the animation timeline below the view: keyframes, playback, timing, export");
                 ui.checkbox(&mut self.show_explore, "Explore lane").on_hover_text("Show the explore lane below the view (later stage)");
             });
             ui.menu_button("Help", |ui| {
@@ -1015,6 +1020,7 @@ impl eframe::App for App {
                     ui.label(RichText::new("Explore lane: presets, random documents and mutations (later stage)").color(theme::TEXT_MUTED));
                 });
         }
+        let mut timeline_action = None;
         if self.show_timeline {
             egui::Panel::bottom("timeline")
                 .resizable(true)
@@ -1022,10 +1028,39 @@ impl eframe::App for App {
                 .size_range(120.0..=420.0)
                 .frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(12, 8)))
                 .show(ui, |ui| {
-                    ui.label(RichText::new("Timeline: keyframes, camera path, recording and playback (later stage)").color(theme::TEXT_MUTED));
+                    if let Some(a) = self.timeline.show(ui, &mut self.doc.doc) {
+                        timeline_action = Some(a);
+                    }
                 });
         }
-        self.viewport.paused = self.export.busy();
+        match timeline_action {
+            Some(crate::timeline::TimelineAction::Message(m)) => self.notify(m),
+            Some(crate::timeline::TimelineAction::ExportAnimation) => {
+                self.timeline.stop_preview();
+                let stem = self.doc.path.as_ref().and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().to_string()).unwrap_or("animation".into());
+                if let Some(p) = self
+                    .prefs
+                    .dialog()
+                    .add_filter("Movie", &["mp4", "mov", "webm", "gif"])
+                    .set_file_name(format!("{stem}.mp4"))
+                    .set_title("Export animation (.mp4, .mov, .webm, .gif; a name without extension: a folder of PNG images)")
+                    .save_file()
+                {
+                    let ffmpeg = rfr_core::video::ffmpeg_program(None);
+                    match self.anim_export.start(&self.doc.doc, p, self.viewport.gpu_context(), ffmpeg) {
+                        Ok(()) => {}
+                        Err(e) => self.warn(format!("Animation export failed: {e}")),
+                    }
+                }
+            }
+            None => {}
+        }
+        // The view shows the timeline's frame while previewing.
+        if !self.show_timeline {
+            self.timeline.stop_preview();
+        }
+        self.viewport.preview = self.timeline.preview(&self.doc.doc);
+        self.viewport.paused = self.export.busy() || self.anim_export.busy();
         let mut msg = None;
         egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::CANVAS)).show(ui, |ui| {
             msg = self.viewport.show(ui, frame, &mut self.doc.doc, &self.selection, &self.prefs);
@@ -1035,6 +1070,9 @@ impl eframe::App for App {
         }
         if let Some(m) = self.export.update(&ctx) {
             if m.starts_with("Export failed") { self.warn(m) } else { self.notify(m) }
+        }
+        if let Some(m) = self.anim_export.update(&ctx) {
+            if m.contains("failed") { self.warn(m) } else { self.notify(m) }
         }
 
         self.gradient_editor(&ctx);

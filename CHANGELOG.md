@@ -11,7 +11,9 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
   zooms at an even pace in log space with the target staying put, exact at any depth;
   timing per keyframe (frames, easing) or steady (length, ease in and out); palette rotation;
   motion blur (shutter); `rfr-cli animate` writes MP4 (H.264, H.265, AV1), MOV (ProRes),
-  WebM, GIF through ffmpeg, or PNG frames.
+  WebM, GIF through ffmpeg, or PNG frames. In the app: *View › Timeline* with keyframes,
+  scrubbing, playback in the view, timing, palette rotation, motion blur and *Export
+  animation…*.
 
 ## [0.8.0] - 2026-11-27
 

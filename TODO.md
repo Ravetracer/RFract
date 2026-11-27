@@ -10,7 +10,7 @@ that come up along the way.
       palette rotation, motion blur (sub-frames over the shutter).
 - [x] Frame rendering (one renderer for all frames, reference orbits waited for), video
       through ffmpeg (H.264, H.265, AV1, ProRes, VP9, GIF) or PNG frames, `rfr-cli animate`.
-- [ ] Timeline in the app: keyframes from the current document, scrubbing, preview playback,
+- [x] Timeline in the app: keyframes from the current document, scrubbing, preview playback,
       animation export with progress.
 - [ ] Deep-zoom sequence mode: one image per 2× zoom step, frames composed by scaling.
 - [ ] Flight recording → keyframes, cameraman smoothing.

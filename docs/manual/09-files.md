@@ -66,6 +66,9 @@ rfr-cli info
 them) and renders on the graphics card; `--cpu` uses the CPU reference renderer instead.
 `info` shows the graphics card, the denoiser and the settings folder.
 
+`rfr-cli animate` renders a document's animation into a movie or PNG images (see
+*Animation*).
+
 `render` also takes a `.upr` file; `--entry <name>` picks its image (default: the first),
 and the notes of the conversion go to the terminal.
 

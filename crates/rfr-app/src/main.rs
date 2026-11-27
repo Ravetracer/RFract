@@ -5,6 +5,7 @@
 // Release builds on Windows start without a console window.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod anim_export;
 mod app;
 mod browser;
 mod doc;
@@ -18,6 +19,7 @@ mod manual;
 mod palette_editor;
 mod prefs;
 mod theme;
+mod timeline;
 mod viewport;
 mod widgets;
 
