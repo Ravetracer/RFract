@@ -39,6 +39,11 @@ pub struct Frame<S> {
     pub angle: f64,
     /// State of `#random` (the same generator as the GPU's).
     pub rng: RngState,
+    /// Periodicity checking (fractals whose loop is a map of z alone, see
+    /// [`super::period`]): an orbit that comes back within this distance (per part) of the
+    /// `z` saved at the last power-of-two iteration ends as inside at the iteration limit;
+    /// 0: off.
+    pub period: f64,
 }
 
 /// Generator state of `#random`; an atomic so frames can be shared with worker threads (each
@@ -871,6 +876,7 @@ impl<S: Scalar + Send + Sync + 'static> Compiled<S> {
             height: 1,
             angle: 0.0,
             rng: RngState::default(),
+            period: 0.0,
         }
     }
 
@@ -1026,6 +1032,7 @@ impl<S: Scalar + Send + Sync + 'static> Compiled<S> {
         let mut escaped = false;
         let mut iter = 0;
         let mut zprev2 = Cx::zero();
+        let (mut saved, mut save_at) = (f.cx[z], 1);
         while iter < maxit {
             zprev2 = f.zprev;
             f.zprev = f.cx[z];
@@ -1038,6 +1045,17 @@ impl<S: Scalar + Send + Sync + 'static> Compiled<S> {
                 break;
             }
             hook(Hook::Iter(iter, f.cx[z], f.zprev));
+            if f.period > 0.0 {
+                let zc = f.cx[z];
+                if (zc.re.v() - saved.re.v()).abs() < f.period && (zc.im.v() - saved.im.v()).abs() < f.period {
+                    iter = maxit;
+                    break;
+                }
+                if iter == save_at {
+                    saved = zc;
+                    save_at *= 2;
+                }
+            }
         }
         self.fin.iter().for_each(|s| s(f));
         Orbit { z: f.cx[z], zprev: f.zprev, zprev2, iter, escaped }

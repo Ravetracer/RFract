@@ -35,6 +35,13 @@ or drag field), complex numbers (real and imaginary part), switches, choices and
 the set (colored by *Inside*). Deep views and thin structures need more iterations; more take
 longer.
 
+High limits cost little inside the set when *Inside* is a solid color: an orbit that comes
+back to an earlier point is caught in a cycle and stops early (*periodicity checking*, for
+formulas whose step depends only on z), and the Mandelbrot set skips its main cardioid and
+the large bulb to its left entirely. The image stays the same. Other inside colorings
+need the orbit's end and run every point to the limit; deep zooms beyond double precision
+also iterate every point.
+
 ![Newton's method for z⁵ = 1 with relaxation (1.2, 0.3)](images/example-newton.jpg)
 
 ## Formula files

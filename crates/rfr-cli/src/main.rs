@@ -653,6 +653,7 @@ fn render_check(prog: rfr_core::formula::Program, kind: rfr_core::formula::Progr
             density: None,
             light: None,
             object: None,
+            early: Default::default(),
         },
         ProgramKind::Coloring => LayerPlan {
             fractal: mandel,
@@ -665,6 +666,7 @@ fn render_check(prog: rfr_core::formula::Program, kind: rfr_core::formula::Progr
             density: None,
             light: None,
             object: None,
+            early: Default::default(),
         },
         ProgramKind::Transform => LayerPlan {
             fractal: mandel,
@@ -677,6 +679,7 @@ fn render_check(prog: rfr_core::formula::Program, kind: rfr_core::formula::Progr
             density: None,
             light: None,
             object: None,
+            early: Default::default(),
         },
     };
     let src = rfr_gpu::codegen::kernel(&lp, rfr_gpu::codegen::Mode::Plain);

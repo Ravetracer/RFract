@@ -257,15 +257,22 @@ pub fn renderer_mode(plan: &Plan) -> Mode {
     }
 }
 
+/// Periodicity tolerance floor of f32 orbits (see `rfr_core::render::period_tolerance`).
+const PERIOD_FLOOR_F32: f64 = 2.4e-7;
+
 fn layer_uni(plan: &Plan, lp: &LayerPlan) -> Uni {
     let f = &plan.frame;
     let (o, i) = (&lp.outside, &lp.inside);
+    // Early inside in the f32 modes (double-float and perturbation views iterate every orbit).
+    let single = matches!(layer_mode(plan, lp), Mode::Plain | Mode::Dual);
+    let period = if lp.early.periodicity && single { rfr_core::render::period_tolerance(f.pixel_size(), PERIOD_FLOOR_F32) as f32 } else { 0.0 };
+    let bulbs = if lp.early.bulbs && single { 1.0 } else { 0.0 };
     Uni {
         size: [f.width, f.height, 0, 0],
         view: [f.center[0] as f32, f.center[1] as f32, (f.radius / (f.height as f64 * 0.5)) as f32, plan.magn() as f32],
         rot: [f.cos as f32, f.sin as f32, f.pixel_size() as f32, 1.0],
         iter: [lp.max_iter, lp.julia as u32, o.method_index(), i.method_index()],
-        seed: [lp.seed[0] as f32, lp.seed[1] as f32, 0.0, 0.0],
+        seed: [lp.seed[0] as f32, lp.seed[1] as f32, period, bulbs],
         outc: [o.transfer.index() as f32, o.density as f32, o.offset as f32, 0.0],
         inc: [i.transfer.index() as f32, i.density as f32, i.offset as f32, 0.0],
         out_solid: o.solid,

@@ -207,7 +207,7 @@ fn for_children(e: &mut Expr, f: &mut dyn FnMut(&mut Expr)) {
     }
 }
 
-fn for_children_ref(e: &Expr, f: &mut dyn FnMut(&Expr)) {
+pub(crate) fn for_children_ref(e: &Expr, f: &mut dyn FnMut(&Expr)) {
     match &e.kind {
         Kind::Bool(_) | Kind::Int(_) | Kind::Real(_) | Kind::Local(_) | Kind::Param(_) | Kind::Sys(_) => {}
         Kind::Complex(a, b)

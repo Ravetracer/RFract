@@ -15,7 +15,7 @@ struct Uni {
     rot: vec4<f32>,
     // max iterations, julia mode, outside method, inside method
     iter: vec4<u32>,
-    // seed x, seed y, unused, unused
+    // seed x, seed y, periodicity tolerance (0: off), main bulbs of z² + c inside (1: on)
     seed: vec4<f32>,
     // transfer, density, offset, unused (outside, inside)
     outc: vec4<f32>,
@@ -108,6 +108,14 @@ const LUT_SIZE: u32 = 1024u;
 var<private> g_value: f32;
 //@RNG_DECL
 const TAU: f32 = 6.283185307179586;
+
+// c lies in the main cardioid or the period-2 bulb of z² + c (rfr_core::formula::period).
+fn in_main_bulbs(c: vec2<f32>) -> bool {
+    let x = c.x - 0.25;
+    let y2 = c.y * c.y;
+    let q = x * x + y2;
+    return q * (q + x) <= 0.25 * y2 || (c.x + 1.0) * (c.x + 1.0) + y2 <= 0.0625;
+}
 
 fn hash(v: u32) -> u32 {
     let state = v * 747796405u + 2891336453u;
@@ -416,6 +424,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 //@COLOR_INIT
         var escaped = false;
         var iter = 0u;
+        // Early inside (rfr_core::render::EarlyInside): the main bulbs, periodicity.
+        if U.seed.w > 0.5 && in_main_bulbs(vec2<f32>(s_v(cval.re), s_v(cval.im))) {
+            iter = maxit;
+        }
+        var psave = vec2<f32>(s_v(l0.re), s_v(l0.im));
+        var psave_at = 1u;
         loop {
             if iter >= maxit {
                 break;
@@ -431,6 +445,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 break;
             }
 //@COLOR_LOOP
+            if U.seed.z > 0.0 {
+                let zc = vec2<f32>(s_v(l0.re), s_v(l0.im));
+                let dp = abs(zc - psave);
+                if dp.x < U.seed.z && dp.y < U.seed.z {
+                    iter = maxit;
+                    break;
+                }
+                if iter == psave_at {
+                    psave = zc;
+                    psave_at = psave_at * 2u;
+                }
+            }
         }
 //@FINAL
         let zv = vec2<f32>(s_v(l0.re), s_v(l0.im));

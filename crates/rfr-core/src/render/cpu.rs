@@ -13,7 +13,7 @@ use super::composite::{composite, mask_value};
 use super::{
     ColorMethod, LayerPlan, Node, OrbitResult, Plan, Precision, density, light, native_value, sample_offset, shade_formula, shade_native, smooth_iter,
 };
-use crate::formula::cpu::{Compiled, Frame, Hook};
+use crate::formula::cpu::{Compiled, Frame, Hook, Orbit};
 use crate::formula::perturb::{BlaTable, Deep, Perturbation, RefOrbit};
 use crate::gradient::linear_to_srgb;
 use crate::math::complex::{C64, Cx};
@@ -104,7 +104,13 @@ impl<S: Scalar + Send + Sync + 'static> LayerK<S> {
         };
         setup(&mut f.fractal);
         let maxit = lp.max_iter;
-        let o = {
+        // Early inside: the main bulbs of z² + c, periodicity (not in deep zooms).
+        f.fractal.period =
+            if lp.early.periodicity && self.pert.is_none() { super::period_tolerance(plan.frame.pixel_size(), PERIOD_FLOOR) } else { 0.0 };
+        let bulb = lp.early.bulbs && self.pert.is_none() && crate::formula::period::in_main_bulbs(c.re.v(), c.im.v());
+        let o = if bulb {
+            Orbit { z: Cx::zero(), zprev: Cx::zero(), zprev2: Cx::zero(), iter: maxit, escaped: false }
+        } else {
             let pairs = [(self.outside.as_ref(), f.outside.as_mut()), (self.inside.as_ref(), f.inside.as_mut())];
             let mut colorings: Vec<(&Compiled<S>, &mut Frame<S>)> = pairs.into_iter().filter_map(|(k, fr)| Some((k?, fr?))).collect();
             for (_, fr) in colorings.iter_mut() {
@@ -552,6 +558,9 @@ pub fn set_guessing(on: bool) {
     GUESSING.store(on, Ordering::Relaxed);
 }
 
+/// Periodicity tolerance floor of f64 orbits (see [`super::period_tolerance`]).
+const PERIOD_FLOOR: f64 = 3.6e-15;
+
 /// Tile size of guessing in pixels.
 const GUESS_TILE: usize = 16;
 
@@ -745,6 +754,44 @@ mod tests {
             r.rgba8()
         };
         assert_eq!(image(true), image(false));
+    }
+
+    #[test]
+    fn early_inside_keeps_the_image() {
+        // Mandelbrot (bulbs and periodicity) whole and near the seahorse valley; a Julia set
+        // (periodicity); a magnitude inside (no shortcuts).
+        let mut docs = vec![Document::default()];
+        let mut d = Document::default();
+        d.view.center = ["-0.7453".into(), "0.1127".into()];
+        d.view.radius = 0.0065.into();
+        docs.push(d);
+        let mut d = Document::default();
+        d.layers[0].julia = true;
+        d.layers[0].seed = [-0.123, 0.745];
+        d.view.center = ["0".into(), "0".into()];
+        docs.push(d);
+        let mut d = Document::default();
+        d.layers[0].inside_method = InsideMethod::Magnitude;
+        docs.push(d);
+        for (k, doc) in docs.iter().enumerate() {
+            let plan = Plan::sized(doc, 64, 36).unwrap();
+            let early = plan.layers()[0].early;
+            assert_eq!(early.periodicity, k < 3, "doc {k}");
+            assert_eq!(early.bulbs, k < 2, "doc {k}");
+            let mut off = plan.clone();
+            for n in off.nodes.iter_mut() {
+                if let Node::Layer { layer, .. } = n {
+                    layer.early = Default::default();
+                }
+            }
+            let image = |p: Plan| {
+                let mut r = CpuRenderer::new(p);
+                r.guessing = false;
+                r.pass();
+                r.rgba8()
+            };
+            assert_eq!(image(plan), image(off), "doc {k}");
+        }
     }
 
     #[test]

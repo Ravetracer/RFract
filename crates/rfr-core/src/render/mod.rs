@@ -239,6 +239,41 @@ pub struct LayerPlan {
     pub light: Option<light::LightPlan>,
     /// 3D object layers: the raymarched shape with its own lighting (see [`object`]).
     pub object: Option<object::ObjectPlan>,
+    /// Shortcuts for orbits that stay inside (only when the inside is one solid color, so the
+    /// image is the same).
+    pub early: EarlyInside,
+}
+
+/// Ways to know early that an orbit stays inside.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EarlyInside {
+    /// Periodicity checking ([`crate::formula::period`]): the loop is a map of z alone.
+    pub periodicity: bool,
+    /// The classic Mandelbrot set z² + c from 0: points of the main cardioid and the
+    /// period-2 bulb are inside without iterating.
+    pub bulbs: bool,
+}
+
+impl EarlyInside {
+    fn new(fractal: &Prog, julia: bool, inside: &ColorPlan) -> EarlyInside {
+        if !matches!(inside.method, ColorMethod::Solid) {
+            return EarlyInside::default();
+        }
+        let p = &fractal.program;
+        let value = |name: &str| p.param(name).and_then(|i| fractal.values.get(i));
+        let bulbs = fractal.id == "rfract:Mandelbrot"
+            && !julia
+            && value("power") == Some(&ParamValue::Int(2))
+            && value("start") == Some(&ParamValue::Complex([0.0, 0.0]))
+            && matches!(value("bailout"), Some(ParamValue::Float(b)) if *b >= 4.0);
+        EarlyInside { periodicity: crate::formula::period::z_only_state(p), bulbs }
+    }
+}
+
+/// Periodicity tolerance (plane units) for pixels of `pixel_size`: well below a pixel, but not
+/// below what the arithmetic can resolve (`floor`).
+pub fn period_tolerance(pixel_size: f64, floor: f64) -> f64 {
+    (pixel_size / 65536.0).max(floor)
 }
 
 impl LayerPlan {
@@ -277,7 +312,14 @@ impl LayerPlan {
                 p
             }),
             object: (l.kind == LayerKind::Object).then(|| object::ObjectPlan::new(&l.object, &l.light)),
+            early: EarlyInside::default(),
             fractal,
+        })
+        .map(|mut lp| {
+            if lp.density.is_none() && lp.object.is_none() {
+                lp.early = EarlyInside::new(&lp.fractal, lp.julia, &lp.inside);
+            }
+            lp
         })
     }
 

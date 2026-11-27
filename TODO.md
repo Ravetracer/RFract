@@ -12,7 +12,11 @@ that come up along the way.
 
 Open points of the earlier stages (their notes below stay for the details).
 
-- [ ] Deep zoom: periodicity checking and interior checks (cardioid, bulbs).
+- [x] Periodicity checking (Brent, power-of-two saves; formulas whose loop is a map of z
+      alone, `formula/period.rs`) and the main cardioid/period-2 bulb test (`rfract:Mandelbrot`
+      power 2 from 0); only with a solid inside, not in double-float (GPU) and perturbation
+      views. Tolerance pixel/65536, floors 3.6e-15 (f64) and 2.4e-7 (f32). Images identical
+      to before; CPU 1080p heavy view 141 s → 4 s (timings with a busy GPU, rough).
 - [ ] Automatic iteration count.
 - [ ] Location bookmarks.
 - [ ] Histogram coloring.
