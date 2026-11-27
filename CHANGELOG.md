@@ -15,6 +15,8 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
 - Adaptive sampling (*Image › Adaptive*, on by default): pixels stop taking samples once
   they and their neighbours are smooth; renders with many samples are about three times
   faster.
+- Manual: how-tos (deep zoom movie, poster, landscape fly-over, music video, exploring,
+  parameter files, overnight renders); the introduction describes the current program.
 
 ## [0.9.0] - 2026-11-27
 

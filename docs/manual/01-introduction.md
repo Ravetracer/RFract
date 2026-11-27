@@ -6,11 +6,15 @@ them into stills and animations with glow, chromatic aberration, lighting and de
 
 ![RFract](images/cover.jpg)
 
-This manual describes version {{version}}, an early development version: layers with merge
-modes, groups and masks, 552 built-in formulas, 13 coloring algorithms, 11 transformations,
-gradients with opacity, GPU rendering with automatic double precision for deep views, and PNG
-export with transparency. Effects, deep zoom beyond double precision and animation follow in
-later versions.
+This manual describes version {{version}}, a development version: layers with merge modes,
+groups and masks, more than 600 built-in formulas and the formula language with its files,
+colorings and transformations, gradients with opacity, density layers (Buddhabrot, attractors,
+IFS, L-systems), lighting with 3D terrains and 3D objects, deep zooms to any depth, effects
+with denoising, animations with keyframes, flights, drivers and sound, posters of any size, a
+render queue and an explore lane for new ideas.
+
+*How-tos* at the end walks through complete projects: a deep zoom movie, a poster, a
+landscape fly-over, a music video and more.
 
 ## Related programs
 

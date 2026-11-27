@@ -12,7 +12,8 @@ The window has four parts:
   Julia mode, the coloring of the outside and the inside, the view and the image size.
 - **Bottom**: the status bar with messages, the coordinate under the cursor, the
   magnification, the preview's size and samples, the arithmetic the shader uses and the
-  graphics card.
+  graphics card. Above it, *View* opens the **timeline** (animation) and the **explore lane**
+  (presets, random fractals, mutations).
 
 Every control explains itself when you hold the mouse over it. Double-click a slider to reset
 it.
@@ -29,3 +30,7 @@ it.
 !!! tip
     **Ctrl+Z** undoes every change, including moves and zooms of the view: it doubles as the
     zoom history.
+
+!!! tip
+    No idea where to start? Open *View › Explore lane*: its presets and random fractals are a
+    click away from the view (see *Explore*).
