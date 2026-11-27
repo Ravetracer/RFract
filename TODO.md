@@ -10,7 +10,8 @@ that come up along the way.
       distortion, chromatic aberration, vignette, grain; preview and export agree.
 - [ ] More post: lens flares and god rays from light positions, curves and levels, spectral
       chromatic aberration.
-- [ ] Layer effects: DE-based edge glow (neon), drop shadow, emboss, outer and inner glow.
+- [x] Layer effects: DE-based edge glow (neon), drop shadow, outer and inner glow (emboss:
+      lit layers with brightness heights).
 - [ ] Texture mapping: image textures through coloring coordinates (orbit traps, iteration ×
       angle, Droste), procedural patterns (Perlin, Voronoi, value noise), textures as bumps.
 - [ ] Denoiser (OIDN) for exports, with albedo and normal images where layers have them.

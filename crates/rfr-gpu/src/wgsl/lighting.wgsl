@@ -4,15 +4,60 @@
 // writes the layer's field for the whole image (color in 16-bit fixed point, height), `lit` shades a
 // band from the field with the normals of the neighboring heights and blends it like `main`.
 
-// Per pixel: red and green, blue and alpha (16-bit fixed point, 0 to 1), height (f32 bits), unused.
+// Per pixel: red and green, blue and alpha (16-bit fixed point, 0 to 1), height and distance to
+// the set in pixels (f32 bits).
 @group(0) @binding(7) var<storage, read_write> field: array<vec4<u32>>;
 
-fn l_store(x: u32, y: u32, col: vec4<f32>, h: f32) {
+fn l_store(x: u32, y: u32, col: vec4<f32>, h: f32, de: f32) {
     var hh = h;
     if !(abs(hh) <= 3.4e38) {
         hh = 0.0;
     }
-    field[y * U.size.x + x] = vec4<u32>(pack2x16unorm(col.xy), pack2x16unorm(col.zw), bitcast<u32>(hh), 0u);
+    field[y * U.size.x + x] = vec4<u32>(pack2x16unorm(col.xy), pack2x16unorm(col.zw), bitcast<u32>(hh), bitcast<u32>(de));
+}
+
+// rfr_core::render::light::Field::blurred_alpha
+fn l_blurred_alpha(x: f32, y: f32, sigma: f32, rng: ptr<function, u32>) -> f32 {
+    if sigma < 0.25 {
+        return l_color_at(x, y).w;
+    }
+    var sum = 0.0;
+    for (var i = 0u; i < 16u; i = i + 1u) {
+        let u1 = max(l_rnd(rng), 1e-7);
+        let u2 = l_rnd(rng);
+        let r = sigma * sqrt(-2.0 * log(u1));
+        let a = 6.283185307179586 * u2;
+        sum = sum + l_color_at(x + r * cos(a), y + r * sin(a)).w;
+    }
+    return sum / 16.0;
+}
+
+// rfr_core::render::light::Field::effects
+fn l_effects(c: vec4<f32>, x: f32, y: f32, de: f32, rng: ptr<function, u32>) -> vec4<f32> {
+    var lc = c.xyz;
+    let la = c.w;
+    if U.fx1.z > 0.0 {
+        let ig = clamp(U.fx1.z * (1.0 - l_blurred_alpha(x, y, U.fx1.w, rng)) * la, 0.0, 1.0);
+        lc = lc + (U.fxc[2].xyz - lc) * ig;
+    }
+    if U.fx2.x > 0.0 {
+        lc = lc + U.fxc[3].xyz * (U.fx2.x * exp(-de / U.fx2.y));
+    }
+    var g = 0.0;
+    if U.fx1.x > 0.0 {
+        g = clamp(U.fx1.x * l_blurred_alpha(x, y, U.fx1.y, rng), 0.0, 1.0);
+    }
+    var s = 0.0;
+    if U.fx0.x > 0.0 {
+        s = clamp(U.fx0.x * l_blurred_alpha(x - U.fx0.y, y - U.fx0.z, U.fx0.w, rng), 0.0, 1.0);
+    }
+    let ua = g + s * (1.0 - g);
+    let a = la + ua * (1.0 - la);
+    if a <= 1e-6 {
+        return vec4<f32>(0.0);
+    }
+    let under = U.fxc[1].xyz * g + U.fxc[0].xyz * s * (1.0 - g);
+    return vec4<f32>((lc * la + under * (1.0 - la)) / a, a);
 }
 
 fn l_height(x: i32, y: i32) -> f32 {
@@ -306,8 +351,10 @@ fn lit(@builtin(global_invocation_id) gid: vec3<u32>) {
     var gx: f32;
     var gy: f32;
     var view = vec3<f32>(0.0, 0.0, 1.0);
+    var de = 3.0e38;
     if U.lighti.w == 0u {
         let c = field[y * U.size.x + x];
+        de = bitcast<f32>(c.w);
         color = vec4<f32>(unpack2x16unorm(c.x), unpack2x16unorm(c.y));
         let xi = i32(x);
         let yi = i32(y);
@@ -338,19 +385,28 @@ fn lit(@builtin(global_invocation_id) gid: vec3<u32>) {
         let d = ray[1];
         view = vec3<f32>(-d.x, d.y, -d.z);
     }
-    // Shadows and ambient occlusion (the same random numbers as the CPU).
-    let z0 = k * h0;
-    var seen = array<f32, 4>(1.0, 1.0, 1.0, 1.0);
-    if U.lshadow.x > 0.0 {
-        for (var i = 0u; i < U.lighti.y; i = i + 1u) {
-            seen[i] = l_shadow(U.ldir[i].xyz, px, py, z0, k, U.lshadow.x, U.lshadow.y, l_rnd(&rng));
+    // A lit layer is shaded (shadows and occlusion with the same random numbers as the CPU);
+    // a layer with effects only keeps its colors.
+    var col = color;
+    if U.fx2.z > 0.5 || U.lighti.w != 0u {
+        // Shadows and ambient occlusion (the same random numbers as the CPU).
+        let z0 = k * h0;
+        var seen = array<f32, 4>(1.0, 1.0, 1.0, 1.0);
+        if U.lshadow.x > 0.0 {
+            for (var i = 0u; i < U.lighti.y; i = i + 1u) {
+                seen[i] = l_shadow(U.ldir[i].xyz, px, py, z0, k, U.lshadow.x, U.lshadow.y, l_rnd(&rng));
+            }
         }
+        var open = 1.0;
+        if U.lshadow.z > 0.0 && U.lshadow.w > 0.0 {
+            let turn = l_rnd(&rng);
+            let jitter = l_rnd(&rng);
+            open = l_occlusion(px, py, z0, k, U.lshadow.w, U.lshadow.z, turn, jitter);
+        }
+        col = l_shade(color, gx, gy, seen, open, view);
     }
-    var open = 1.0;
-    if U.lshadow.z > 0.0 && U.lshadow.w > 0.0 {
-        let turn = l_rnd(&rng);
-        let jitter = l_rnd(&rng);
-        open = l_occlusion(px, py, z0, k, U.lshadow.w, U.lshadow.z, turn, jitter);
+    if U.lighti.w == 0u && U.fx2.w > 0.5 {
+        col = l_effects(col, px, py, de, &rng);
     }
-    l_blend(gid, x, l_shade(color, gx, gy, seen, open, view));
+    l_blend(gid, x, col);
 }

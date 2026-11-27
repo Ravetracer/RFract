@@ -97,6 +97,10 @@ struct Uni {
     obj: [f32; 4],
     obji: [u32; 4],
     objc: [f32; 4],
+    fx0: [f32; 4],
+    fx1: [f32; 4],
+    fx2: [f32; 4],
+    fxc: [[f32; 4]; 4],
 }
 
 /// The lighting a layer's shaders use: a lit layer's or a 3D object's.
@@ -282,6 +286,23 @@ fn layer_uni(plan: &Plan, lp: &LayerPlan) -> Uni {
         obj: lp.object.as_ref().map_or([0.0; 4], |o| [o.power, o.scale, o.detail, o.bound()]),
         obji: lp.object.as_ref().map_or([0; 4], |o| [o.shape.index(), o.iterations, o.julia as u32, 0]),
         objc: lp.object.as_ref().map_or([0.0; 4], |o| o.seed),
+        // Layer effects in pixels.
+        fx0: lp.light.as_ref().and_then(|l| l.fx.as_ref()).map_or([0.0; 4], |e| {
+            let h = f.height as f32;
+            [e.shadow, e.shadow_offset[0] * h, e.shadow_offset[1] * h, e.shadow_size * h]
+        }),
+        fx1: lp.light.as_ref().and_then(|l| l.fx.as_ref()).map_or([0.0; 4], |e| {
+            let h = f.height as f32;
+            [e.glow, e.glow_size * h, e.inner, e.inner_size * h]
+        }),
+        fx2: lp.light.as_ref().map_or([0.0; 4], |l| {
+            let (neon, width) = l.fx.as_ref().map_or((0.0, 1.0), |e| (e.neon, e.neon_width * f.height as f32 / 1000.0));
+            [neon, width, l.shading as u32 as f32, l.fx.is_some() as u32 as f32]
+        }),
+        fxc: lp.light.as_ref().and_then(|l| l.fx.as_ref()).map_or([[0.0; 4]; 4], |e| {
+            let c = |v: [f32; 3]| [v[0], v[1], v[2], 0.0];
+            [c(e.shadow_color), c(e.glow_color), c(e.inner_color), c(e.neon_color)]
+        }),
     }
 }
 

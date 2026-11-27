@@ -72,6 +72,14 @@ struct Uni {
     obji: vec4<u32>,
     // Julia seed (x, y, z, w)
     objc: vec4<f32>,
+    // Layer effects (lighting.wgsl): shadow opacity, offset x, y and blur (pixels)
+    fx0: vec4<f32>,
+    // outer glow strength, blur (pixels), inner glow strength, blur (pixels)
+    fx1: vec4<f32>,
+    // neon strength, width (pixels), shading on, effects on
+    fx2: vec4<f32>,
+    // colors of the shadow, the outer and inner glow and the neon
+    fxc: array<vec4<f32>, 4>,
 }
 
 struct Params {
@@ -381,6 +389,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 //@TRANSFORMS
     var col = vec4<f32>(0.0);
     var hgt = 0.0;
+    var fde = 3.0e38;
     if !tsolid {
         var cval = pixel;
         if !ismand {

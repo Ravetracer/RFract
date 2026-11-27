@@ -799,6 +799,13 @@ pub fn kernel(lp: &LayerPlan, mode: Mode) -> String {
     let (height, field, lighting) = if lp.light.is_some() {
         (
             concat!(
+                "        if escaped {\n",
+                "            let r2f = norm2(zv);\n",
+                "            if r2f > 4.0 && dzv > 0.0 && dzv <= 3.4e38 {\n",
+                "                let rf = sqrt(r2f);\n",
+                "                fde = max(rf * log(rf) / dzv / U.rot.z, 0.0);\n",
+                "            }\n",
+                "        }\n",
                 "        if U.lighti.x == 0u {\n",
                 "            if escaped {\n",
                 "                hgt = log(1.0 + max(smooth_iter(zv, zpv, zp2v, iter), 0.0));\n",
@@ -820,7 +827,7 @@ pub fn kernel(lp: &LayerPlan, mode: Mode) -> String {
                 "        hgt = dot(col.xyz, vec3<f32>(0.2126, 0.7152, 0.0722)) * col.w;\n",
                 "    }\n",
                 "    if U.band.y == 2u {\n",
-                "        l_store(x, y, col, hgt);\n",
+                "        l_store(x, y, col, hgt, fde);\n",
                 "        return;\n",
                 "    }",
             ),

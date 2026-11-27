@@ -231,7 +231,16 @@ impl LayerPlan {
             outside: ColorPlan::outside(l.outside_method, &l.outside).map_err(|e| format!("{}: {e}", l.name))?,
             inside: ColorPlan::inside(l.inside_method, &l.inside).map_err(|e| format!("{}: {e}", l.name))?,
             density: (l.kind == LayerKind::Density).then(|| l.density.clone()),
-            light: (l.light.enabled && l.kind == LayerKind::Fractal).then(|| light::LightPlan::new(&l.light)),
+            // A layer gets a field when it is lit or has effects (effects only in 2D).
+            light: (l.kind == LayerKind::Fractal && (l.light.enabled || l.effects.active())).then(|| {
+                let mut p = light::LightPlan::new(&l.light);
+                p.shading = l.light.enabled;
+                if !l.light.enabled {
+                    p.camera = None;
+                }
+                p.fx = (l.effects.active() && p.camera.is_none()).then(|| light::FxPlan::new(&l.effects));
+                p
+            }),
             object: (l.kind == LayerKind::Object).then(|| object::ObjectPlan::new(&l.object, &l.light)),
             fractal,
         })
@@ -239,7 +248,11 @@ impl LayerPlan {
 
     /// The outside coloring or the lighting needs the orbit's derivative (distance estimation).
     pub fn needs_derivative(&self) -> bool {
-        matches!(self.outside.method, ColorMethod::Distance) || self.light.as_ref().is_some_and(|l| l.source == crate::doc::HeightSource::Distance)
+        matches!(self.outside.method, ColorMethod::Distance)
+            || self
+                .light
+                .as_ref()
+                .is_some_and(|l| (l.shading && l.source == crate::doc::HeightSource::Distance) || l.fx.as_ref().is_some_and(|f| f.neon > 0.0))
     }
 }
 

@@ -10,6 +10,8 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
   (Reinhard, ACES, filmic, AgX), contrast, saturation, white balance, split toning, bloom,
   streaks, sharpening, lens distortion, chromatic aberration, vignette and film grain; the
   preview (GPU) and the export (GPU or CPU, command line) show the same.
+- Layer effects (inspector section *Layer effects*): drop shadow, outer glow, inner glow and
+  neon edges by distance estimation, on the GPU and the CPU.
 
 ## [0.7.0] - 2026-11-27
 

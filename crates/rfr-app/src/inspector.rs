@@ -655,6 +655,77 @@ fn fractal_sections(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
         });
     }
     lighting_section(ui, l);
+    layer_effects_section(ui, l);
+}
+
+/// Effects of a fractal layer: drop shadow, outer and inner glow, neon edges.
+fn layer_effects_section(ui: &mut Ui, l: &mut Layer) {
+    use rfr_core::doc::LayerEffects;
+    let sec = widgets::section(ui, "Layer effects", true);
+    if sec.reset {
+        l.effects = LayerEffects::default();
+    }
+    if !sec.open {
+        return;
+    }
+    if l.light.enabled && l.light.terrain {
+        ui.label(RichText::new("Layer effects apply to flat layers, not to 3D terrains.").color(theme::TEXT_MUTED));
+        return;
+    }
+    let e = &mut l.effects;
+    let d = LayerEffects::default();
+    widgets::grid(ui, "layer-fx", |ui| {
+        widgets::slider(ui, "Drop shadow", "Opacity of a shadow the layer casts on the layers below (0: off)", &mut e.shadow, 0.0..=1.0, d.shadow);
+        if e.shadow > 0.0 {
+            widgets::slider(
+                ui,
+                "Shadow distance",
+                "How far the shadow falls, as a share of the image height",
+                &mut e.shadow_distance,
+                0.0..=0.2,
+                d.shadow_distance,
+            );
+            widgets::slider(
+                ui,
+                "Shadow direction",
+                "Where the shadow falls, in degrees counterclockwise (315: lower right)",
+                &mut e.shadow_angle,
+                0.0..=360.0,
+                d.shadow_angle,
+            );
+            widgets::slider(
+                ui,
+                "Shadow blur",
+                "Softness of the shadow, as a share of the image height",
+                &mut e.shadow_size,
+                0.0..=0.1,
+                d.shadow_size,
+            );
+            widgets::color(ui, "Shadow color", "Color of the shadow", &mut e.shadow_color);
+        }
+        widgets::slider(ui, "Outer glow", "Light around the layer's shapes, over the layers below (0: off)", &mut e.glow, 0.0..=3.0, d.glow);
+        if e.glow > 0.0 {
+            widgets::slider(ui, "Glow size", "How far the glow reaches, as a share of the image height", &mut e.glow_size, 0.001..=0.2, d.glow_size);
+            widgets::color(ui, "Glow color", "Color of the outer glow", &mut e.glow_color);
+        }
+        widgets::slider(ui, "Inner glow", "Light along the inside of the layer's edges (0: off)", &mut e.inner_glow, 0.0..=3.0, d.inner_glow);
+        if e.inner_glow > 0.0 {
+            widgets::slider(ui, "Inner glow size", "How far the inner glow reaches into the shapes", &mut e.inner_size, 0.001..=0.2, d.inner_size);
+            widgets::color(ui, "Inner glow color", "Color of the inner glow", &mut e.inner_color);
+        }
+        widgets::slider(ui, "Neon", "Light along the outside of the set, by the distance estimate (0: off)", &mut e.neon, 0.0..=5.0, d.neon);
+        if e.neon > 0.0 {
+            widgets::slider_log(
+                ui,
+                "Neon width",
+                "Width of the neon light in pixels (at 1000 pixels image height)",
+                &mut e.neon_width,
+                0.2..=100.0,
+                d.neon_width,
+            );
+            widgets::color(ui, "Neon color", "Color of the neon light", &mut e.neon_color);
+        }
+    });
 }
 
 /// Lighting of a layer as a height field: height source, relief, lights, highlights.

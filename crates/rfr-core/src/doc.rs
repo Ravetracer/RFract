@@ -927,6 +927,60 @@ pub struct Layer {
     pub light: Lighting,
     /// 3D object layers: the shape and its camera.
     pub object: Object3D,
+    /// Effects of the layer: shadow, glows, neon edges.
+    pub effects: LayerEffects,
+}
+
+/// Effects of a layer, each off at 0: a drop shadow (opacity, distance and blur as shares of
+/// the image height, direction in degrees counterclockwise, color), an outer glow and an inner
+/// glow (strength, size, color) from the layer's alpha, and neon edges: light along the
+/// outside of the set by the distance estimate (strength, width in pixels at 1000 pixels
+/// image height, color).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LayerEffects {
+    pub shadow: f64,
+    pub shadow_distance: f64,
+    pub shadow_angle: f64,
+    pub shadow_size: f64,
+    pub shadow_color: [f32; 3],
+    pub glow: f64,
+    pub glow_size: f64,
+    pub glow_color: [f32; 3],
+    pub inner_glow: f64,
+    pub inner_size: f64,
+    pub inner_color: [f32; 3],
+    pub neon: f64,
+    pub neon_width: f64,
+    pub neon_color: [f32; 3],
+}
+
+impl Default for LayerEffects {
+    fn default() -> Self {
+        LayerEffects {
+            shadow: 0.0,
+            shadow_distance: 0.01,
+            shadow_angle: 315.0,
+            shadow_size: 0.01,
+            shadow_color: [0.0, 0.0, 0.0],
+            glow: 0.0,
+            glow_size: 0.02,
+            glow_color: [1.0, 0.8, 0.4],
+            inner_glow: 0.0,
+            inner_size: 0.01,
+            inner_color: [1.0, 1.0, 1.0],
+            neon: 0.0,
+            neon_width: 4.0,
+            neon_color: [0.3, 0.8, 1.0],
+        }
+    }
+}
+
+impl LayerEffects {
+    /// Whether any effect is on.
+    pub fn active(&self) -> bool {
+        self.shadow > 0.0 || self.glow > 0.0 || self.inner_glow > 0.0 || self.neon > 0.0
+    }
 }
 
 impl Default for Layer {
@@ -952,6 +1006,7 @@ impl Default for Layer {
             density: Density::default(),
             light: Lighting::default(),
             object: Object3D::default(),
+            effects: LayerEffects::default(),
         }
     }
 }

@@ -61,7 +61,7 @@ impl<S: Scalar + Send + Sync + 'static> LayerK<S> {
 
     /// Color (linear RGB, straight alpha) of the layer at plane point `p` of pixel `pix`
     /// (x, y, sample index), and its height when the layer is lit (else 0).
-    fn eval(&self, f: &mut LayerF<S>, lp: &LayerPlan, plan: &Plan, mut p: Cx<S>, d: Cfx, pix: (u32, u32, u32)) -> ([f32; 4], f32) {
+    fn eval(&self, f: &mut LayerF<S>, lp: &LayerPlan, plan: &Plan, mut p: Cx<S>, d: Cfx, pix: (u32, u32, u32)) -> ([f32; 4], [f32; 2]) {
         // Screen values and one random stream per program (kernel.wgsl seeds the same way).
         let base = super::hash(pix.0 ^ super::hash(pix.1 ^ super::hash(pix.2.wrapping_add(0x9E37_79B9))));
         let screen = |fr: &mut Frame<S>, tag: u32| {
@@ -85,7 +85,7 @@ impl<S: Scalar + Send + Sync + 'static> LayerK<S> {
         for (t, tf) in self.transforms.iter().zip(f.transforms.iter_mut()) {
             let (q, solid) = t.transform(tf, p);
             if solid {
-                return ([0.0; 4], 0.0);
+                return ([0.0; 4], [0.0, 3.0e38]);
             }
             p = q;
         }
@@ -149,12 +149,13 @@ impl<S: Scalar + Send + Sync + 'static> LayerK<S> {
                 (shade_native(region, &r, plan.frame.pixel_size()), value)
             }
         };
-        let height = lp.light.as_ref().map_or(0.0, |l| {
+        // Lit layers and layers with effects: the height and the distance to the set in pixels.
+        let field = lp.light.as_ref().map_or([0.0, 3.0e38], |l| {
             let smooth = if o.escaped { smooth_iter(&r) } else { maxit as f64 };
             let distance = if l.source == crate::doc::HeightSource::Distance { light::distance_height(&r, plan.frame.pixel_size()) } else { 0.0 };
-            light::height(l.source, smooth, value, distance, color)
+            [light::height(l.source, smooth, value, distance, color), light::distance_px(&r, plan.frame.pixel_size())]
         });
-        (color, height)
+        (color, field)
     }
 }
 
@@ -224,17 +225,17 @@ impl Kernel {
     /// The layer's color at plane point `p` and its height (lit layers); `turn` is the
     /// derivative's direction (a turn). `at`: the sample's plane point and its offset from the
     /// view center (deep zooms).
-    fn eval(&self, f: &mut KernelF, lp: &LayerPlan, plan: &Plan, at: (C64, Cfx), turn: f64, pix: (u32, u32, u32)) -> ([f32; 4], f32) {
+    fn eval(&self, f: &mut KernelF, lp: &LayerPlan, plan: &Plan, at: (C64, Cfx), turn: f64, pix: (u32, u32, u32)) -> ([f32; 4], [f32; 2]) {
         let (p, d) = at;
         if let Kernel::Density(k) = self {
-            return (lp.density.as_ref().map_or([0.0; 4], |dn| density::color(lp, dn, &k.hist, pix.0, pix.1)), 0.0);
+            return (lp.density.as_ref().map_or([0.0; 4], |dn| density::color(lp, dn, &k.hist, pix.0, pix.1)), [0.0, 3.0e38]);
         }
         if let (Kernel::Object, Some(o)) = (self, &lp.object) {
             // The camera ray through the sample position (the same as the plane point's).
             let (u, v, _) = sample_offset(pix.0, pix.1, pix.2);
             let (x, y) = (pix.0 as f32 + u as f32, pix.1 as f32 + v as f32);
             let rng = super::hash(pix.0 ^ super::hash(pix.1 ^ super::hash(pix.2 ^ 0x3C6E_F372)));
-            return (o.shade(plan.frame.width, plan.frame.height, x, y, |t| lp.outside.color(t), rng), 0.0);
+            return (o.shade(plan.frame.width, plan.frame.height, x, y, |t| lp.outside.color(t), rng), [0.0, 3.0e38]);
         }
         match (self, f) {
             (Kernel::Plain(k), KernelF::Plain(f)) => k.eval(f, lp, plan, p, d, pix),
@@ -376,7 +377,7 @@ impl CpuRenderer {
                 fields.push(None);
                 continue;
             }
-            let mut data = vec![[0.0f32; 5]; (w * h) as usize];
+            let mut data = vec![[0.0f32; 6]; (w * h) as usize];
             let proto = k.frames();
             let plan = &self.plan;
             data.par_chunks_mut(w as usize).enumerate().for_each_init(
@@ -385,10 +386,10 @@ impl CpuRenderer {
                     for (x, out) in row.iter_mut().enumerate() {
                         let (px, py) = (x as f64 + u, y as f64 + v);
                         let at = (plan.frame.plane(px, py), plan.frame.offset_fx(px, py));
-                        let (c, hgt) = k.eval(f, lp, plan, at, turn, (x as u32, y as u32, s));
+                        let (c, [hgt, de]) = k.eval(f, lp, plan, at, turn, (x as u32, y as u32, s));
                         // Colors from 0 to 1 (the GPU keeps them in 16-bit fixed point).
                         let k = |v: f32| v.clamp(0.0, 1.0);
-                        *out = [k(c[0]), k(c[1]), k(c[2]), k(c[3]), hgt];
+                        *out = [k(c[0]), k(c[1]), k(c[2]), k(c[3]), hgt, de];
                     }
                 },
             );

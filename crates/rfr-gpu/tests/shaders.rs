@@ -201,6 +201,27 @@ fn gpu_matches_the_cpu_renderer() {
         l.shadows = true;
         l.camera.yaw = 30.0;
         cases.push(("lit terrain".into(), ter));
+        // Layer effects: the set alone (outside transparent) with a shadow and glows, and neon
+        // edges on a plain Mandelbrot.
+        use rfr_core::doc::{LayerEffects, OutsideMethod};
+        let mut fx = Document::for_formula("rfract:Mandelbrot");
+        fx.image.background = [0.1, 0.1, 0.15, 1.0];
+        fx.layers[0].outside_method = OutsideMethod::Solid;
+        fx.layers[0].outside.solid_alpha = 0.0;
+        fx.layers[0].inside.solid = [0.8, 0.5, 0.2];
+        fx.layers[0].effects = LayerEffects {
+            shadow: 0.8,
+            shadow_distance: 0.03,
+            shadow_size: 0.02,
+            glow: 0.8,
+            glow_size: 0.03,
+            inner_glow: 0.7,
+            ..LayerEffects::default()
+        };
+        cases.push(("effects shadow glow".into(), fx));
+        let mut neon = Document::for_formula("rfract:Mandelbrot");
+        neon.layers[0].effects = LayerEffects { neon: 1.5, ..LayerEffects::default() };
+        cases.push(("effects neon".into(), neon));
         // 3D objects: every shape, with shadows and occlusion.
         use rfr_core::doc::{LayerKind, ObjectShape};
         for (shape, dist) in

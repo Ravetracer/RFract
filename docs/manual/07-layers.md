@@ -111,6 +111,24 @@ The image gets sharper with every pass. While the counts fill up, the accumulate
 over each time the passes double, so early passes do not stay in it. New density layers merge
 with *Screen*, so their light adds to the layers below.
 
+## Layer effects
+
+The *Layer effects* section of a fractal layer adds light and shadow around its shapes; they
+work best on layers with transparent parts (for example the set alone, with the outside
+colored *Solid* at opacity 0).
+
+- **Drop shadow**: the layer casts a shadow on the layers below: *distance* and *blur* as
+  shares of the image height, *direction* in degrees (315: toward the lower right), color.
+- **Outer glow**: light around the shapes, over the layers below.
+- **Inner glow**: light along the inside of the edges.
+- **Neon**: light along the outside of the set, by its estimated distance (the layer then
+  computes derivatives, like the *Distance* coloring); *Neon width* in pixels at 1000 pixels
+  image height.
+
+Shadows and glows are estimated from a few samples per pixel and get smoother with every
+pass. For an embossed look, light the layer with heights from *Brightness* (see *Coloring ›
+Lighting*). Layer effects do not apply to 3D terrains.
+
 ## 3D objects
 
 A **3D object** layer (the cube button above the layer list) shows a three-dimensional

@@ -47,7 +47,56 @@ pub struct LightPlan {
     /// 3D terrain: the camera's direction and pitch (radians), distance (image heights) and
     /// tan(vertical field of view / 2).
     pub camera: Option<[f32; 4]>,
+    /// Whether the layer is lit (else a layer with effects keeps its colors).
+    pub shading: bool,
+    /// The layer's effects (2D layers only).
+    pub fx: Option<FxPlan>,
 }
+
+/// A layer's effects, resolved for rendering (sizes as shares of the image height).
+#[derive(Clone, Debug)]
+pub struct FxPlan {
+    pub shadow: f32,
+    /// Shadow offset (x right, y down), blur.
+    pub shadow_offset: [f32; 2],
+    pub shadow_size: f32,
+    pub shadow_color: [f32; 3],
+    pub glow: f32,
+    pub glow_size: f32,
+    pub glow_color: [f32; 3],
+    pub inner: f32,
+    pub inner_size: f32,
+    pub inner_color: [f32; 3],
+    pub neon: f32,
+    /// Neon width in pixels at 1000 pixels image height.
+    pub neon_width: f32,
+    pub neon_color: [f32; 3],
+}
+
+impl FxPlan {
+    pub fn new(e: &crate::doc::LayerEffects) -> FxPlan {
+        let a = e.shadow_angle.to_radians();
+        let d = e.shadow_distance as f32;
+        FxPlan {
+            shadow: e.shadow.clamp(0.0, 1.0) as f32,
+            shadow_offset: [d * a.cos() as f32, -d * a.sin() as f32],
+            shadow_size: e.shadow_size.max(0.0) as f32,
+            shadow_color: e.shadow_color,
+            glow: e.glow.max(0.0) as f32,
+            glow_size: e.glow_size.max(0.0) as f32,
+            glow_color: e.glow_color,
+            inner: e.inner_glow.max(0.0) as f32,
+            inner_size: e.inner_size.max(0.0) as f32,
+            inner_color: e.inner_color,
+            neon: e.neon.max(0.0) as f32,
+            neon_width: e.neon_width.max(0.01) as f32,
+            neon_color: e.neon_color,
+        }
+    }
+}
+
+/// Samples per blurred alpha of an effect (and pass).
+pub const FX_SAMPLES: u32 = 16;
 
 impl LightPlan {
     pub fn new(l: &Lighting) -> LightPlan {
@@ -78,6 +127,8 @@ impl LightPlan {
             environment: if l.reflection > 0.0 { crate::images::get(&l.environment) } else { None },
             horizon: l.horizon,
             zenith: l.zenith,
+            shading: true,
+            fx: None,
             camera: l.terrain.then(|| {
                 let c = &l.camera;
                 [
@@ -118,6 +169,17 @@ impl LightPlan {
 /// Luminance of a linear color, times its alpha.
 pub fn luminance(c: [f32; 4]) -> f32 {
     (0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]) * c[3]
+}
+
+/// The distance estimate in pixels for escaped orbits with a derivative, else very far.
+pub fn distance_px(o: &OrbitResult, pixel_size: f64) -> f32 {
+    let r2 = o.z.norm();
+    if o.escaped && r2 > 4.0 && o.dz > 0.0 && o.dz.is_finite() {
+        let r = r2.sqrt();
+        ((r * r.ln() / o.dz / pixel_size).max(0.0)) as f32
+    } else {
+        3.0e38
+    }
 }
 
 /// The height by distance estimation: −ln(1 + distance / pixel size) for escaped orbits with
@@ -218,7 +280,7 @@ pub fn shade_normal(l: &LightPlan, color: [f32; 4], n: [f32; 3], light_seen: &[f
 pub struct Field {
     pub width: u32,
     pub height: u32,
-    pub data: Vec<[f32; 5]>,
+    pub data: Vec<[f32; 6]>,
     /// 3D terrain: the highest surface point (k · height) per cell, level 0 cells spanning
     /// pixel centers (x, y) to (x + 1, y + 1), each level halving the cells (see [`mip_sizes`]).
     pub mips: Vec<Vec<f32>>,
@@ -278,7 +340,7 @@ pub fn rnd(state: &mut u32) -> f32 {
 
 impl Field {
     /// A field; for a 3D terrain with its height maxima.
-    pub fn new(l: &LightPlan, width: u32, height: u32, data: Vec<[f32; 5]>) -> Field {
+    pub fn new(l: &LightPlan, width: u32, height: u32, data: Vec<[f32; 6]>) -> Field {
         let mut f = Field { width, height, data, mips: Vec::new() };
         if l.camera.is_some() {
             let k = l.slope_scale(height);
@@ -306,7 +368,7 @@ impl Field {
         f
     }
 
-    fn at(&self, x: i64, y: i64) -> [f32; 5] {
+    fn at(&self, x: i64, y: i64) -> [f32; 6] {
         let (w, h) = (self.width as i64, self.height as i64);
         self.data[(y.clamp(0, h - 1) * w + x.clamp(0, w - 1)) as usize]
     }
@@ -345,7 +407,12 @@ impl Field {
             let c = self.at(xi, yi);
             let gx = (self.at(xi + 1, yi)[4] - self.at(xi - 1, yi)[4]) * 0.5;
             let gy = (self.at(xi, yi - 1)[4] - self.at(xi, yi + 1)[4]) * 0.5;
-            return self.shade_point(l, [c[0], c[1], c[2], c[3]], x as f32, y as f32, c[4], gx, gy, [0.0, 0.0, 1.0], &mut rng);
+            let color = [c[0], c[1], c[2], c[3]];
+            let base = if l.shading { self.shade_point(l, color, x as f32, y as f32, c[4], gx, gy, [0.0, 0.0, 1.0], &mut rng) } else { color };
+            return match &l.fx {
+                Some(fx) => self.effects(fx, base, x as f32, y as f32, c[5], &mut rng),
+                None => base,
+            };
         };
         let (u, v, _) = super::sample_offset(x, y, s);
         let (o, d) = camera_ray(
@@ -381,6 +448,63 @@ impl Field {
         let radius = l.occlusion_radius * self.height as f32;
         let open = if l.occlusion > 0.0 && radius > 0.0 { self.occlusion(px, py, z0, k, radius, l.occlusion, rnd(rng), rnd(rng)) } else { 1.0 };
         shade(l, color, gx, gy, k, &seen, open, v)
+    }
+
+    /// The layer's alpha blurred with a Gaussian of `sigma` pixels around (x, y), estimated from
+    /// [`FX_SAMPLES`] random samples.
+    fn blurred_alpha(&self, x: f32, y: f32, sigma: f32, rng: &mut u32) -> f32 {
+        if sigma < 0.25 {
+            return self.color_at(x, y)[3];
+        }
+        let mut sum = 0.0;
+        for _ in 0..FX_SAMPLES {
+            let (u1, u2) = (rnd(rng).max(1e-7), rnd(rng));
+            let r = sigma * (-2.0 * u1.ln()).sqrt();
+            let a = std::f32::consts::TAU * u2;
+            sum += self.color_at(x + r * a.cos(), y + r * a.sin())[3];
+        }
+        sum / FX_SAMPLES as f32
+    }
+
+    /// The layer's effects on `c` (straight color) at pixel (x, y) with the distance `de` (in
+    /// pixels) to the set: inner glow and neon on the layer, then the layer over its outer glow
+    /// and shadow.
+    fn effects(&self, fx: &FxPlan, c: [f32; 4], x: f32, y: f32, de: f32, rng: &mut u32) -> [f32; 4] {
+        let h = self.height as f32;
+        let mut lc = [c[0], c[1], c[2]];
+        let la = c[3];
+        if fx.inner > 0.0 {
+            let ig = (fx.inner * (1.0 - self.blurred_alpha(x, y, fx.inner_size * h, rng)) * la).clamp(0.0, 1.0);
+            for (v, t) in lc.iter_mut().zip(fx.inner_color) {
+                *v += (t - *v) * ig;
+            }
+        }
+        if fx.neon > 0.0 {
+            let n = fx.neon * (-de / (fx.neon_width * h / 1000.0)).exp();
+            for (v, t) in lc.iter_mut().zip(fx.neon_color) {
+                *v += t * n;
+            }
+        }
+        let g = if fx.glow > 0.0 { (fx.glow * self.blurred_alpha(x, y, fx.glow_size * h, rng)).clamp(0.0, 1.0) } else { 0.0 };
+        let s = if fx.shadow > 0.0 {
+            let (ox, oy) = (fx.shadow_offset[0] * h, fx.shadow_offset[1] * h);
+            (fx.shadow * self.blurred_alpha(x - ox, y - oy, fx.shadow_size * h, rng)).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        // Glow over shadow, then the layer over both (straight colors).
+        let ua = g + s * (1.0 - g);
+        let a = la + ua * (1.0 - la);
+        if a <= 1e-6 {
+            return [0.0; 4];
+        }
+        let mut out = [0.0; 4];
+        for k in 0..3 {
+            let under = fx.glow_color[k] * g + fx.shadow_color[k] * s * (1.0 - g);
+            out[k] = (lc[k] * la + under * (1.0 - la)) / a;
+        }
+        out[3] = a;
+        out
     }
 
     fn mip(&self, level: usize, x: i64, y: i64) -> f32 {
@@ -575,7 +699,7 @@ mod tests {
     fn field_gradients_follow_the_heights() {
         // Heights rise to the right: the normal leans left, away from a light on the right.
         let (w, h) = (5u32, 4u32);
-        let data = (0..w * h).map(|i| [0.5, 0.5, 0.5, 1.0, (i % w) as f32 * 0.01]).collect();
+        let data = (0..w * h).map(|i| [0.5, 0.5, 0.5, 1.0, (i % w) as f32 * 0.01, 3.0e38]).collect();
         let f = Field { width: w, height: h, data, mips: Vec::new() };
         let l = plan(SpecularModel::Ggx);
         let lit = f.shade(&l, 2, 2, 0);
@@ -587,7 +711,7 @@ mod tests {
     fn walls_cast_shadows_and_pits_are_occluded() {
         // Flat ground with a wall at x = 10..12, light from the left (azimuth 180°), low.
         let (w, h) = (40u32, 20u32);
-        let data = (0..w * h).map(|i| [0.5, 0.5, 0.5, 1.0, if (10..12).contains(&(i % w)) { 0.05 } else { 0.0 }]).collect();
+        let data = (0..w * h).map(|i| [0.5, 0.5, 0.5, 1.0, if (10..12).contains(&(i % w)) { 0.05 } else { 0.0 }, 3.0e38]).collect();
         let f = Field { width: w, height: h, data, mips: Vec::new() };
         let mut lighting = Lighting { enabled: true, shadows: true, softness: 0.0, ..Lighting::default() };
         lighting.lights = vec![Light { azimuth: 180.0, elevation: 20.0, ..Light::default() }];
@@ -603,5 +727,41 @@ mod tests {
         let near = f.shade(&ao, 13, 10, 0);
         let far = f.shade(&ao, 30, 10, 0);
         assert!(near[0] < far[0], "occlusion near the wall: {near:?} vs {far:?}");
+    }
+
+    #[test]
+    fn effects_shadow_glow_and_inner_glow() {
+        // An opaque square in the middle of a transparent field.
+        let (w, h) = (60u32, 60u32);
+        let inside = |i: u32| (20..40).contains(&(i % w)) && (20..40).contains(&(i / w));
+        let data = (0..w * h).map(|i| if inside(i) { [0.5, 0.5, 0.5, 1.0, 0.0, 3.0e38] } else { [0.0; 6] }).collect();
+        let f = Field { width: w, height: h, data, mips: Vec::new() };
+        let shade = |e: crate::doc::LayerEffects, x: u32, y: u32| {
+            let mut l = LightPlan::new(&Lighting::default());
+            l.shading = false;
+            l.fx = Some(FxPlan::new(&e));
+            // Average over passes, like the renderer.
+            let n = 64;
+            let mut s = [0.0f32; 4];
+            for p in 0..n {
+                let c = f.shade(&l, x, y, p);
+                for k in 0..4 {
+                    s[k] += c[k] / n as f32;
+                }
+            }
+            s
+        };
+        use crate::doc::LayerEffects;
+        // Drop shadow toward the lower right (315°): dark and opaque there, nothing to the upper left.
+        let sh = LayerEffects { shadow: 1.0, shadow_distance: 0.1, shadow_size: 0.01, ..LayerEffects::default() };
+        assert!(shade(sh.clone(), 42, 42)[3] > 0.5, "{:?}", shade(sh.clone(), 42, 42));
+        assert!(shade(sh.clone(), 17, 17)[3] < 0.05);
+        // Outer glow around the square, fading with the distance.
+        let gl = LayerEffects { glow: 1.0, glow_size: 0.03, ..LayerEffects::default() };
+        let (near, far) = (shade(gl.clone(), 41, 30)[3], shade(gl.clone(), 50, 30)[3]);
+        assert!(near > far && near > 0.2, "{near} {far}");
+        // Inner glow: brighter at the square's edge than in its middle.
+        let ig = LayerEffects { inner_glow: 1.0, inner_size: 0.03, ..LayerEffects::default() };
+        assert!(shade(ig.clone(), 21, 30)[0] > shade(ig, 30, 30)[0] + 0.05);
     }
 }
