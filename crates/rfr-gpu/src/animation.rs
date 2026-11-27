@@ -111,7 +111,7 @@ impl FrameRenderer {
         } else {
             None
         };
-        Ok(rfr_core::render::post::finish_export(lin, width, height, &doc.post, aux.as_ref()))
+        Ok(rfr_core::render::post::finish_export(lin, width, height, &doc, aux.as_ref()))
     }
 }
 
@@ -127,7 +127,7 @@ impl FrameRenderer {
             }
             None => None,
         };
-        Ok(rfr_core::render::post::finish_export(lin, width, height, &doc.post, aux.as_ref()))
+        Ok(rfr_core::render::post::finish_export(lin, width, height, doc, aux.as_ref()))
     }
 }
 
@@ -259,6 +259,6 @@ impl ZoomSequence {
         }
         let k = 1.0 / subs as f32;
         let lin: Vec<[f32; 4]> = acc.unwrap_or_default().into_iter().map(|a| rfr_core::render::cpu::unpremultiply(a, k)).collect();
-        Ok(rfr_core::render::post::finish_export(lin, self.width, self.height, &self.path.doc.post, None))
+        Ok(rfr_core::render::post::finish_export(lin, self.width, self.height, &self.path.doc, None))
     }
 }

@@ -20,6 +20,14 @@ Open points of the earlier stages (their notes below stay for the details).
 - [x] Automatic iteration count: layer flag `auto_iterations`, app probes after the view
       settles (`render/iterations.rs`, 192 px CPU probe, doubles while >1 % escape in the
       second half and some stay inside; never lowers).
+- [x] Light sources (from RMandelbulb3D): document lights (`doc.lights`, exact plane
+      positions), visible glow (2D shapes), lens flares with presets (`flare.rs`, ported),
+      CPU image added as glow (`post::Glow::with_lights`, GPU: `levels` region 5 at
+      `post::light_size`), inspector section, gizmos (drag, select), keyframes interpolate
+      positions. The threshold flare of the effects is gone.
+- [ ] Light sources, part 2: point lighting of lit layers by the document lights (`height`),
+      lights in terrain and 3D object views (projection through the camera, occlusion),
+      ghost list editor; posters use the light image at the glow size (soft at 20k).
 - [ ] Location bookmarks.
 - [ ] Histogram coloring.
 - [ ] Post-transformations.

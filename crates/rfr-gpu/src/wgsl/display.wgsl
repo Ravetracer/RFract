@@ -32,7 +32,7 @@ struct Disp {
     // god rays: strength, light position x, y, length; their bright light
     rays: vec4<f32>,
     rays_lv: vec4<u32>,
-    // lens flares: strength, ghosts, dispersal, halo radius; their bright light
+    // light sources (glows, lens flares; rfr_core::flare): on (1), unused…; their image
     flare: vec4<f32>,
     flare_lv: vec4<u32>,
 }
@@ -104,41 +104,6 @@ fn god_rays(u: f32, v: f32) -> vec3<f32> {
     return s / wsum * D.rays.x;
 }
 
-fn flare_falloff(x: f32, y: f32, p: f32) -> f32 {
-    return pow(max(1.0 - length(vec2<f32>(0.5 - x, 0.5 - y)) / 0.70710677, 0.0), p);
-}
-
-// post::ghost_tint
-fn ghost_tint(i: u32, n: u32) -> vec3<f32> {
-    let h = f32(i) / f32(max(n, 1u));
-    let t = 6.283185307179586;
-    return vec3<f32>(0.5 + 0.5 * cos(t * h), 0.5 + 0.5 * cos(t * (h - 1.0 / 3.0)), 0.5 + 0.5 * cos(t * (h - 2.0 / 3.0)));
-}
-
-// post::lens_flare
-fn lens_flare(u: f32, v: f32) -> vec3<f32> {
-    let fu = 1.0 - u;
-    let fv = 1.0 - v;
-    let g = vec2<f32>(0.5 - fu, 0.5 - fv) * D.flare.z;
-    var s = vec3<f32>(0.0);
-    let n = u32(D.flare.y);
-    for (var i = 0u; i < n; i = i + 1u) {
-        let o = vec2<f32>(fu, fv) + g * f32(i);
-        if o.x < 0.0 || o.x > 1.0 || o.y < 0.0 || o.y > 1.0 {
-            continue;
-        }
-        s = s + level_sample(D.flare_lv, o.x, o.y) * flare_falloff(o.x, o.y, 10.0) * ghost_tint(i, n);
-    }
-    let gl = length(g);
-    if gl > 1e-6 {
-        let o = vec2<f32>(fu, fv) + g / gl * D.flare.w;
-        if o.x >= 0.0 && o.x <= 1.0 && o.y >= 0.0 && o.y <= 1.0 {
-            s = s + level_sample(D.flare_lv, o.x, o.y) * flare_falloff(o.x, o.y, 5.0);
-        }
-    }
-    return s * D.flare.x;
-}
-
 // Sharpened light plus glow (post::apply `mid`).
 fn mid(x: u32, y: u32) -> vec4<f32> {
     let c = pre(x, y);
@@ -170,7 +135,7 @@ fn mid(x: u32, y: u32) -> vec4<f32> {
         glow = glow + god_rays(u, v);
     }
     if D.flare.x > 0.0 {
-        glow = glow + lens_flare(u, v);
+        glow = glow + level_sample(D.flare_lv, u, v) * D.flare.x;
     }
     let a = c.w + (1.0 - c.w) * clamp(max(glow.x, max(glow.y, glow.z)), 0.0, 1.0);
     return vec4<f32>(rgb + glow, a);

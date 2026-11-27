@@ -17,6 +17,7 @@ mod help;
 mod icons;
 mod inspector;
 mod layers;
+mod lights;
 mod manual;
 mod palette_editor;
 mod prefs;

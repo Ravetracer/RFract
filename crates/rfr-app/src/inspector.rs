@@ -1312,34 +1312,6 @@ fn effects_section(ui: &mut Ui, p: &mut rfr_core::doc::Post) {
                 d.rays_length,
             );
         }
-        widgets::slider(
-            ui,
-            "Lens flares",
-            "Ghost images and a halo of bright spots, mirrored through the image center (0: off); small values for small bright spots",
-            &mut p.flare,
-            0.0..=3.0,
-            d.flare,
-        );
-        if p.flare > 0.0 {
-            widgets::slider(
-                ui,
-                "Flare threshold",
-                "Brightness above which spots make flares (after exposure)",
-                &mut p.flare_threshold,
-                0.0..=4.0,
-                d.flare_threshold,
-            );
-            widgets::slider_u32(ui, "Ghosts", "Number of ghost images", &mut p.flare_ghosts, 1..=8, d.flare_ghosts);
-            widgets::slider(
-                ui,
-                "Ghost spacing",
-                "Distance between the ghosts along the line through the center",
-                &mut p.flare_dispersal,
-                0.05..=1.0,
-                d.flare_dispersal,
-            );
-            widgets::slider(ui, "Halo", "Radius of the halo ring as a share of the image (0: none)", &mut p.flare_halo, 0.0..=0.8, d.flare_halo);
-        }
     });
     sub(ui, "Levels and curve");
     widgets::grid(ui, "fx-levels", |ui| {
@@ -1556,6 +1528,7 @@ pub fn show(ui: &mut Ui, doc: &mut Document, sel: &Selection) -> Vec<Action> {
             fractal_sections(ui, l, &mut actions);
         }
         view_and_image(ui, doc, sel);
+        crate::lights::section(ui, doc);
         effects_section(ui, &mut doc.post);
     });
     actions

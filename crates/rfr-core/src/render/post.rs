@@ -38,6 +38,16 @@ pub fn level_sizes(w: u32, h: u32) -> Vec<(u32, u32)> {
     out
 }
 
+/// The longest side of the light sources' image (see [`light_size`]).
+pub const LIGHT_SIDE: u32 = 2048;
+
+/// Size of the light sources' image ([`crate::flare::image`]) for a `w` × `h` image: the
+/// image's own size up to [`LIGHT_SIDE`] on the long side (preview and exports alike).
+pub fn light_size(w: u32, h: u32) -> (u32, u32) {
+    let k = (LIGHT_SIDE as f64 / w.max(h).max(1) as f64).min(1.0);
+    (((w as f64 * k).round() as u32).max(1), ((h as f64 * k).round() as u32).max(1))
+}
+
 /// Weights of the levels: `size^k`, normalized.
 pub fn level_weights(size: f64, levels: usize) -> Vec<f32> {
     let s = size.clamp(0.0, 1.0);
@@ -254,43 +264,6 @@ fn god_rays(l: &Level, u: f32, v: f32, post: &Post) -> [f32; 3] {
     s.map(|x| x / wsum * post.rays as f32)
 }
 
-/// Lens flare at image position (u, v): ghosts of the bright light of `l` along the line through
-/// the image center (each tinted), and a halo ring.
-fn lens_flare(l: &Level, u: f32, v: f32, post: &Post) -> [f32; 3] {
-    let (fu, fv) = (1.0 - u, 1.0 - v);
-    let (gx, gy) = ((0.5 - fu) * post.flare_dispersal as f32, (0.5 - fv) * post.flare_dispersal as f32);
-    let r0 = std::f32::consts::FRAC_1_SQRT_2;
-    let inside = |x: f32, y: f32| (0.0..=1.0).contains(&x) && (0.0..=1.0).contains(&y);
-    let falloff = |x: f32, y: f32, p: i32| (1.0 - ((0.5 - x).hypot(0.5 - y) / r0)).max(0.0).powi(p);
-    let mut s = [0.0f32; 3];
-    let n = post.flare_ghosts.clamp(1, 8);
-    for i in 0..n {
-        let (ox, oy) = (fu + gx * i as f32, fv + gy * i as f32);
-        if !inside(ox, oy) {
-            continue;
-        }
-        let w = falloff(ox, oy, 10);
-        let c = sample(l, ox, oy);
-        let t = ghost_tint(i, n);
-        for k in 0..3 {
-            s[k] += c[k] * w * t[k];
-        }
-    }
-    let gl = gx.hypot(gy);
-    if gl > 1e-6 {
-        let h = post.flare_halo as f32;
-        let (ox, oy) = (fu + gx / gl * h, fv + gy / gl * h);
-        if inside(ox, oy) {
-            let w = falloff(ox, oy, 5);
-            let c = sample(l, ox, oy);
-            for k in 0..3 {
-                s[k] += c[k] * w;
-            }
-        }
-    }
-    s.map(|x| x * post.flare as f32)
-}
-
 /// White balance factors (temperature: red against blue, tint: green), scaled so gray keeps
 /// its brightness.
 pub fn white_balance(post: &Post) -> [f32; 3] {
@@ -391,13 +364,6 @@ pub fn spectral_weights(t: f32) -> [f32; 3] {
     [(1.0 - (t - 1.0).abs()).max(0.0), (1.0 - t.abs()).max(0.0), (1.0 - (t + 1.0).abs()).max(0.0)]
 }
 
-/// The tint of lens flare ghost `i` of `n` (a rainbow).
-pub fn ghost_tint(i: u32, n: u32) -> [f32; 3] {
-    let h = i as f32 / n.max(1) as f32;
-    let t = std::f32::consts::TAU;
-    [0.5 + 0.5 * (t * h).cos(), 0.5 + 0.5 * (t * (h - 1.0 / 3.0)).cos(), 0.5 + 0.5 * (t * (h - 2.0 / 3.0)).cos()]
-}
-
 /// The display color (sRGB-encoded, 0..1) of a straight linear color at pixel (x, y) of a
 /// `w` × `h` image.
 pub fn grade(c: [f32; 3], x: u32, y: u32, w: u32, h: u32, post: &Post) -> [f32; 3] {
@@ -428,15 +394,16 @@ fn premultiplied(lin: &[[f32; 4]]) -> Vec<[f32; 4]> {
         .collect()
 }
 
-/// The light effects that spread over the image (bloom, streaks, god rays, lens flares):
-/// computed from the whole image (for tiled posters from a smaller copy of it) and looked up
-/// by the position in the image (0..1).
+/// The light effects that spread over the image (bloom, streaks, god rays, the glows and lens
+/// flares of the light sources): computed from the whole image (for tiled posters from a
+/// smaller copy of it) and looked up by the position in the image (0..1).
 pub struct Glow {
     bloom: Vec<Level>,
     weights: Vec<f32>,
     streak: Option<Level>,
     rays: Option<Level>,
-    flare: Option<Level>,
+    /// The light sources ([`crate::flare::image`]).
+    lights: Option<Level>,
 }
 
 impl Glow {
@@ -450,7 +417,7 @@ impl Glow {
         Glow {
             streak: streaks(&rad, wu, hu, post),
             rays: (post.rays > 0.0).then(|| bright_level(&rad, wu, hu, exposure, post.rays_threshold as f32)),
-            flare: (post.flare > 0.0).then(|| bright_level(&rad, wu, hu, exposure, post.flare_threshold as f32)),
+            lights: None,
             bloom,
             weights,
         }
@@ -458,12 +425,20 @@ impl Glow {
 
     /// A glow that adds nothing.
     pub fn empty() -> Glow {
-        Glow { bloom: Vec::new(), weights: Vec::new(), streak: None, rays: None, flare: None }
+        Glow { bloom: Vec::new(), weights: Vec::new(), streak: None, rays: None, lights: None }
     }
 
-    /// No glow at all (the effects that spread are off).
+    /// The glow with the document's light sources added (for a `w` × `h` image; their image
+    /// at [`light_size`]).
+    pub fn with_lights(mut self, doc: &crate::doc::Document, w: u32, h: u32) -> Glow {
+        let (lw, lh) = light_size(w, h);
+        self.lights = crate::flare::image(doc, lw, lh).map(|px| Level { w: lw as usize, h: lh as usize, px });
+        self
+    }
+
+    /// No glow at all (the effects that spread are off; light sources are not counted).
     pub fn none(post: &Post) -> bool {
-        post.bloom <= 0.0 && post.streak <= 0.0 && post.rays <= 0.0 && post.flare <= 0.0
+        post.bloom <= 0.0 && post.streak <= 0.0 && post.rays <= 0.0
     }
 
     /// The glow at image position (`u`, `v`), 0..1.
@@ -489,8 +464,8 @@ impl Glow {
                 glow[k] += g[k];
             }
         }
-        if let Some(l) = &self.flare {
-            let g = lens_flare(l, u, v, post);
+        if let Some(l) = &self.lights {
+            let g = sample(l, u, v);
             for k in 0..3 {
                 glow[k] += g[k];
             }
@@ -732,14 +707,21 @@ pub fn denoise(lin: &mut [[f32; 4]], w: u32, h: u32, blend: f64, aux: Option<&Au
 }
 
 /// The finished image for saving: denoised first when the effects ask for it (with the
-/// helper images of [`aux_documents`] when given), then [`finish`]. The note says how the
-/// denoising went (None without it).
-pub fn finish_export(mut lin: Vec<[f32; 4]>, w: u32, h: u32, post: &Post, aux: Option<&Aux>) -> (Vec<u8>, Option<String>) {
+/// helper images of [`aux_documents`] when given), then the effects of `doc.post` and the
+/// document's light sources. The note says how the denoising went (None without it).
+pub fn finish_export(mut lin: Vec<[f32; 4]>, w: u32, h: u32, doc: &crate::doc::Document, aux: Option<&Aux>) -> (Vec<u8>, Option<String>) {
+    let post = &doc.post;
     let note = post.denoise.then(|| match denoise(&mut lin, w, h, post.denoise_blend, aux) {
         Ok(dev) => format!("denoised ({}{})", dev.label(), if aux.is_some() { ", with albedo and normals" } else { "" }),
         Err(e) => format!("not denoised: {e}"),
     });
-    (finish(&lin, w, h, post), note)
+    if !crate::flare::any(doc) {
+        return (finish(&lin, w, h, post), note);
+    }
+    let glow = Glow::new(&lin, w, h, post).with_lights(doc, w, h);
+    let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+    let out = apply_region(&lin, [0, 0, w, h], [0, 0, w, h], w, h, &glow, post);
+    (out.iter().flat_map(|c| [q(c[0]), q(c[1]), q(c[2]), q(c[3])]).collect(), note)
 }
 
 #[cfg(test)]

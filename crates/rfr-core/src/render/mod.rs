@@ -191,6 +191,20 @@ pub struct ViewFrame {
 }
 
 impl ViewFrame {
+    /// The document's view at `width` × `height`.
+    pub fn of(doc: &Document, width: u32, height: u32) -> ViewFrame {
+        let rot = doc.view.rotation.to_radians();
+        ViewFrame {
+            width: width.max(1),
+            height: height.max(1),
+            center: doc.view.center_f64(),
+            radius: doc.view.radius.to_f64(),
+            radius_fx: doc.view.radius,
+            cos: rot.cos(),
+            sin: rot.sin(),
+        }
+    }
+
     /// Size of one pixel in plane units at any depth.
     pub fn pixel_size_fx(&self) -> crate::math::fx::Fx {
         self.radius_fx * (2.0 / self.height as f64)
@@ -402,17 +416,8 @@ impl Plan {
     }
 
     pub fn sized(doc: &Document, width: u32, height: u32) -> Result<Plan, String> {
-        let rot = doc.view.rotation.to_radians();
         Ok(Plan {
-            frame: ViewFrame {
-                width: width.max(1),
-                height: height.max(1),
-                center: doc.view.center_f64(),
-                radius: doc.view.radius.to_f64(),
-                radius_fx: doc.view.radius,
-                cos: rot.cos(),
-                sin: rot.sin(),
-            },
+            frame: ViewFrame::of(doc, width, height),
             center_text: doc.view.center.clone(),
             background: doc.image.background,
             adaptive: 0.0,

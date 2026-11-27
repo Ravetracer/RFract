@@ -87,7 +87,7 @@ impl Export {
                     let (w, h, s) = (d.image.width, d.image.height, d.image.samples.max(1));
                     let r = rfr_core::render::cpu::render(&d, w, h, s).map(|r| {
                         let aux = if d.post.denoise { rfr_gpu::render_aux(&d, w, h, s, None) } else { None };
-                        rfr_core::render::post::finish_export(r.linear(), w, h, &d.post, aux.as_ref())
+                        rfr_core::render::post::finish_export(r.linear(), w, h, &d, aux.as_ref())
                     });
                     let _ = tx.send(r);
                 });
@@ -117,7 +117,7 @@ impl Export {
                             let (w, h, s, doc, gpu) = (job.doc.image.width, job.doc.image.height, job.samples, job.doc.clone(), job.gpu.clone());
                             std::thread::spawn(move || {
                                 let aux = if doc.post.denoise { rfr_gpu::render_aux(&doc, w, h, s, gpu.as_ref()) } else { None };
-                                let _ = tx.send(Ok(rfr_core::render::post::finish_export(lin, w, h, &doc.post, aux.as_ref())));
+                                let _ = tx.send(Ok(rfr_core::render::post::finish_export(lin, w, h, &doc, aux.as_ref())));
                             });
                             finishing = Some(rx);
                         }

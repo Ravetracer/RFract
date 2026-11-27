@@ -1153,7 +1153,7 @@ fn same_shape(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Number(_), Value::Number(_)) => true,
         (Value::Array(x), Value::Array(y)) => x.len() == y.len(),
-        (Value::Object(_), Value::Object(_)) => true,
+        (Value::Object(_), Value::Object(_)) | (Value::String(_), Value::String(_)) => true,
         _ => false,
     }
 }
@@ -1190,6 +1190,13 @@ fn blend(v0: &Value, v1: &Value, v2: &Value, v3: &Value, t: f64, path: &str) -> 
         (Value::Array(a), Value::Array(b)) => {
             let el = |v: &Value, k: usize| v.as_array().and_then(|x| x.get(k)).cloned().unwrap_or(Value::Null);
             Value::Array((0..a.len()).map(|k| blend(&el(v0, k), &a[k], &b[k], &el(v3, k), t, path)).collect())
+        }
+        // Light positions are decimal strings: blended as numbers.
+        (Value::String(a), Value::String(b)) if path.ends_with("lights.position") => {
+            let (Ok(x1), Ok(x2)) = (a.trim().parse::<f64>(), b.trim().parse::<f64>()) else { return v1.clone() };
+            let x0 = v0.as_str().and_then(|s| s.trim().parse().ok()).unwrap_or(2.0 * x1 - x2);
+            let x3 = v3.as_str().and_then(|s| s.trim().parse().ok()).unwrap_or(2.0 * x2 - x1);
+            Value::String(monotone(x0, x1, x2, x3, t).to_string())
         }
         (Value::Object(a), Value::Object(b)) => {
             let mut out = a.clone();
@@ -1263,6 +1270,18 @@ mod tests {
         let doc =
             Document { view: View { center: [center[0].into(), center[1].into()], radius: Fx::from_f64(radius), rotation }, ..Document::default() };
         Keyframe { doc, frames, easing: Easing::Linear, time_s: None }
+    }
+
+    #[test]
+    fn light_positions_move_between_keyframes() {
+        let mut a = Document::default();
+        a.lights.push(crate::doc::LightSource { position: ["0".into(), "1".into()], ..Default::default() });
+        let mut b = a.clone();
+        b.lights[0].position = ["2".into(), "1".into()];
+        let (va, vb) = (serde_json::to_value(&a).unwrap(), serde_json::to_value(&b).unwrap());
+        let m = blend(&Value::Null, &va, &vb, &Value::Null, 0.5, "");
+        let d: Document = serde_json::from_value(m).unwrap();
+        assert_eq!(d.lights[0].position, ["1".to_string(), "1".to_string()]);
     }
 
     #[test]

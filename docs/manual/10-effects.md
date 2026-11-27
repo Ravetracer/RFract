@@ -33,11 +33,41 @@ sliders answer at once; the preview and the exported image show the same.
   position* (a share of the image width and height from the top left; it may lie outside
   the image): shafts of light, strongest where bright shapes stand in front of darkness.
   *Rays length* is how much of the way toward the light they reach.
-- **Lens flares** mirror bright spots through the image center as a row of colored *ghosts*
-  (number and spacing) and add a *halo* ring. Small values suit small bright spots; large
-  bright areas flood the image.
+- Lens flares come from light sources (see *Lights* below).
 
 Glow also spreads over transparent parts of the image, which then become partly opaque.
+
+## Lights
+
+The *Lights* section (between *Image* and *Effects*) holds the document's light sources. A
+light is a point in the plane: it moves with the fractal when you pan and zoom. **Add a
+light** puts one at the center of the view. In the view every light shows as a small circle
+(*View › Light gizmos* hides them); drag the circle to move the light, click it to select it.
+The position fields hold the exact coordinates, so a light stays in place at any depth.
+
+- **Color** and **Intensity** apply to the glow and the flare together.
+- **Visible** shows the light itself as a glow: *Soft* (a bright core with a long falloff),
+  *Sharp* (a small spot), *Ball* (a glowing disc with a bright rim) or *Halo*, with its size
+  (a share of the image height) and strength.
+- **Lens flare** adds what a camera lens makes of a bright light. **Presets** give ready
+  looks (Classic, Anamorphic, Sun, Star, Spike ball, Sci-fi, Subtle, Dirty lens) to start
+  from. The parts:
+  - *Core* and *Haze*: the bright center and a wide soft glow;
+  - *Star rays* (a diffraction star, its length, width, angle and how uneven the spikes are)
+    and *Fine spikes* (many thin random ones);
+  - *Streak*: a long thin anamorphic line, with *Sparkles* along it;
+  - *Ghosts*: reflections of the aperture on the line from the light through the image
+    center, round or with *Aperture blades*, some hollow, in the light's color or in lens
+    coating tints, with colored fringes (*Chromatic*); a *Bokeh image* can shape them;
+  - *Ring*: a halo around the light, optionally in rainbow colors;
+  - *Dirt*: soft specks on the lens that light up near the light;
+  - *Variation* picks another random layout of spikes, ghosts, sparkles and dirt.
+
+The flare fades out as its light leaves the image. Glows and flares are light added before
+the exposure and tone mapping, like the other glow effects; preview, exports and the command
+line show the same. Keyframes move lights along with everything else.
+
+![A light with the Sun flare over the seahorse valley](images/light-flare.jpg)
 
 ## Levels and curve
 

@@ -383,6 +383,9 @@ The open points the earlier stages left, in this order:
 
 - Deep zoom: periodicity checking and interior checks (cardioid, bulbs), automatic iteration
   count, location bookmarks.
+- Light sources (from RMandelbulb3D): document lights placed in the view with a gizmo,
+  visible glow and lens flares with presets; they also light lit layers, terrains and 3D
+  objects as point lights.
 - Coloring: histogram coloring (a pass over the whole image), post-transformations (on z after
   the iteration).
 - Viewer: orbit display, Julia preview inset.

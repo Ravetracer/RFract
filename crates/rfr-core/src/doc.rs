@@ -23,6 +23,9 @@ pub struct Document {
     pub layers: Vec<Layer>,
     /// Effects on the finished image (`render::post`).
     pub post: Post,
+    /// Light sources in the plane: glows and lens flares ([`crate::flare`]).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub lights: Vec<LightSource>,
     /// The animation (keyframes are whole documents).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub animation: Option<Box<crate::animation::Animation>>,
@@ -95,13 +98,6 @@ pub struct Post {
     pub rays_threshold: f64,
     pub rays_position: [f64; 2],
     pub rays_length: f64,
-    /// Lens flares: ghosts of the light above the threshold mirrored through the image
-    /// center (count, spacing) and a halo ring (radius as a share of the image).
-    pub flare: f64,
-    pub flare_threshold: f64,
-    pub flare_ghosts: u32,
-    pub flare_dispersal: f64,
-    pub flare_halo: f64,
     pub exposure: f64,
     pub temperature: f64,
     pub tint: f64,
@@ -146,11 +142,6 @@ impl Default for Post {
             rays_threshold: 1.0,
             rays_position: [0.3, 0.25],
             rays_length: 0.6,
-            flare: 0.0,
-            flare_threshold: 1.5,
-            flare_ghosts: 4,
-            flare_dispersal: 0.35,
-            flare_halo: 0.45,
             exposure: 0.0,
             temperature: 0.0,
             tint: 0.0,
@@ -192,7 +183,6 @@ impl Post {
             && self.vignette == 0.0
             && self.grain == 0.0
             && self.rays <= 0.0
-            && self.flare <= 0.0
             && self.levels_black == 0.0
             && self.levels_white == 1.0
             && self.levels_gamma == 1.0
@@ -1232,7 +1222,49 @@ impl Default for Document {
             view: View::default(),
             layers: vec![Layer::default()],
             post: Post::default(),
+            lights: Vec::new(),
             animation: None,
+        }
+    }
+}
+
+/// A light source of the document: a point in the plane (it moves with the fractal), shown as
+/// a glow when `visible`, with an optional lens flare.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LightSource {
+    pub enabled: bool,
+    pub name: String,
+    /// Position in the plane (decimal strings, exact at any depth, like the view center).
+    pub position: [String; 2],
+    /// Height above the plane as a share of the view's height.
+    pub height: f64,
+    /// Linear RGB.
+    pub color: [f32; 3],
+    pub intensity: f64,
+    /// The light itself shows as a glow.
+    pub visible: bool,
+    pub glow_shape: crate::flare::GlowShape,
+    /// Glow radius as a share of the image height.
+    pub glow_size: f64,
+    pub glow_intensity: f64,
+    pub flare: crate::flare::LensFlare,
+}
+
+impl Default for LightSource {
+    fn default() -> Self {
+        LightSource {
+            enabled: true,
+            name: "Light 1".into(),
+            position: ["0".into(), "0".into()],
+            height: 0.5,
+            color: [1.0, 0.95, 0.85],
+            intensity: 1.0,
+            visible: true,
+            glow_shape: crate::flare::GlowShape::Soft,
+            glow_size: 0.04,
+            glow_intensity: 1.0,
+            flare: crate::flare::LensFlare::default(),
         }
     }
 }

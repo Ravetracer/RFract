@@ -652,6 +652,9 @@ impl App {
                     .on_hover_text("Show the animation timeline below the view: keyframes, playback, timing, export");
                 ui.checkbox(&mut self.show_explore, "Explore lane")
                     .on_hover_text("Show the explore lane below the view: presets, random fractals, mutations of the document and snapshots");
+                ui.separator();
+                ui.checkbox(&mut self.viewport.show_lights, "Light gizmos")
+                    .on_hover_text("Show the circles of the light sources in the view (drag one to move its light)");
             });
             ui.menu_button("Help", |ui| {
                 ui.set_min_width(220.0);

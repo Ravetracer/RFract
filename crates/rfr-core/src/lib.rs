@@ -9,6 +9,7 @@ pub mod audio;
 pub mod doc;
 pub mod explore;
 pub mod expr;
+pub mod flare;
 pub mod formula;
 pub mod gradient;
 pub mod gradient_io;

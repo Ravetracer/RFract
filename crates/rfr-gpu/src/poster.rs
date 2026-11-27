@@ -36,15 +36,17 @@ pub fn render_poster(
     tiles::can_tile(doc).map_err(|e| format!("{w} × {h} renders in tiles, but {e}; render it smaller or change the layer"))?;
     let post = &doc.post;
     let mut renderer = FrameRenderer::new(gpu);
-    // The glow from a smaller render of the whole view.
+    // The glow from a smaller render of the whole view, the light sources at that size.
+    let lights = rfr_core::flare::any(doc);
+    let k = (GLOW_SIDE as f64 / w.max(h) as f64).min(1.0);
+    let (gw, gh) = (((w as f64 * k).round() as u32).max(1), ((h as f64 * k).round() as u32).max(1));
     let glow = if Glow::none(post) {
         Glow::empty()
     } else {
-        let k = (GLOW_SIDE as f64 / w.max(h) as f64).min(1.0);
-        let (gw, gh) = (((w as f64 * k).round() as u32).max(1), ((h as f64 * k).round() as u32).max(1));
         let lin = renderer.render_plan(&Plan::sized(doc, gw, gh)?, samples.min(16))?;
         Glow::new(&lin, gw, gh, post)
     };
+    let glow = if lights { glow.with_lights(doc, gw, gh) } else { glow };
     let mut saved = doc.clone();
     (saved.image.width, saved.image.height, saved.image.samples) = (w, h, samples);
     let mut png = rfr_core::io::png::RowWriter::new(path, w, h, Some(&saved))?;
@@ -70,7 +72,7 @@ pub fn render_poster(
                 Err(e) => format!("not denoised: {e}"),
             });
         }
-        let rgba: Vec<u8> = if post.is_neutral() {
+        let rgba: Vec<u8> = if post.is_neutral() && !lights {
             // As the whole image would be saved: no effects at all.
             let cut: Vec<[f32; 4]> = (0..tile[3])
                 .flat_map(|j| {

@@ -519,7 +519,6 @@ fn preview_effects_match_the_export() {
         ),
         ("filmic reinhard", Post { tone_map: ToneMap::Filmic, ..Post::default() }),
         ("god rays", Post { rays: 1.5, rays_threshold: 0.8, exposure: 1.0, ..Post::default() }),
-        ("lens flares", Post { flare: 2.0, flare_threshold: 0.8, exposure: 1.0, flare_ghosts: 5, ..Post::default() }),
         ("spectral aberration", Post { chromatic: 0.04, spectral: true, ..Post::default() }),
         (
             "levels and curve",
@@ -540,6 +539,23 @@ fn preview_effects_match_the_export() {
         let d = mean_diff(&gpu, &cpu);
         eprintln!("{name}: mean {d:.3}, max {max}");
         assert!(d < 0.5 && max <= 8, "{name}: mean {d:.3}, max {max} of 255");
+    }
+    // Light sources: a visible light with a flare, plain and with effects.
+    for post in [Post::default(), base.clone()] {
+        let mut lit = doc.clone();
+        lit.post = post;
+        let flare = rfr_core::flare::LensFlare::presets().into_iter().find(|(n, _)| *n == "Sun").unwrap().1;
+        lit.lights.push(rfr_core::doc::LightSource { position: ["-1.2".into(), "0.4".into()], flare, ..Default::default() });
+        r.set_post(&lit.post);
+        r.set_lights(&lit);
+        r.display();
+        let gpu = r.read_display().unwrap();
+        let cpu = rfr_core::render::post::finish_export(lin.clone(), w, h, &lit, None).0;
+        let change = mean_diff(&cpu, &rfr_core::render::post::finish(&lin, w, h, &lit.post));
+        let max = gpu.iter().zip(&cpu).enumerate().filter(|(i, _)| i % 4 != 3).map(|(_, (a, b))| a.abs_diff(*b)).max().unwrap();
+        let d = mean_diff(&gpu, &cpu);
+        eprintln!("lights: changes {change:.2}, mean {d:.3}, max {max}");
+        assert!(change > 2.0 && d < 0.5 && max <= 8, "lights: changes {change:.2}, mean {d:.3}, max {max} of 255");
     }
 }
 

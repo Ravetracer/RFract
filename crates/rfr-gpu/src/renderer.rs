@@ -145,9 +145,9 @@ struct DispUni {
 
 /// The display uniforms of `post` for a `w` × `h` image after `samples` samples and `row`
 /// rows of the next.
-fn disp_uni(post: &rfr_core::doc::Post, w: u32, h: u32, samples: u32, row: u32) -> DispUni {
+fn disp_uni(post: &rfr_core::doc::Post, lights: bool, w: u32, h: u32, samples: u32, row: u32) -> DispUni {
     let mut u = DispUni { size: [w, h, samples, row], ..Default::default() };
-    if post.is_neutral() {
+    if post.is_neutral() && !lights {
         return u;
     }
     let wb = rfr_core::render::post::white_balance(post);
@@ -178,8 +178,8 @@ fn disp_uni(post: &rfr_core::doc::Post, w: u32, h: u32, samples: u32, row: u32) 
         u.rays = [post.rays as f32, post.rays_position[0] as f32, post.rays_position[1] as f32, post.rays_length as f32];
         u.rays_lv = regions[4];
     }
-    if post.flare > 0.0 {
-        u.flare = [post.flare as f32, post.flare_ghosts.clamp(1, 8) as f32, post.flare_dispersal as f32, post.flare_halo as f32];
+    if lights {
+        u.flare = [1.0, 0.0, 0.0, 0.0];
         u.flare_lv = regions[5];
     }
     u
@@ -197,14 +197,17 @@ fn bloom_levels(w: u32, h: u32) -> (Vec<[u32; 4]>, u32) {
     (out, off)
 }
 
-/// Regions after the bloom pyramid, each the size of its first level: the streak source, two
-/// scratch levels, the streak sum, the god rays' and the lens flares' bright light (first
-/// texel, width, height each), and the texels of pyramid and regions.
+/// Regions after the bloom pyramid: the streak source, two scratch levels, the streak sum and
+/// the god rays' bright light (each the size of the first level), then the light sources'
+/// image (`post::light_size`); first texel, width, height each, and the texels of pyramid and
+/// regions.
 fn streak_regions(w: u32, h: u32) -> ([[u32; 4]; 6], u32) {
     let (levels, total) = bloom_levels(w, h);
     let (lw, lh) = (levels[0][1], levels[0][2]);
     let n = lw * lh;
-    (std::array::from_fn(|k| [total + k as u32 * n, lw, lh, 0]), total + 6 * n)
+    let (sw, sh) = rfr_core::render::post::light_size(w, h);
+    let regions = std::array::from_fn(|k| if k < 5 { [total + k as u32 * n, lw, lh, 0] } else { [total + 5 * n, sw, sh, 0] });
+    (regions, total + 5 * n + sw * sh)
 }
 
 /// Uniforms of one bloom pass (bloom.wgsl `BP`).
@@ -606,6 +609,9 @@ pub struct GpuRenderer {
     /// Effects of the preview (display.wgsl, bloom.wgsl): the settings, the bloom passes
     /// (bright, down, blur_h, blur_v, streak), the pyramid and its scratch, pass uniforms.
     post: rfr_core::doc::Post,
+    /// The light sources' image (`set_lights`): its key and pixels (RGB, 0).
+    lights: Option<(String, Vec<[f32; 4]>)>,
+    lights_uploaded: bool,
     bloom_pipelines: [wgpu::ComputePipeline; 5],
     bloom_levels: wgpu::Buffer,
     bloom_tmp: wgpu::Buffer,
@@ -706,6 +712,8 @@ impl GpuRenderer {
                 mapped_at_creation: false,
             }),
             post: rfr_core::doc::Post::default(),
+            lights: None,
+            lights_uploaded: false,
             bloom_pipelines,
             bloom_levels: storage("bloom levels"),
             bloom_tmp: storage("bloom tmp"),
@@ -1475,7 +1483,7 @@ impl GpuRenderer {
         let Some(t) = self.target.as_ref() else { return };
         self.dirty_display = false;
         let (width, height) = (t.width, t.height);
-        let u = disp_uni(&self.post, width, height, self.samples, self.row);
+        let u = disp_uni(&self.post, self.lights.is_some(), width, height, self.samples, self.row);
         self.ctx.queue.write_buffer(&self.disp_buf, 0, bytemuck::bytes_of(&u));
         let mut enc = self.ctx.device.create_command_encoder(&Default::default());
         self.bloom_passes(&mut enc, &u);
@@ -1500,6 +1508,28 @@ impl GpuRenderer {
         self.generation += 1;
     }
 
+    /// The document's light sources (glows, lens flares) over the preview: their image is
+    /// computed on the CPU when the lights, the view or the size change (`rfr_core::flare`).
+    pub fn set_lights(&mut self, doc: &rfr_core::doc::Document) {
+        let Some(t) = self.target.as_ref() else { return };
+        let (w, h) = (t.width, t.height);
+        if !rfr_core::flare::any(doc) {
+            if self.lights.take().is_some() {
+                self.dirty_display = true;
+            }
+            return;
+        }
+        let key = format!("{:?}|{:?}|{w}x{h}", doc.lights, doc.view);
+        if self.lights.as_ref().is_some_and(|(k, _)| *k == key) {
+            return;
+        }
+        let (lw, lh) = rfr_core::render::post::light_size(w, h);
+        let px = rfr_core::flare::image(doc, lw, lh).unwrap_or_else(|| vec![[0.0; 3]; (lw * lh) as usize]);
+        self.lights = Some((key, px.iter().map(|c| [c[0], c[1], c[2], 0.0]).collect()));
+        self.lights_uploaded = false;
+        self.dirty_display = true;
+    }
+
     /// The effects of the preview (`rfr_core::render::post`); a change only shows the image
     /// again, it does not render anew.
     pub fn set_post(&mut self, post: &rfr_core::doc::Post) {
@@ -1512,8 +1542,8 @@ impl GpuRenderer {
     /// Records the bloom pyramid and streak passes (bloom.wgsl) when the effects have them.
     fn bloom_passes(&mut self, enc: &mut wgpu::CommandEncoder, u: &DispUni) {
         let (bloom_on, streak_on) = (u.bloom[0] > 0.0 && u.bloom[3] > 0.5, u.streak[3] > 0.5);
-        let (rays_on, flare_on) = (u.rays[0] > 0.0, u.flare[0] > 0.0);
-        if !bloom_on && !streak_on && !rays_on && !flare_on {
+        let (rays_on, lights_on) = (u.rays[0] > 0.0, u.flare[0] > 0.0);
+        if !bloom_on && !streak_on && !rays_on && !lights_on {
             return;
         }
         let Some(t) = self.target.as_ref() else { return };
@@ -1527,12 +1557,20 @@ impl GpuRenderer {
                 device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some(label),
                     size: bytes.next_power_of_two(),
-                    usage: wgpu::BufferUsages::STORAGE,
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 })
             };
             self.bloom_levels = make("bloom levels");
             self.bloom_tmp = make("bloom tmp");
+            self.lights_uploaded = false;
+        }
+        // The light sources' image (computed on the CPU, see `set_lights`).
+        if let Some((_, px)) = &self.lights
+            && !self.lights_uploaded
+        {
+            self.ctx.queue.write_buffer(&self.bloom_levels, regions[5][0] as u64 * 16, bytemuck::cast_slice(px));
+            self.lights_uploaded = true;
         }
         let post = &self.post;
         let img = [width, height, self.samples, self.row];
@@ -1574,12 +1612,9 @@ impl GpuRenderer {
                 }
             }
         }
-        // God rays and lens flares: their bright light, each with its threshold.
+        // God rays: their bright light with its threshold.
         if rays_on {
             passes.push((0, BloomPass { dst: regions[4], src: [0; 4], img, prm: [exposure, post.rays_threshold as f32, 0.0, 0.0], prm2 }));
-        }
-        if flare_on {
-            passes.push((0, BloomPass { dst: regions[5], src: [0; 4], img, prm: [exposure, post.flare_threshold as f32, 0.0, 0.0], prm2 }));
         }
         while self.bloom_passes.len() < passes.len() {
             self.bloom_passes.push(device.create_buffer(&wgpu::BufferDescriptor {

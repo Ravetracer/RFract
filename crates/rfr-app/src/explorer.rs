@@ -168,7 +168,7 @@ fn render(r: &mut Option<GpuRenderer>, doc: &Document) -> Option<(Vec<u8>, f64, 
         }
     }
     let lin = rfr_core::render::cpu::render(&d, THUMB_W, THUMB_H, 2).ok()?.linear();
-    let (img, _) = rfr_core::render::post::finish_export(lin, THUMB_W, THUMB_H, &d.post, None);
+    let (img, _) = rfr_core::render::post::finish_export(lin, THUMB_W, THUMB_H, &d, None);
     let c = rfr_core::explore::contrast(&img);
     Some((img, c, 0.0))
 }

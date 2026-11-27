@@ -11,6 +11,13 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
   with large inside areas; the image stays the same.
 - Automatic iteration count (*Auto* next to *Iterations*): the limit rises when the view
   needs more.
+- Light sources (*Lights* in the inspector): points in the plane with a visible glow and lens
+  flares (core, haze, star rays, streak, ghosts, ring, sparkles, lens dirt) with presets;
+  drag them in the view.
+
+### Removed
+
+- The lens flare of the effects (ghosts of bright pixels); flares now come from lights.
 
 ## [0.10.0] - 2026-11-27
 

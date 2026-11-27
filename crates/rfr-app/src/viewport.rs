@@ -88,6 +88,9 @@ pub struct Viewport {
     fly_at: Option<Pos2>,
     /// The flight being recorded.
     pub recording: Option<Recording>,
+    /// Gizmos of the light sources (drag to move); the light being dragged.
+    pub show_lights: bool,
+    light_drag: Option<usize>,
 }
 
 /// The largest rectangle with aspect `aspect` (width / height) centered in `avail`.
@@ -158,6 +161,8 @@ impl Viewport {
             fly_tick: None,
             fly_at: None,
             recording: None,
+            show_lights: true,
+            light_drag: None,
         }
     }
 
@@ -289,6 +294,48 @@ impl Viewport {
         self.hovered = false;
     }
 
+    /// Light gizmos: a click on a light's circle selects it, a drag from it moves the light
+    /// (exactly, at any depth). True while the pointer works on a light.
+    fn light_gizmos(&mut self, ui: &Ui, resp: &egui::Response, doc: &mut Document, rect: Rect) -> bool {
+        let ctx = ui.ctx();
+        let hit = |doc: &Document, p: Pos2| {
+            doc.lights
+                .iter()
+                .enumerate()
+                .filter_map(|(i, l)| crate::lights::screen_of(doc, rect, l).map(|s| (i, s.distance(p))))
+                .filter(|(_, d)| *d <= 11.0)
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+                .map(|(i, _)| i)
+        };
+        let origin = ui.input(|i| i.pointer.press_origin());
+        if resp.drag_started_by(egui::PointerButton::Primary)
+            && let Some(i) = origin.and_then(|p| hit(doc, p))
+        {
+            self.light_drag = Some(i);
+            crate::lights::select(ctx, i);
+        }
+        if let Some(i) = self.light_drag {
+            if let Some(p) = resp.interact_pointer_pos()
+                && i < doc.lights.len()
+            {
+                let mut v = doc.view.clone();
+                v.pan(offset_at(&doc.view, rect, p));
+                doc.lights[i].position = v.center;
+            }
+            if !resp.dragged() {
+                self.light_drag = None;
+            }
+            return true;
+        }
+        if (resp.clicked() || resp.double_clicked())
+            && let Some(i) = origin.and_then(|p| hit(doc, p))
+        {
+            crate::lights::select(ctx, i);
+            return true;
+        }
+        false
+    }
+
     pub fn show(&mut self, ui: &mut Ui, frame: &eframe::Frame, doc: &mut Document, sel: &Selection, prefs: &Prefs) -> Option<String> {
         if let Some((pdoc, phase, fast)) = self.preview.clone() {
             self.show_preview(ui, frame, &pdoc, phase, fast, prefs);
@@ -306,9 +353,12 @@ impl Viewport {
         self.object = target(doc, sel).is_some_and(|l| l.kind == rfr_core::doc::LayerKind::Object);
         self.terrain = !self.object && target(doc, sel).is_some_and(|l| l.light.enabled && l.light.terrain);
 
+        // Light gizmos: a press on a light's circle drags the light instead of the view.
+        let gizmo = self.show_lights && self.light_gizmos(ui, &resp, doc, rect);
+
         // 3D terrain: Ctrl-drag orbits the camera, Ctrl-wheel changes its distance; 3D objects
         // also without Ctrl.
-        let orbit = self.object || (self.terrain && mods.command);
+        let orbit = !gizmo && (self.object || (self.terrain && mods.command));
         if orbit && let Some(l) = target_mut(doc, sel) {
             let object = self.object;
             let (cam, (near, far), (low, high)) =
@@ -331,7 +381,7 @@ impl Viewport {
         }
 
         // Fly mode: the buttons fly in and out, the wheel sets the speed.
-        let flying = self.fly && !orbit;
+        let flying = self.fly && !orbit && !gizmo;
         if flying {
             touched |= self.fly_step(ui, &resp, doc, rect, pointer, scroll);
         } else {
@@ -353,10 +403,10 @@ impl Viewport {
         }
         let boxing = !flying && (mods.shift || resp.dragged_by(egui::PointerButton::Secondary));
         if resp.drag_started() {
-            self.box_start = if boxing { resp.interact_pointer_pos() } else { None };
+            self.box_start = if boxing && !gizmo { resp.interact_pointer_pos() } else { None };
             self.rotate_last = None;
         }
-        if resp.dragged() && self.box_start.is_none() && !orbit && !flying {
+        if resp.dragged() && self.box_start.is_none() && !orbit && !flying && !gizmo {
             if mods.command {
                 // Rotate around the image center.
                 if let Some(p) = resp.interact_pointer_pos() {
@@ -397,7 +447,7 @@ impl Viewport {
             self.rotate_last = None;
         }
         // Clicks: Julia pick (Alt or the pick mode), zoom in (double-click), out (right click).
-        if let Some(p) = resp.interact_pointer_pos().filter(|p| rect.contains(*p)) {
+        if let Some(p) = resp.interact_pointer_pos().filter(|p| rect.contains(*p) && !gizmo) {
             let at = plane_at(&doc.view, rect, p);
             if resp.clicked() && (mods.alt || self.picking_julia) {
                 let picking = std::mem::replace(&mut self.picking_julia, false);
@@ -459,6 +509,27 @@ impl Viewport {
         }
         if let (Some(s), Some(p)) = (self.box_start, resp.interact_pointer_pos()) {
             painter.rect_stroke(Rect::from_two_pos(s, p), 0.0, Stroke::new(1.5, theme::ACCENT), egui::StrokeKind::Middle);
+        }
+        if self.show_lights {
+            let sel = crate::lights::selected(ui.ctx());
+            for (i, l) in doc.lights.iter().enumerate() {
+                let Some(p) = crate::lights::screen_of(doc, rect, l).filter(|p| avail.expand(12.0).contains(*p)) else { continue };
+                let c = crate::widgets::to_color32(l.color);
+                let (ring, dim) = if l.enabled { (Color32::WHITE, 1.0) } else { (theme::TEXT_MUTED, 0.5) };
+                painter.circle_stroke(p, 8.0, Stroke::new(3.0, Color32::from_black_alpha(140)));
+                painter.circle_stroke(p, 8.0, Stroke::new(1.5, ring.gamma_multiply(dim)));
+                painter.circle_filled(p, 3.5, c.gamma_multiply(dim));
+                if i == sel {
+                    painter.circle_stroke(p, 12.0, Stroke::new(1.5, theme::ACCENT));
+                    painter.text(
+                        p + Vec2::new(16.0, -10.0),
+                        egui::Align2::LEFT_BOTTOM,
+                        &l.name,
+                        egui::FontId::proportional(theme::fs(11.5)),
+                        theme::ACCENT,
+                    );
+                }
+            }
         }
         let font = egui::FontId::proportional(theme::fs(13.0));
         if let Some(rec) = &self.recording {
@@ -557,6 +628,7 @@ impl Viewport {
             self.converged_after = Some(self.pass_start.elapsed());
         }
         gpu.set_post(&doc.post);
+        gpu.set_lights(doc);
         gpu.display();
         let (view, generation) = (gpu.output_view()?.clone(), gpu.generation());
         let rs = frame.wgpu_render_state()?;
