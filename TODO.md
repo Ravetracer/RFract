@@ -19,8 +19,12 @@ that come up along the way.
       smoothing (Gaussian, scale-aware centers, ends kept).
 - [x] Drivers and expressions, audio-reactive values (sound under the movie), render queue
       (app window, `rfr-cli batch`).
-- [ ] Exit: 1-minute 1080p deep zoom with palette rotation and motion blur (app and CLI);
+- [x] Exit: 1-minute 1080p deep zoom with palette rotation and motion blur (app and CLI);
       fly-over of a lit Mandelbrot landscape.
+      Note: the full render ran through the CLI (1800 frames to 1e-40, 52 min,
+      `docs/manual/examples/deep-zoom.rfr`). The same render from the app (render queue) and
+      the 1080p fly-over (`docs/manual/examples/flyover.rfr`) were only checked at small size
+      and partial length; the full renders are still to be done (about 70 min).
 
 ## Stage 7 – Effects and textures
 
