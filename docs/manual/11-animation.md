@@ -73,6 +73,33 @@ images however many frames it has. Motion blur still works (the images are blend
 several zooms within the shutter); palette rotation does not (the colors are in the
 images), and the keyframes between the first and the last are not used.
 
+## Drivers
+
+A driver computes a value of the document in every frame with an expression, after the
+keyframes. Press **+ Driver**, choose the value with **…** (a search over all numbers of the
+document, formula parameters included, e.g. `layers.0.params.power` or `view.rotation`) and
+write the expression. Below each driver a small curve shows its value over the animation;
+errors show there in yellow.
+
+- Variables: `t` (seconds), `frame`, `frames`, `u` (0 at the start, 1 at the end), `key`
+  (keyframe position), `fps`, `value` (the value from the keyframes), `audio`, `bass`, `mid`,
+  `treble` (the sound's levels 0..1, see *Sound*).
+- Functions: `sin cos tan asin acos atan atan2 sqrt abs exp ln log10 pow min max clamp mix
+  step smoothstep floor ceil round fract sign noise if deg rad`; comparisons give 1 or 0.
+- `@path` reads another value of the document: `@view.rotation / 1000`.
+
+Examples: `value + 0.5 * sin(t * 2)` lets a value breathe, `value + 0.1 * noise(t)` wobbles
+it slowly, `value + bass` pumps the exposure with the music. Integers (iterations) are
+rounded, switches are on above 0.5.
+
+## Sound
+
+**Sound…** puts a sound file under exported movies; **Sound offset** sets where in the file
+frame 0 starts (negative: the sound starts later). RFract analyses the sound once with
+ffmpeg (loudness, bass, mids and treble, smoothed) and stores the levels in the document, so
+drivers can follow the music in the preview, the export, the render queue and on the command
+line. A relative sound path is relative to the document file.
+
 ## Export
 
 **Export animation…** renders every frame at the document's image size and samples (see
@@ -92,4 +119,7 @@ rfr-cli animate zoom.rfr -o zoom.mp4 --format av1 --from 100 --to 199
 
 `--format` also takes `hevc` (H.265 in MP4), `av1`, `prores`, `webm` and `gif`; `--from`
 and `--to` render part of the frames; `--sequence` renders a zoom sequence even when the
-animation does not ask for one.
+animation does not ask for one. A zoom sequence uses the last keyframe's settings: drivers
+do not apply to it.
+
+To render several animations one after the other, use the render queue (see *Files*).

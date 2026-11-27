@@ -44,9 +44,13 @@ impl AnimExport {
 
     /// Starts rendering the animation of `doc` (its image size and samples) into `path`: a
     /// movie by the extension, else a folder of PNG images.
-    pub fn start(&mut self, doc: &Document, path: PathBuf, gpu: Option<GpuContext>, ffmpeg: PathBuf) -> Result<(), String> {
-        let anim = doc.animation.as_deref().ok_or("the document has no animation")?;
+    /// `base`: the folder of the document file (relative sound paths).
+    pub fn start(&mut self, doc: &Document, path: PathBuf, gpu: Option<GpuContext>, ffmpeg: PathBuf, base: Option<PathBuf>) -> Result<(), String> {
+        let mut anim = doc.animation.as_deref().cloned().ok_or("the document has no animation")?;
+        anim.ensure_audio_levels(base.as_deref(), &ffmpeg)?;
+        let anim = &anim;
         let plan = AnimationPlan::new(anim)?;
+        let audio = anim.audio_track(0, base.as_deref());
         let format = VideoFormat::from_path(&path);
         if format.needs_ffmpeg() && !rfr_core::video::ffmpeg_available(&ffmpeg) {
             return Err(format!(
@@ -70,7 +74,7 @@ impl AnimExport {
                     None => None,
                 };
                 let mut renderer = rfr_gpu::animation::FrameRenderer::new(if seq.is_some() { None } else { gpu });
-                let mut sink = VideoSink::new(&out, format, w, h, plan.fps(), &ffmpeg, None)?;
+                let mut sink = VideoSink::new(&out, format, w, h, plan.fps(), &ffmpeg, audio.as_ref())?;
                 let mut note = None;
                 for f in 0..frames {
                     if stop.load(Ordering::Relaxed) {

@@ -67,7 +67,8 @@ them) and renders on the graphics card; `--cpu` uses the CPU reference renderer 
 `info` shows the graphics card, the denoiser and the settings folder.
 
 `rfr-cli animate` renders a document's animation into a movie or PNG images (see
-*Animation*).
+*Animation*). `rfr-cli batch` works through a render queue file or a list of documents (see
+*Render queue*).
 
 `render` also takes a `.upr` file; `--entry <name>` picks its image (default: the first),
 and the notes of the conversion go to the terminal.
@@ -79,4 +80,26 @@ ids as in the app:
 ```
 rfr-cli --formula-dir ~/formulas render picture.rfr -o picture.png
 rfr-cli --formula-dir ~/formulas render "user:fractint.frm:Daisy" -o daisy.png
+```
+
+## Render queue
+
+*File › Render queue…* renders images and animations one after the other, for example
+overnight. **Add this image…** and **Add this animation…** queue a copy of the current
+document as it is now (you can keep editing it), with the file to write; **Add document
+files…** queues documents from disk, read when their turn comes: their animation as an MP4
+when they have keyframes, else a PNG image, saved next to them. Images and animations use the
+document's image size and samples.
+
+**Start** renders the waiting jobs from the top while the preview pauses; **Stop** pauses the
+current job. Move jobs up and down, **Pause** one to skip it, **Again** to render it once
+more. The queue is kept in the settings folder and stays when RFract closes; a job that was
+running then starts again.
+
+On the command line `rfr-cli batch` renders the waiting jobs of that queue file
+(`queue.json` in the settings folder, see `rfr-cli info`) or documents:
+
+```
+rfr-cli batch ~/.config/rfract/queue.json
+rfr-cli batch zoom.rfr flight.rfr picture.rfr --out renders -W 1920 -H 1080
 ```

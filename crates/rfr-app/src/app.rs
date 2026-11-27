@@ -59,6 +59,7 @@ pub struct App {
     export: Export,
     timeline: crate::timeline::Timeline,
     anim_export: crate::anim_export::AnimExport,
+    queue: crate::queue_window::QueueWindow,
     /// Gradient editor window: outside (false) or inside (true) coloring.
     gradient_window: Option<bool>,
     title: String,
@@ -129,6 +130,7 @@ impl App {
             show_timeline: false,
             timeline: Default::default(),
             anim_export: Default::default(),
+            queue: crate::queue_window::QueueWindow::new(),
             show_explore: false,
             doc: Doc::new(Document::for_formula("rfract:Mandelbrot")),
             selection: Selection::layer(vec![0]),
@@ -588,6 +590,10 @@ impl App {
                 {
                     action = Some(Action::Export);
                 }
+                if item(ui, "Render queue…", "").on_hover_text("Images and animations rendered one after the other (for example overnight)").clicked()
+                {
+                    self.queue.open = true;
+                }
                 ui.separator();
                 if item(ui, "Preferences…", "Ctrl+,").on_hover_text("Interface size, preview quality, formula folders").clicked() {
                     self.prefs_open = true;
@@ -1036,7 +1042,8 @@ impl eframe::App for App {
                 .size_range(120.0..=420.0)
                 .frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(12, 8)))
                 .show(ui, |ui| {
-                    if let Some(a) = self.timeline.show(ui, &mut self.doc.doc, &mut self.viewport) {
+                    let base = self.doc.path.as_ref().and_then(|p| p.parent()).map(Path::to_path_buf);
+                    if let Some(a) = self.timeline.show(ui, &mut self.doc.doc, &mut self.viewport, base.as_deref()) {
                         timeline_action = Some(a);
                     }
                 });
@@ -1055,7 +1062,8 @@ impl eframe::App for App {
                     .save_file()
                 {
                     let ffmpeg = rfr_core::video::ffmpeg_program(None);
-                    match self.anim_export.start(&self.doc.doc, p, self.viewport.gpu_context(), ffmpeg) {
+                    let base = self.doc.path.as_ref().and_then(|p| p.parent()).map(Path::to_path_buf);
+                    match self.anim_export.start(&self.doc.doc, p, self.viewport.gpu_context(), ffmpeg, base) {
                         Ok(()) => {}
                         Err(e) => self.warn(format!("Animation export failed: {e}")),
                     }
@@ -1068,7 +1076,7 @@ impl eframe::App for App {
             self.timeline.stop_preview();
         }
         self.viewport.preview = self.timeline.preview(&self.doc.doc);
-        self.viewport.paused = self.export.busy() || self.anim_export.busy();
+        self.viewport.paused = self.export.busy() || self.anim_export.busy() || self.queue.busy();
         let mut msg = None;
         egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::CANVAS)).show(ui, |ui| {
             msg = self.viewport.show(ui, frame, &mut self.doc.doc, &self.selection, &self.prefs);
@@ -1079,6 +1087,10 @@ impl eframe::App for App {
         if let Some(m) = self.export.update(&ctx) {
             if m.starts_with("Export failed") { self.warn(m) } else { self.notify(m) }
         }
+        if let Some(m) = self.queue.poll(self.viewport.gpu_context()) {
+            if m.contains("failed") { self.warn(m) } else { self.notify(m) }
+        }
+        self.queue.show(&ctx, &self.doc.doc, self.doc.path.as_deref(), &self.prefs);
         if let Some(m) = self.anim_export.update(&ctx) {
             if m.contains("failed") { self.warn(m) } else { self.notify(m) }
         }

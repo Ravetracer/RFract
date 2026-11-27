@@ -19,6 +19,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use std::path::{Path as FilePath, PathBuf};
+
+use crate::audio::AudioLevels;
 use crate::doc::{Camera, Document, Layer, View};
 use crate::math::big;
 use crate::math::fx::Fx;
@@ -46,6 +49,36 @@ pub struct Animation {
     pub zoom_sequence: bool,
     /// Recorded timing: speed changes are smoothed over this many seconds (0: as flown).
     pub speed_smoothing_s: f64,
+    /// Values computed by expressions in every frame (after the keyframes).
+    pub drivers: Vec<Driver>,
+    /// Sound file put under the movie (relative paths: relative to the document file).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio: Option<PathBuf>,
+    /// Position in the sound file (seconds) where frame 0 starts; negative values start the
+    /// sound later.
+    pub audio_offset_s: f64,
+    /// Levels of the sound track for audio-reactive drivers (`audio::analyse`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio_levels: Option<AudioLevels>,
+}
+
+/// A document value driven by an expression of time (and other values) in an animation.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Driver {
+    pub enabled: bool,
+    /// The value: a path into the document (`view.rotation`, `layers.0.params.power`).
+    pub path: String,
+    /// The expression (see `expr`): variables `t` (seconds), `frame`, `frames`, `u` (0..1 over
+    /// the animation), `key` (keyframe position), `fps`, `value` (the keyframed value),
+    /// `audio`, `bass`, `mid`, `treble` (sound levels 0..1).
+    pub expression: String,
+}
+
+impl Default for Driver {
+    fn default() -> Self {
+        Driver { enabled: true, path: String::new(), expression: "value".into() }
+    }
 }
 
 impl Default for Animation {
@@ -61,6 +94,10 @@ impl Default for Animation {
             shutter: 0.0,
             zoom_sequence: false,
             speed_smoothing_s: 1.0,
+            drivers: Vec::new(),
+            audio: None,
+            audio_offset_s: 0.0,
+            audio_levels: None,
         }
     }
 }
@@ -192,6 +229,9 @@ pub struct AnimationPlan {
     fps: f64,
     palette_speed: f64,
     shutter: f64,
+    drivers: Vec<CompiledDriver>,
+    levels: Option<AudioLevels>,
+    audio_offset_s: f64,
 }
 
 impl AnimationPlan {
@@ -212,8 +252,18 @@ impl AnimationPlan {
         unwrap_angles(&mut values);
         let path = Path::new(keys.iter().map(|d| d.view.clone()).collect(), keys.iter().map(cameras).collect());
         let fps = anim.fps.clamp(1.0, 240.0);
-        let mut plan =
-            AnimationPlan { keys, values, path, us: Vec::new(), fps, palette_speed: anim.palette_speed, shutter: anim.shutter.clamp(0.0, 1.0) };
+        let mut plan = AnimationPlan {
+            keys,
+            values,
+            path,
+            us: Vec::new(),
+            fps,
+            palette_speed: anim.palette_speed,
+            shutter: anim.shutter.clamp(0.0, 1.0),
+            drivers: compile_drivers(&anim.drivers).0,
+            levels: anim.audio_levels.clone(),
+            audio_offset_s: anim.audio_offset_s,
+        };
         plan.us = plan.frame_params(anim);
         Ok(plan)
     }
@@ -266,7 +316,27 @@ impl AnimationPlan {
         };
         doc.view = self.view_at(u);
         doc.animation = None;
+        if !self.drivers.is_empty() {
+            apply_drivers(&mut doc, &self.drivers, self.driver_time(t, u));
+        }
         doc
+    }
+
+    /// The variables of the drivers at frame time `t` (keyframe position `u`).
+    fn driver_time(&self, t: f64, u: f64) -> DriverTime {
+        let audio = self.levels.as_ref().map_or([0.0; 4], |l| l.at(self.audio_offset_s + t / self.fps));
+        DriverTime { frame: t, frames: self.us.len(), fps: self.fps, key: u, audio }
+    }
+
+    /// The values of the drivers at up to `points` frames spread over the animation (NaN
+    /// where a driver fails), for curves.
+    pub fn driver_curves(&self, drivers: &[Driver], points: usize) -> Vec<Vec<f64>> {
+        let n = self.us.len();
+        let points = points.clamp(2, n.max(2));
+        let docs: Vec<Value> = (0..points)
+            .map(|k| serde_json::to_value(self.doc_at((k * n.saturating_sub(1)) as f64 / (points - 1) as f64)).unwrap_or(Value::Null))
+            .collect();
+        drivers.iter().map(|d| docs.iter().map(|v| value_at(v, d.path.trim()).unwrap_or(f64::NAN)).collect()).collect()
     }
 
     /// Gradient turns of palette rotation at frame time `t`.
@@ -549,6 +619,248 @@ fn gauss(v: &[f64], sigma: f64) -> Vec<f64> {
             sum / ws
         })
         .collect()
+}
+
+// ---------------------------------------------------------------------------------------------
+// Drivers (adapted from RMandelbulb3D)
+
+impl Animation {
+    /// Whether a driver reads the sound levels (`audio`, `bass`, `mid`, `treble`).
+    pub fn drivers_use_audio(&self) -> bool {
+        self.drivers.iter().any(|d| d.enabled && ["audio", "bass", "mid", "treble"].iter().any(|v| uses_name(&d.expression, v)))
+    }
+
+    /// The sound track for the movie from frame `from` (`base`: folder of the document file).
+    pub fn audio_track(&self, from: usize, base: Option<&FilePath>) -> Option<crate::video::AudioTrack> {
+        let p = self.audio.as_ref().filter(|p| !p.as_os_str().is_empty())?;
+        let path = match base {
+            Some(b) if p.is_relative() => b.join(p),
+            _ => p.clone(),
+        };
+        Some(crate::video::AudioTrack { path, start_s: self.audio_offset_s + from as f64 / self.fps.max(1e-9) })
+    }
+
+    /// Analyses the sound track for the drivers when they need it and the stored levels are
+    /// missing or belong to another file. Returns whether it analysed.
+    pub fn ensure_audio_levels(&mut self, base: Option<&FilePath>, ffmpeg: &FilePath) -> Result<bool, String> {
+        if !self.drivers_use_audio() {
+            return Ok(false);
+        }
+        let track = self.audio_track(0, base).ok_or("the drivers use the sound, but the animation has no sound file")?;
+        let source = track.path.to_string_lossy().into_owned();
+        if self.audio_levels.as_ref().is_some_and(|l| l.source == source) {
+            return Ok(false);
+        }
+        self.audio_levels = Some(crate::audio::analyse(&track.path, ffmpeg)?);
+        Ok(true)
+    }
+}
+
+/// Whether `name` occurs in `expr` as a whole word.
+fn uses_name(expr: &str, name: &str) -> bool {
+    let b = expr.as_bytes();
+    let word = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'@' || c == b'.';
+    expr.match_indices(name).any(|(i, _)| (i == 0 || !word(b[i - 1])) && b.get(i + name.len()).is_none_or(|c| !word(*c)))
+}
+
+/// Variables of a driver expression at one moment of the animation.
+#[derive(Clone, Copy, Debug)]
+pub struct DriverTime {
+    /// Time in frames (fractional between frames).
+    pub frame: f64,
+    pub frames: usize,
+    pub fps: f64,
+    /// Keyframe position (0 at the first keyframe, 1 at the second …).
+    pub key: f64,
+    /// Sound levels at this moment: loudness, bass, mid, treble (0 without a sound).
+    pub audio: [f64; 4],
+}
+
+/// The JSON value at a path (`a.b.0.c`), or None.
+fn node_at<'a>(v: &'a Value, path: &str) -> Option<&'a Value> {
+    let mut cur = v;
+    for part in path.split('.').filter(|p| !p.is_empty()) {
+        cur = match cur {
+            Value::Object(m) => m.get(part)?,
+            Value::Array(a) => a.get(part.parse::<usize>().ok()?)?,
+            _ => return None,
+        };
+    }
+    Some(cur)
+}
+
+/// A number at a path of a document's JSON (`a.b.0.c`; booleans 0 or 1), or None.
+pub fn value_at(v: &Value, path: &str) -> Option<f64> {
+    match node_at(v, path)? {
+        Value::Number(n) => n.as_f64(),
+        Value::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
+        _ => None,
+    }
+}
+
+/// Sets the number at a path (objects get missing keys, `like` gives their type; booleans
+/// take values above 0.5 as true; integers stay integers). False when the path does not exist.
+fn set_value_at(v: &mut Value, path: &str, x: f64, like: Value) -> bool {
+    let parts: Vec<&str> = path.split('.').collect();
+    let mut cur = v;
+    for (k, part) in parts.iter().enumerate() {
+        let last = k + 1 == parts.len();
+        cur = match cur {
+            Value::Object(m) => {
+                if last && !m.contains_key(*part) {
+                    m.insert((*part).to_string(), like.clone());
+                }
+                match m.get_mut(*part) {
+                    Some(c) => c,
+                    None => return false,
+                }
+            }
+            Value::Array(a) => match part.parse::<usize>().ok().and_then(|i| a.get_mut(i)) {
+                Some(c) => c,
+                None => return false,
+            },
+            _ => return false,
+        };
+    }
+    *cur = match cur {
+        Value::Bool(_) => Value::Bool(x > 0.5),
+        Value::Number(n) if n.is_u64() || n.is_i64() => serde_json::json!(x.round() as i64),
+        _ => serde_json::json!(x),
+    };
+    true
+}
+
+/// The default of a formula parameter that the document does not list (it is at its
+/// default): `<…>.params.<name>` below an object with a `formula` (layers, colorings,
+/// transformations).
+fn param_default(v: &Value, path: &str) -> Option<f64> {
+    param_default_value(v, path).map(|p| p.as_f64())
+}
+
+fn param_default_value(v: &Value, path: &str) -> Option<crate::formula::ast::ParamValue> {
+    let (owner, name) = path.rsplit_once(".params.")?;
+    let o = node_at(v, owner)?;
+    let id = o.get("formula")?.as_str()?;
+    let params = o.get("params").cloned().and_then(|p| serde_json::from_value(p).ok()).unwrap_or_default();
+    let program = crate::formula::library::library().get(id)?.program_with(&params).ok()?;
+    let p = program.params.iter().find(|p| p.name == name)?;
+    use crate::formula::ast::ParamValue as P;
+    match &p.default {
+        P::Float(_) | P::Int(_) | P::Bool(_) => Some(p.default.clone()),
+        _ => None,
+    }
+}
+
+/// A driver with its parsed expression.
+#[derive(Clone, Debug)]
+pub struct CompiledDriver {
+    pub path: String,
+    pub expr: crate::expr::Expr,
+}
+
+/// Parses the enabled drivers; the errors name the driver (`path: message`).
+pub fn compile_drivers(drivers: &[Driver]) -> (Vec<CompiledDriver>, Vec<String>) {
+    let mut out = Vec::new();
+    let mut errors = Vec::new();
+    for d in drivers.iter().filter(|d| d.enabled && !d.path.trim().is_empty()) {
+        match crate::expr::Expr::parse(&d.expression) {
+            Ok(expr) => out.push(CompiledDriver { path: d.path.trim().to_string(), expr }),
+            Err(e) => errors.push(format!("{}: {e}", d.path.trim())),
+        }
+    }
+    (out, errors)
+}
+
+/// Applies drivers to a document at time `tm`; returns the errors (`path: message`). Values a
+/// driver cannot set (missing path, not finite) stay as they are.
+pub fn apply_drivers(doc: &mut Document, drivers: &[CompiledDriver], tm: DriverTime) -> Vec<String> {
+    if drivers.is_empty() {
+        return Vec::new();
+    }
+    let Ok(mut v) = serde_json::to_value(&*doc) else { return vec!["the document could not be read".into()] };
+    let mut errors = Vec::new();
+    let fps = tm.fps.max(1e-9);
+    for d in drivers {
+        let current = value_at(&v, &d.path).or_else(|| param_default(&v, &d.path));
+        let vars = |name: &str| match name {
+            "t" => Some(tm.frame / fps),
+            "frame" => Some(tm.frame),
+            "frames" => Some(tm.frames as f64),
+            "u" => Some(if tm.frames > 1 { tm.frame / (tm.frames - 1) as f64 } else { 0.0 }),
+            "key" => Some(tm.key),
+            "fps" => Some(fps),
+            "audio" => Some(tm.audio[0]),
+            "bass" => Some(tm.audio[1]),
+            "mid" => Some(tm.audio[2]),
+            "treble" => Some(tm.audio[3]),
+            "value" => current,
+            _ => None,
+        };
+        let paths = |p: &str| value_at(&v, p).or_else(|| param_default(&v, p));
+        match d.expr.eval(&vars, &paths) {
+            Ok(x) if x.is_finite() => {
+                let like = if node_at(&v, &d.path).is_some() {
+                    Value::Null
+                } else {
+                    param_default_value(&v, &d.path).and_then(|p| serde_json::to_value(p).ok()).unwrap_or(Value::Null)
+                };
+                if !set_value_at(&mut v, &d.path, x, like) {
+                    errors.push(format!("{}: no such value in the document", d.path));
+                }
+            }
+            Ok(_) => errors.push(format!("{}: the result is not a number", d.path)),
+            Err(e) => errors.push(format!("{}: {e}", d.path)),
+        }
+    }
+    match serde_json::from_value::<Document>(v) {
+        Ok(d) => *doc = Document { animation: doc.animation.take(), ..d },
+        Err(e) => errors.push(format!("a driven value does not fit: {e}")),
+    }
+    errors
+}
+
+/// Numbers of a document a driver can drive (paths) with their current values; formula
+/// parameters at their defaults included.
+pub fn drivable_values(doc: &Document) -> Vec<(String, f64)> {
+    let d = Document { animation: None, ..doc.clone() };
+    let Ok(v) = serde_json::to_value(&d) else { return Vec::new() };
+    let mut out = Vec::new();
+    fn walk(v: &Value, path: &str, out: &mut Vec<(String, f64)>) {
+        match v {
+            Value::Number(n) => out.push((path.to_string(), n.as_f64().unwrap_or(0.0))),
+            Value::Bool(b) => out.push((path.to_string(), if *b { 1.0 } else { 0.0 })),
+            Value::Object(m) => {
+                // Formula parameters at their defaults (not in the JSON).
+                if let (Some(id), Some(params)) = (m.get("formula").and_then(Value::as_str), m.get("params"))
+                    && let Some(program) = crate::formula::library::library()
+                        .get(id)
+                        .and_then(|e| e.program_with(&serde_json::from_value(params.clone()).unwrap_or_default()).ok())
+                {
+                    use crate::formula::ast::ParamValue as P;
+                    for p in &program.params {
+                        if matches!(p.default, P::Float(_) | P::Int(_) | P::Bool(_)) && params.get(&p.name).is_none() {
+                            out.push((format!("{path}.params.{}", p.name), p.default.as_f64()));
+                        }
+                    }
+                }
+                for (k, c) in m {
+                    if path.is_empty() && k == "version" {
+                        continue;
+                    }
+                    walk(c, &if path.is_empty() { k.clone() } else { format!("{path}.{k}") }, out);
+                }
+            }
+            Value::Array(a) => {
+                for (i, c) in a.iter().enumerate() {
+                    walk(c, &format!("{path}.{i}"), out);
+                }
+            }
+            _ => {}
+        }
+    }
+    walk(&v, "", &mut out);
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1137,5 +1449,48 @@ mod tests {
         assert!(jump(&smooth) < jump(&raw) * 0.2, "{} → {}", jump(&raw), jump(&smooth));
         // Duration as flown.
         assert!(((smooth.len()) as f64 / 30.0 - s.last().unwrap().t).abs() < 0.1);
+    }
+
+    #[test]
+    fn drivers_follow_time_defaults_and_sound() {
+        let mut a = Document::for_formula("rfract:Mandelbrot");
+        a.layers[0].params.clear();
+        let b = a.clone();
+        let mut anim = Animation {
+            keyframes: vec![Keyframe { doc: a.clone(), frames: 60, ..Keyframe::default() }, Keyframe { doc: b, ..Keyframe::default() }],
+            fps: 30.0,
+            drivers: vec![
+                Driver { path: "view.rotation".into(), expression: "t * 90".into(), ..Driver::default() },
+                Driver { path: "layers.0.params.power".into(), expression: "value + 1 + (u > 0.5)".into(), ..Driver::default() },
+                Driver { path: "post.exposure".into(), expression: "bass * 2".into(), ..Driver::default() },
+                Driver { path: "layers.0.opacity".into(), expression: "@view.rotation / 1000".into(), ..Driver::default() },
+            ],
+            ..Animation::default()
+        };
+        assert!(anim.drivers_use_audio());
+        // A sound with bass in its second second.
+        let rate = 22050.0;
+        let samples: Vec<f32> = (0..(rate as usize * 2))
+            .map(|i| if i as f64 > rate { (i as f64 / rate * 60.0 * std::f64::consts::TAU).sin() as f32 } else { 0.0 })
+            .collect();
+        anim.audio_levels = Some(crate::audio::levels_of(&samples, rate));
+        let plan = AnimationPlan::new(&anim).unwrap();
+        let d = plan.doc_at(30.0);
+        assert!((d.view.rotation - 90.0).abs() < 1e-9, "{}", d.view.rotation);
+        use crate::formula::ast::ParamValue;
+        assert_eq!(d.layers[0].params.get("power"), Some(&ParamValue::Int(3)));
+        assert_eq!(plan.doc_at(50.0).layers[0].params.get("power"), Some(&ParamValue::Int(4)));
+        assert!((d.layers[0].opacity - 0.09).abs() < 1e-9, "{}", d.layers[0].opacity);
+        assert!(plan.doc_at(15.0).post.exposure < 0.05);
+        assert!(plan.doc_at(50.0).post.exposure > 0.3, "{}", plan.doc_at(50.0).post.exposure);
+        // Errors name the driver.
+        let (_, errors) = compile_drivers(&[Driver { path: "x".into(), expression: "sin(".into(), ..Driver::default() }]);
+        assert!(errors[0].starts_with("x:"), "{errors:?}");
+        let paths: Vec<String> = drivable_values(&a).into_iter().map(|(p, _)| p).collect();
+        assert!(paths.contains(&"layers.0.params.power".to_string()) && paths.contains(&"view.rotation".to_string()), "{paths:?}");
+        let curves = plan.driver_curves(&anim.drivers, 1000);
+        assert_eq!(curves[0].len(), plan.frame_count());
+        assert!((curves[0][30] - 90.0).abs() < 1e-9);
+        assert_eq!(plan.driver_curves(&anim.drivers, 7)[0].len(), 7);
     }
 }

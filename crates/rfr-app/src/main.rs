@@ -18,6 +18,7 @@ mod layers;
 mod manual;
 mod palette_editor;
 mod prefs;
+mod queue_window;
 mod theme;
 mod timeline;
 mod viewport;

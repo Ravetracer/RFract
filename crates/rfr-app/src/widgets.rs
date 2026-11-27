@@ -97,6 +97,15 @@ pub fn slider(ui: &mut Ui, text: &str, tip: &str, v: &mut f64, range: std::ops::
     reset_on_double_click(r, v, default)
 }
 
+/// Labeled number row without a range (drag or type).
+pub fn drag(ui: &mut Ui, text: &str, tip: &str, v: &mut f64, speed: f64, default: f64) -> Response {
+    label(ui, text, tip);
+    let r = ui.add(egui::DragValue::new(v).speed(speed).max_decimals(3));
+    ui.end_row();
+    let r = if tip.is_empty() { r } else { r.on_hover_text(tip) };
+    reset_on_double_click(r, v, default)
+}
+
 pub fn slider_log(ui: &mut Ui, text: &str, tip: &str, v: &mut f64, range: std::ops::RangeInclusive<f64>, default: f64) -> Response {
     label(ui, text, tip);
     let r = ui.add(egui::Slider::new(v, range).logarithmic(true).clamping(egui::SliderClamping::Never).max_decimals(5));

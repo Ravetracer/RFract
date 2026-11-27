@@ -21,6 +21,12 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
 - Flight recording in the timeline: the view and the 3D cameras while navigating become
   keyframes (as few as the *Tolerance* allows) with the recorded timing (*As flown*, speed
   changes smoothed); the *Cameraman* smooths jerky moves.
+- Drivers: document values computed by expressions in every frame (time, keyframe position,
+  the keyframed value, other values, sound levels), with a curve per driver in the timeline.
+- Sound: a sound file under exported movies; drivers can follow its loudness, bass, mids and
+  treble (analysed once with ffmpeg, stored in the document).
+- Render queue (*File › Render queue…*): images and animations rendered one after the other,
+  kept between sessions; `rfr-cli batch` runs a queue file or a list of documents.
 
 ## [0.8.0] - 2026-11-27
 

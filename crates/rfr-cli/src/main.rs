@@ -32,6 +32,13 @@ Commands:
                              from one image per doubling (fast; no palette rotation)
       --cpu                  Render on the CPU
       --ffmpeg <program>     The ffmpeg program (default: found on the search path)
+  batch <queue.json | input.rfr…> [options]
+                             Render a render queue (saved by the app) or documents one
+                             after the other: animations as movies, others as PNG images
+      --out <dir>            Documents: write the results here (default: next to them)
+      -W, -H, -s             Documents: size and samples (default: the document's)
+      --cpu                  Render on the CPU
+      --ffmpeg <program>     The ffmpeg program (default: found on the search path)
   formulas                   List the built-in formulas with their ids
   formulas --check <path>…   Compile formula files (.ufm, .ucl, .uxf, .frm) or folders and report
   params --check <path>… [--thumbs <dir>] [--notes]
@@ -106,11 +113,17 @@ fn animate(args: &[String]) -> Result<(), String> {
     }
     let input = input.ok_or("animate needs a document with an animation")?;
     let doc = rfr_core::io::open(&input)?;
-    let anim = doc.animation.as_deref().ok_or_else(|| format!("{} has no animation", input.display()))?;
-    let plan = rfr_core::animation::AnimationPlan::new(anim)?;
+    let mut anim = doc.animation.as_deref().cloned().ok_or_else(|| format!("{} has no animation", input.display()))?;
     let output = output.unwrap_or_else(|| input.with_extension("mp4"));
     let format = format.unwrap_or_else(|| VideoFormat::from_path(&output));
     let ffmpeg = rfr_core::video::ffmpeg_program(ffmpeg.as_deref());
+    // Sound levels for drivers that follow the music (stored levels are used when current).
+    let base = input.parent().map(Path::to_path_buf);
+    if anim.ensure_audio_levels(base.as_deref(), &ffmpeg)? {
+        eprintln!("sound analysed for the drivers");
+    }
+    let anim = &anim;
+    let plan = rfr_core::animation::AnimationPlan::new(anim)?;
     if format.needs_ffmpeg() && !rfr_core::video::ffmpeg_available(&ffmpeg) {
         return Err(format!("{} needs ffmpeg, which was not found ({}); use --format png or --ffmpeg <program>", format.label(), ffmpeg.display()));
     }
@@ -137,7 +150,8 @@ fn animate(args: &[String]) -> Result<(), String> {
     }
     let mut renderer = rfr_gpu::animation::FrameRenderer::new(if sequence { None } else { ctx.clone() });
     let mut seq = if sequence { Some(rfr_gpu::animation::ZoomSequence::new(ctx, rfr_core::animation::ZoomPath::new(anim)?, w, h, s)) } else { None };
-    let mut sink = VideoSink::new(&output, format, w, h, plan.fps(), &ffmpeg, None)?;
+    let audio = anim.audio_track(first, base.as_deref());
+    let mut sink = VideoSink::new(&output, format, w, h, plan.fps(), &ffmpeg, audio.as_ref())?;
     let t = Instant::now();
     let count = last + 1 - first;
     for (k, f) in (first..=last).enumerate() {
@@ -160,6 +174,72 @@ fn animate(args: &[String]) -> Result<(), String> {
         output.display()
     );
     Ok(())
+}
+
+fn batch(args: &[String]) -> Result<(), String> {
+    use rfr_core::queue::{JobState, Queue, QueueJob};
+    let (mut out, mut ffmpeg, mut cpu) = (None, None, false);
+    let (mut width, mut height, mut samples) = (0, 0, 0);
+    let mut inputs = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--out" => out = Some(PathBuf::from(value(args, &mut i, "--out")?)),
+            "-W" | "--width" => width = number::<u32>(value(args, &mut i, "--width")?, "--width")?,
+            "-H" | "--height" => height = number::<u32>(value(args, &mut i, "--height")?, "--height")?,
+            "-s" | "--samples" => samples = number::<u32>(value(args, &mut i, "--samples")?, "--samples")?,
+            "--ffmpeg" => ffmpeg = Some(PathBuf::from(value(args, &mut i, "--ffmpeg")?)),
+            "--cpu" => cpu = true,
+            a if a.starts_with('-') => return Err(format!("unknown option '{a}'")),
+            a => inputs.push(PathBuf::from(a)),
+        }
+        i += 1;
+    }
+    if inputs.is_empty() {
+        return Err("batch needs a queue file or documents".into());
+    }
+    let mut queue = Queue::default();
+    for p in &inputs {
+        if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("json")) {
+            queue.jobs.extend(Queue::load(p)?.jobs.into_iter().filter(|j| j.state == JobState::Waiting));
+        } else {
+            let mut j = QueueJob::for_file(p, out.as_deref())?;
+            (j.width, j.height, j.samples) = (width, height, samples);
+            queue.jobs.push(j);
+        }
+    }
+    let ffmpeg = rfr_core::video::ffmpeg_program(ffmpeg.as_deref());
+    let gpu = if cpu {
+        None
+    } else {
+        match rfr_gpu::GpuContext::new_headless() {
+            Ok(c) => Some(c),
+            Err(e) => {
+                eprintln!("{e}; rendering on the CPU");
+                None
+            }
+        }
+    };
+    let never = std::sync::atomic::AtomicBool::new(false);
+    let (n, mut failed) = (queue.jobs.len(), 0);
+    for (k, job) in queue.jobs.iter().enumerate() {
+        let t = Instant::now();
+        eprintln!("[{}/{n}] {}: {}", k + 1, job.name, job.summary());
+        let r = rfr_gpu::batch::run_job(job, gpu.clone(), &ffmpeg, &never, |p| {
+            use std::io::Write;
+            eprint!("\r[{}/{n}] {}: {:.0} %   ", k + 1, job.name, p * 100.0);
+            let _ = std::io::stderr().flush();
+        });
+        eprintln!();
+        match r {
+            Ok(m) => println!("[{}/{n}] {} → {m} in {}", k + 1, job.name, rfr_core::queue::duration(t.elapsed().as_secs_f64())),
+            Err(e) => {
+                failed += 1;
+                eprintln!("[{}/{n}] {} failed: {e}", k + 1, job.name);
+            }
+        }
+    }
+    if failed > 0 { Err(format!("{failed} of {n} jobs failed")) } else { Ok(()) }
 }
 
 fn render(args: &[String]) -> Result<(), String> {
@@ -657,6 +737,7 @@ fn main() -> ExitCode {
         }
         Some("render") => render(rest),
         Some("animate") => animate(rest),
+        Some("batch") => batch(rest),
         Some("params" | "upr") if rest.first().map(String::as_str) == Some("--check") => check_upr(&rest[1..]),
         Some("formulas") if rest.first().map(String::as_str) == Some("--check") => check_formulas(&rest[1..]),
         Some("formulas") => {

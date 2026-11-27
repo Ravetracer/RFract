@@ -115,6 +115,22 @@ impl FrameRenderer {
     }
 }
 
+impl FrameRenderer {
+    /// A still image of `doc` finished with its effects (denoised with its helper images when
+    /// they ask for it): 8-bit RGBA and a note on the denoising.
+    pub fn still(&mut self, doc: &rfr_core::doc::Document, width: u32, height: u32, samples: u32) -> Result<(Vec<u8>, Option<String>), String> {
+        let lin = self.render_plan(&Plan::sized(doc, width, height)?, samples)?;
+        let aux = match rfr_core::render::post::aux_documents(doc).filter(|_| doc.post.denoise) {
+            Some([a, n]) => {
+                let s = samples.clamp(1, 8);
+                Some((self.render_plan(&Plan::sized(&a, width, height)?, s)?, self.render_plan(&Plan::sized(&n, width, height)?, s)?))
+            }
+            None => None,
+        };
+        Ok(rfr_core::render::post::finish_export(lin, width, height, &doc.post, aux.as_ref()))
+    }
+}
+
 /// One image of a zoom sequence: its radius (log2) and premultiplied linear light at twice the
 /// frame size.
 struct SeqImage {

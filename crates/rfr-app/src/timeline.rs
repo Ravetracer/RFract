@@ -9,11 +9,16 @@
 //! cameras while navigating, fly mode included) becomes keyframes with the recorded timing,
 //! smoothed by the cameraman.
 
+use std::path::Path;
+use std::sync::mpsc::Receiver;
 use std::time::Instant;
 
 use egui::{Color32, RichText, Sense, Ui, pos2, vec2};
 use egui_phosphor::regular as ph;
-use rfr_core::animation::{Animation, AnimationPlan, Easing, FlightSample, Keyframe, Timing, keyframes_from_flight, smooth_flight};
+use rfr_core::animation::{
+    Animation, AnimationPlan, Driver, Easing, FlightSample, Keyframe, Timing, compile_drivers, drivable_values, keyframes_from_flight, smooth_flight,
+};
+use rfr_core::audio::AudioLevels;
 use rfr_core::doc::Document;
 
 use crate::viewport::{Recording, Viewport};
@@ -43,6 +48,13 @@ impl Default for Flight {
 #[derive(Default)]
 pub struct Timeline {
     flight: Flight,
+    /// Search text of the driver value menu.
+    driver_filter: String,
+    /// Driver values over the animation (for curves), for this animation.
+    driver_curves: Option<(Animation, Vec<Vec<f64>>)>,
+    /// Sound analysis running (file, result) and its last message.
+    audio_job: Option<(String, Receiver<Result<AudioLevels, String>>)>,
+    audio_message: Option<String>,
     frame: usize,
     playing: bool,
     play_pos: f64,
@@ -86,7 +98,8 @@ impl Timeline {
         Some((p.doc_at(f as f64), p.palette_phase(f as f64), playing))
     }
 
-    pub fn show(&mut self, ui: &mut Ui, doc: &mut Document, view: &mut Viewport) -> Option<TimelineAction> {
+    /// `base`: the folder of the document file (relative sound paths).
+    pub fn show(&mut self, ui: &mut Ui, doc: &mut Document, view: &mut Viewport, base: Option<&Path>) -> Option<TimelineAction> {
         let mut action = None;
         let recording = view.recording.is_some();
         let anim = doc.animation.as_deref().cloned().unwrap_or_default();
@@ -252,6 +265,13 @@ impl Timeline {
                 ui.vertical(|ui| {
                     ui.set_width(300.0);
                     timing_ui(ui, &mut a);
+                    ui.add_space(6.0);
+                    self.sound_ui(ui, &mut a, base);
+                });
+                ui.separator();
+                ui.vertical(|ui| {
+                    ui.set_width(470.0);
+                    self.drivers_ui(ui, doc, &mut a, count);
                 });
                 ui.separator();
                 ui.vertical(|ui| {
@@ -349,6 +369,175 @@ impl Timeline {
             }
         });
         msg
+    }
+
+    /// Document values computed by expressions in every frame.
+    fn drivers_ui(&mut self, ui: &mut Ui, doc: &Document, a: &mut Animation, frames: usize) {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("DRIVERS").size(theme::fs(11.0)).color(theme::TEXT_MUTED)).on_hover_text(
+                "Values computed by an expression in every frame, after the keyframes: for example a power that grows with 2 + t / 4, a slow wobble with value + 0.1 * noise(t), or an exposure that pumps with the bass: value + bass. Variables: t (seconds), frame, frames, u (0 at the start, 1 at the end), key (keyframe position), fps, value (the value from the keyframes), audio, bass, mid, treble (the sound's levels 0..1, see SOUND). Functions: sin cos tan asin acos atan atan2 sqrt abs exp ln log10 pow min max clamp mix step smoothstep floor ceil round fract sign noise if deg rad. @path reads another value of the document (@view.rotation).",
+            );
+            if ui.small_button(format!("{}  Driver", ph::PLUS)).on_hover_text("Adds a driver; choose the value with … and write its expression").clicked() {
+                a.drivers.push(Driver::default());
+            }
+        });
+        if a.drivers.is_empty() {
+            ui.label(RichText::new("No drivers: values follow the keyframes.").size(theme::fs(11.5)).color(theme::TEXT_MUTED));
+            return;
+        }
+        // Curves of the driven values (recomputed when the animation changes).
+        if self.driver_curves.as_ref().is_none_or(|(x, _)| x != &*a) {
+            let curves = AnimationPlan::new(a).ok().map(|p| p.driver_curves(&a.drivers, 240));
+            self.driver_curves = curves.map(|c| (a.clone(), c));
+        }
+        let (_, errors) = compile_drivers(&a.drivers);
+        let mut remove = None;
+        egui::ScrollArea::vertical().id_salt("drivers").max_height(220.0).show(ui, |ui| {
+            for (i, d) in a.drivers.iter_mut().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut d.enabled, "").on_hover_text("Driver on or off");
+                    ui.add(egui::TextEdit::singleline(&mut d.path).hint_text("value").desired_width(170.0).font(egui::TextStyle::Monospace))
+                        .on_hover_text("The value to drive: a path into the document; choose it with …");
+                    ui.menu_button("…", |ui| {
+                        ui.set_min_width(340.0);
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.driver_filter).hint_text("search (power, rotation, exposure…)").desired_width(320.0),
+                        )
+                        .request_focus();
+                        let filter = self.driver_filter.to_lowercase();
+                        egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                            for (p, v) in
+                                drivable_values(doc).into_iter().filter(|(p, _)| filter.is_empty() || p.to_lowercase().contains(&filter)).take(300)
+                            {
+                                if ui.button(format!("{p}  ({v:.4})")).clicked() {
+                                    d.path = p;
+                                    ui.close();
+                                }
+                            }
+                        });
+                    })
+                    .response
+                    .on_hover_text("Choose the value from the document's values");
+                    ui.add(egui::TextEdit::singleline(&mut d.expression).desired_width(200.0).font(egui::TextStyle::Monospace))
+                        .on_hover_text("Expression (see the hover text of DRIVERS)");
+                    if widgets::icon_button(ui, ph::TRASH, "Remove the driver").clicked() {
+                        remove = Some(i);
+                    }
+                });
+                let error = errors.iter().find(|e| e.starts_with(&format!("{}:", d.path.trim())));
+                let curve = self.driver_curves.as_ref().and_then(|(_, c)| c.get(i)).filter(|c| c.iter().any(|v| v.is_finite()));
+                match (error, curve) {
+                    _ if !d.enabled => {
+                        ui.label(RichText::new("off").size(theme::fs(11.0)).color(theme::TEXT_MUTED));
+                    }
+                    (Some(e), _) => {
+                        ui.label(RichText::new(e).size(theme::fs(11.0)).color(theme::WARN));
+                    }
+                    (None, Some(c)) => driver_curve(ui, c, self.frame, frames),
+                    (None, None) if !d.path.trim().is_empty() => {
+                        ui.label(RichText::new("no such value in the document").size(theme::fs(11.0)).color(theme::WARN));
+                    }
+                    _ => {}
+                }
+            }
+        });
+        if let Some(i) = remove {
+            a.drivers.remove(i);
+        }
+    }
+
+    /// The sound under the movie and its levels for drivers.
+    fn sound_ui(&mut self, ui: &mut Ui, a: &mut Animation, base: Option<&Path>) {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("SOUND").size(theme::fs(11.0)).color(theme::TEXT_MUTED));
+            if ui
+                .small_button(format!("{}  Sound…", ph::MUSIC_NOTES))
+                .on_hover_text("A sound file put under exported movies; drivers can follow its loudness, bass, mids and treble")
+                .clicked()
+            {
+                let mut dlg =
+                    rfd::FileDialog::new().add_filter("Sound", &["mp3", "wav", "ogg", "flac", "m4a", "aac", "opus"]).set_title("Sound for the movie");
+                if let Some(d) = a.audio.as_ref().and_then(|p| p.parent()) {
+                    dlg = dlg.set_directory(d);
+                }
+                if let Some(p) = dlg.pick_file() {
+                    a.audio = Some(p);
+                    self.audio_message = None;
+                }
+            }
+            if a.audio.is_some() && widgets::icon_button(ui, ph::TRASH, "Remove the sound").clicked() {
+                a.audio = None;
+                a.audio_levels = None;
+            }
+        });
+        let Some(p) = a.audio.clone() else {
+            ui.label(RichText::new("No sound").size(theme::fs(11.5)).color(theme::TEXT_MUTED));
+            return;
+        };
+        let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let track = a.audio_track(0, base);
+        let missing = track.as_ref().is_none_or(|t| !t.path.is_file());
+        ui.label(RichText::new(if missing { format!("{name} (not found)") } else { name }).size(theme::fs(11.5)).color(if missing {
+            theme::WARN
+        } else {
+            theme::TEXT_MUTED
+        }))
+        .on_hover_text(p.display().to_string());
+        widgets::grid(ui, "sound", |ui| {
+            widgets::drag(
+                ui,
+                "Sound offset",
+                "Where in the sound file frame 0 starts, in seconds (negative: the sound starts later)",
+                &mut a.audio_offset_s,
+                0.01,
+                0.0,
+            );
+        });
+        // Levels for the drivers: analysed when a sound is chosen (or on request).
+        if let Some((src, rx)) = &self.audio_job
+            && let Ok(r) = rx.try_recv()
+        {
+            match r {
+                Ok(l) if track.as_ref().is_some_and(|t| t.path.to_string_lossy() == *src) => {
+                    self.audio_message = Some(format!("Sound analysed ({:.1} s)", l.duration()));
+                    a.audio_levels = Some(l);
+                }
+                Ok(_) => {}
+                Err(e) => self.audio_message = Some(e),
+            }
+            self.audio_job = None;
+        }
+        let Some(track) = track else { return };
+        let source = track.path.to_string_lossy().into_owned();
+        let current = a.audio_levels.as_ref().is_some_and(|l| l.source == source);
+        let start = |me: &mut Self| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let path = track.path.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(rfr_core::audio::analyse(&path, &rfr_core::video::ffmpeg_program(None)));
+            });
+            me.audio_job = Some((source.clone(), rx));
+            me.audio_message = None;
+        };
+        if !current && self.audio_job.is_none() && self.audio_message.is_none() && !missing {
+            start(self);
+        }
+        ui.horizontal(|ui| {
+            let text = if self.audio_job.is_some() {
+                ui.ctx().request_repaint();
+                "Analysing the sound…".to_string()
+            } else if current {
+                self.audio_message.clone().unwrap_or_else(|| "Sound levels ready for drivers".into())
+            } else {
+                self.audio_message.clone().unwrap_or_else(|| "Sound not analysed".into())
+            };
+            ui.label(RichText::new(text).size(theme::fs(11.0)).color(theme::TEXT_MUTED)).on_hover_text(
+                "Drivers can follow the music: audio (loudness), bass, mid and treble, each 0..1 and smoothed. Analysed once with ffmpeg and stored in the document",
+            );
+            if self.audio_job.is_none() && ui.small_button("Analyse").on_hover_text("Analyse the sound again (needs ffmpeg)").clicked() {
+                start(self);
+            }
+        });
     }
 
     /// Loads keyframe `k` into the document for editing.
@@ -492,4 +681,23 @@ fn timing_ui(ui: &mut Ui, a: &mut Animation) {
             d.shutter,
         );
     });
+}
+
+/// A driver's value over the animation as a small curve, with the current frame marked.
+fn driver_curve(ui: &mut Ui, curve: &[f64], frame: usize, frames: usize) {
+    let (rect, resp) = ui.allocate_exact_size(vec2(440.0, 30.0), Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 3.0, theme::BG);
+    let finite: Vec<f64> = curve.iter().copied().filter(|v| v.is_finite()).collect();
+    let (lo, hi) = finite.iter().fold((f64::MAX, f64::MIN), |(a, b), v| (a.min(*v), b.max(*v)));
+    let span = (hi - lo).max(1e-12);
+    let n = curve.len().max(2) - 1;
+    let pt = |k: usize, v: f64| {
+        pos2(rect.left() + 4.0 + (rect.width() - 8.0) * k as f32 / n as f32, rect.bottom() - 4.0 - (rect.height() - 8.0) * ((v - lo) / span) as f32)
+    };
+    let line: Vec<egui::Pos2> = curve.iter().enumerate().filter(|(_, v)| v.is_finite()).map(|(k, v)| pt(k, *v)).collect();
+    painter.add(egui::Shape::line(line, egui::Stroke::new(1.5, theme::ACCENT)));
+    let x = rect.left() + 4.0 + (rect.width() - 8.0) * frame as f32 / (frames.max(2) - 1) as f32;
+    painter.line_segment([pos2(x, rect.top()), pos2(x, rect.bottom())], egui::Stroke::new(1.0, theme::TEXT_MUTED));
+    resp.on_hover_text(format!("From {lo:.4} to {hi:.4} over the animation; the line marks the current frame"));
 }

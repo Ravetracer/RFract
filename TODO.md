@@ -17,7 +17,8 @@ that come up along the way.
 - [x] Fly mode (hold to fly in/out toward the cursor, smooth speed ramps), flight recording →
       keyframes (fewest within a tolerance), recorded timing with smoothed speed, cameraman
       smoothing (Gaussian, scale-aware centers, ends kept).
-- [ ] Drivers and expressions, audio-reactive values, render queue.
+- [x] Drivers and expressions, audio-reactive values (sound under the movie), render queue
+      (app window, `rfr-cli batch`).
 - [ ] Exit: 1-minute 1080p deep zoom with palette rotation and motion blur (app and CLI);
       fly-over of a lit Mandelbrot landscape.
 

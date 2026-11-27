@@ -5,7 +5,9 @@
 //! the platform folders.
 
 pub mod animation;
+pub mod audio;
 pub mod doc;
+pub mod expr;
 pub mod formula;
 pub mod gradient;
 pub mod gradient_io;
@@ -14,6 +16,7 @@ pub mod io;
 pub mod math;
 pub mod palette;
 pub mod paths;
+pub mod queue;
 pub mod render;
 pub mod video;
 

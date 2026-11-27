@@ -4,6 +4,7 @@
 //! renderer (`renderer.rs`) that mirrors the CPU reference renderer of rfr-core.
 
 pub mod animation;
+pub mod batch;
 pub mod codegen;
 pub mod renderer;
 
