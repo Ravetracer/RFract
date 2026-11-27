@@ -17,9 +17,13 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
   (*Document lights*), as can 3D objects; over a terrain or an object they hang at their
   height, seen through the camera, and fade out behind them. Lights can fall off with
   distance (*Reach*), and flare ghosts can be edited one by one.
-
 - Location bookmarks (*View › Bookmarks*, Ctrl+B adds the current view): named views with
   thumbnails, saved with the document; `rfr-cli render --bookmark <name>`.
+
+### Changed
+
+- Development versions are published as pre-releases on the GitHub releases page (Linux,
+  Windows, macOS), with the PDF manual.
 
 ### Removed
 
