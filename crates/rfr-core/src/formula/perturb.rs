@@ -237,6 +237,7 @@ impl Lower<'_> {
             },
             Kind::Call(f, args) if args.len() == 1 => self.call(self.func(*f)?, &args[0])?,
             Kind::CallParam(i, a) => self.call(self.param_func(*i), a)?,
+            Kind::Deriv(a, v) => self.lower(&super::deriv::derivative(a, *v, &|i| self.param_func(i)))?,
             _ => return Err(format!("uses an operation without perturbation rule ({})", kind_name(&e.kind))),
         })
     }

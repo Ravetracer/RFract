@@ -297,6 +297,9 @@ pub enum Kind {
     MergeParam(usize, Box<Expr>, Box<Expr>),
     /// Element of the array local `slot` at the (flat, int) index, clamped to its capacity.
     Index(usize, Box<Expr>),
+    /// `deriv(e, x)`: the derivative of `e` (real or complex) with respect to the real or
+    /// complex local `x`. The back ends expand it with [`super::deriv::derivative`].
+    Deriv(Box<Expr>, usize),
 }
 
 #[derive(Clone, Debug, PartialEq)]

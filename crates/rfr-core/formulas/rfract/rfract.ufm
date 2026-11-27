@@ -799,3 +799,102 @@ default:
     hint = "The orbit stops when a step moves z less than this (squared)."
   endparam
 }
+
+RootFunction {
+; Root finding for f(z) = a·fn1(z)^p + b·fn2(z) + c: Newton, Halley, Schröder or Householder
+; steps (relaxed), optionally Nova (+ c). The derivatives come from deriv(), so f can be
+; changed freely.
+init:
+  if @nova && #ismand
+    z = @start
+  else
+    z = #pixel
+  endif
+loop:
+  complex f = @a * @fn1(z)^@p + @b * @fn2(z) + @c
+  complex d = deriv(f, z)
+  complex dd = 0
+  complex ddd = 0
+  complex step = f / d
+  if @method == 1
+    ; Halley
+    dd = deriv(d, z)
+    step = 2 * f * d / (2 * d * d - f * dd)
+  elseif @method == 2
+    ; Schröder (multiple roots)
+    dd = deriv(d, z)
+    step = f * d / (d * d - f * dd)
+  elseif @method == 3
+    ; Householder (third order)
+    dd = deriv(d, z)
+    ddd = deriv(dd, z)
+    step = (6 * f * d * d - 3 * f * f * dd) / (6 * d * d * d - 6 * f * d * dd + f * f * ddd)
+  endif
+  if @nova
+    z = z - @relax * step + #c
+  else
+    z = z - @relax * step
+  endif
+bailout:
+  |z - #zprev| > @tolerance
+default:
+  title = "Root finding (function)"
+  center = (0, 0)
+  magn = 0.75
+  maxiter = 100
+  int param method
+    caption = "Method"
+    enum = "Newton" "Halley" "Schröder" "Householder"
+    default = 0
+    hint = "Newton: f/f'. Halley and Householder converge faster; Schröder also at multiple roots."
+  endparam
+  complex param a
+    caption = "a"
+    default = (1, 0)
+    hint = "f(z) = a·fn1(z)^p + b·fn2(z) + c"
+  endparam
+  func fn1
+    caption = "fn1"
+    default = ident()
+    hint = "f(z) = a·fn1(z)^p + b·fn2(z) + c"
+  endfunc
+  complex param p
+    caption = "p (power)"
+    default = (3, 0)
+    hint = "f(z) = a·fn1(z)^p + b·fn2(z) + c"
+  endparam
+  complex param b
+    caption = "b"
+    default = (0, 0)
+    hint = "f(z) = a·fn1(z)^p + b·fn2(z) + c"
+  endparam
+  func fn2
+    caption = "fn2"
+    default = sin()
+    hint = "f(z) = a·fn1(z)^p + b·fn2(z) + c"
+  endfunc
+  complex param c
+    caption = "c (constant)"
+    default = (-1, 0)
+    hint = "f(z) = a·fn1(z)^p + b·fn2(z) + c"
+  endparam
+  complex param relax
+    caption = "Relaxation"
+    default = (1, 0)
+    hint = "Step factor (1: plain steps; other values twist the basins)."
+  endparam
+  bool param nova
+    caption = "Nova"
+    default = false
+    hint = "Add the point after every step (Nova fractal; Mandelbrot mode starts at the start value)."
+  endparam
+  complex param start
+    caption = "Nova start"
+    default = (1, 0)
+  endparam
+  float param tolerance
+    caption = "Tolerance"
+    default = 1e-12
+    hint = "The orbit stops when a step moves z less than this (squared)."
+  endparam
+}

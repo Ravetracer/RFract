@@ -20,6 +20,10 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
   fractal flames), presets, view fitting, FractInt `.ifs` import.
 - Formulas *Truchet tiles*, *Sierpinski carpet* and *Root finding (polynomial)* (Newton,
   Halley or Schröder steps for any polynomial up to degree 6, relaxation, Nova).
+- Formula language: `deriv(e, x)` gives the derivative of an expression with respect to a
+  variable (also through variables assigned before), the same on the GPU and the CPU.
+- Formula *Root finding (function)*: Newton, Halley, Schröder or Householder steps for
+  f(z) = a·fn1(z)^p + b·fn2(z) + c, with derivatives from `deriv`.
 - *Lyapunov* formula (Markus–Lyapunov sequences) with the *Lyapunov exponent* coloring;
   bundled formulas can suggest their coloring.
 - Fill and image layers (layer menu): solid fill, gradient fill (new *Gradient fill*

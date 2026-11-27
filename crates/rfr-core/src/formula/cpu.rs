@@ -573,6 +573,7 @@ impl<'a, S: Scalar + Send + Sync + 'static> Cc<'a, S> {
                 let (a, b) = (self.k(a), self.k(b));
                 E::K(Box::new(move |f| super::color::merge(mode, a(f), b(f))))
             }
+            Kind::Deriv(a, v) => self.expr(&super::deriv::derivative(a, *v, &|i| self.func_choice(i))),
             Kind::CallParam(i, a) => {
                 let func = self.func_choice(*i);
                 let a = self.c(a);

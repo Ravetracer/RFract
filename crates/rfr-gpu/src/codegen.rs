@@ -177,6 +177,10 @@ impl Gen<'_> {
                 let mode = merge_choices(self.prog, self.values).get(*i).copied().flatten().unwrap_or_default();
                 format!("k_merge({}u, {}, {})", mode.index(), self.expr(a), self.expr(b))
             }
+            Kind::Deriv(a, v) => {
+                let funcs = |i: usize| self.funcs.get(i).copied().flatten().unwrap_or(Func::Ident);
+                self.expr(&rfr_core::formula::deriv::derivative(a, *v, &funcs))
+            }
             Kind::CallParam(i, a) => {
                 let f = self.funcs.get(*i).copied().flatten().unwrap_or(Func::Ident);
                 self.complex_call(f, &self.expr(a))

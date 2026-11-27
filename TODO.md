@@ -11,7 +11,7 @@ that come up along the way.
 - [x] Fill and image layers (presets of the Pixel formula), gradient fill coloring.
 - [x] IFS density layers (affine maps, ten variations, presets, view fitting) and `.ifs` import.
 - [x] Root finding for polynomials (Newton, Halley, Schröder, relaxation, Nova).
-- [ ] Root finding for any formula with derivatives from the compiler (a derivative operator).
+- [x] Root finding for any formula with derivatives from the compiler (`deriv(e, x)`).
 - [x] Kleinian limit sets (Grandma's recipe, Riley; Maskit and the Apollonian gasket as cases).
 - [x] Truchet tiles and the Sierpinski carpet.
 - [x] L-systems (density layer of strokes, presets, `.l` import).

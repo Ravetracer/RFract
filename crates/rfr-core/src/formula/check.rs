@@ -2004,6 +2004,9 @@ impl<'a> Ck<'a> {
                 return Ok(Expr { ty: Ty::Int, kind: Kind::Int(n as i64) });
             }
         }
+        if lower == "deriv" && args.len() == 2 {
+            return self.deriv(args, line);
+        }
         let lname = if self.dialect == Dialect::Frm { name.to_string() } else { lower.clone() };
         let mut vals = Vec::new();
         for a in args {
@@ -2080,6 +2083,23 @@ impl<'a> Ck<'a> {
             return Ok(Expr { ty: Ty::Complex, kind: Kind::Call(f, vec![conv(a, Ty::Complex)]) });
         }
         Ok(Expr { ty: Ty::Complex, kind: Kind::Call(f, vec![conv(a, Ty::Complex)]) })
+    }
+
+    /// `deriv(e, x)`: the derivative of a real or complex expression with respect to a real or
+    /// complex variable (`super::deriv`).
+    fn deriv(&mut self, args: &[ast::Expr], line: usize) -> Result<Expr, Error> {
+        let x = self.expr(&args[1], line)?;
+        let slot = match x.kind {
+            Kind::Local(slot) if matches!(x.ty, Ty::Real | Ty::Complex) && self.locals[slot].cap.is_none() => slot,
+            _ => return err(line, "deriv(e, x): x must be a real or complex variable"),
+        };
+        let v = self.expr(&args[0], line)?;
+        let e = match self.numeric(v) {
+            e if e.ty == Ty::Int => conv(e, Ty::Real),
+            e if matches!(e.ty, Ty::Real | Ty::Complex) => e,
+            _ => return err(line, "deriv(e, x): e must be a number"),
+        };
+        Ok(Expr { ty: e.ty, kind: Kind::Deriv(Box::new(e), slot) })
     }
 
     /// Color constructors, channels and mixing functions; `None` for other names.
@@ -2743,6 +2763,7 @@ fn color_misuse_expr(e: &Expr) -> bool {
         Kind::ColorOp(_, args) => args.iter().any(color_misuse_expr),
         Kind::MergeParam(_, a, b) => color_misuse_expr(a) || color_misuse_expr(b),
         Kind::Index(_, i) => color_misuse_expr(i),
+        Kind::Deriv(a, _) => color_misuse_expr(a),
         Kind::Complex(a, b) | Kind::Arith(_, a, b) | Kind::Pow(a, b) | Kind::PowN(a, b) | Kind::Cmp(_, a, b) | Kind::And(a, b) | Kind::Or(a, b) => {
             colored(a) || colored(b) || color_misuse_expr(a) || color_misuse_expr(b)
         }
@@ -2882,7 +2903,7 @@ pub fn check_with(ast: &FormulaAst, kind: ProgramKind, classes: Option<&ClassCtx
                 continue;
             }
         }
-        return Ok(Program {
+        let mut prog = Program {
             name: ast.name.clone(),
             kind,
             index_slot: ck.index_slot,
@@ -2897,7 +2918,9 @@ pub fn check_with(ast: &FormulaAst, kind: ProgramKind, classes: Option<&ClassCtx
             fin,
             has_julia: ck.has_julia,
             transcendental: ck.transcendental,
-        });
+        };
+        super::deriv::resolve(&mut prog);
+        return Ok(prog);
     }
     err(0, "the variable types do not settle (assignments of different types)")
 }

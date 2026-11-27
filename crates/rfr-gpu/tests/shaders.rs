@@ -145,6 +145,18 @@ fn gpu_matches_the_cpu_renderer() {
     for id in ["rfract:Mandelbrot", "rfract:BurningShip", "rfract:Newton", "rfract:Magnet1", "rfract:Phoenix"] {
         cases.push((id.into(), Document::for_formula(id)));
     }
+    // Root finding with derivatives from deriv(): Newton on z³ − 1, Householder on z⁴ + ½sin(z) − 1 (simple roots;
+    // multiple roots converge slowly and f32 then stops at other steps).
+    cases.push(("root function newton".into(), Document::for_formula("rfract:RootFunction")));
+    let mut root = Document::for_formula("rfract:RootFunction");
+    {
+        use rfr_core::formula::ParamValue as V;
+        let p = &mut root.layers[0].params;
+        p.insert("method".into(), V::Int(3));
+        p.insert("p".into(), V::Complex([4.0, 0.0]));
+        p.insert("b".into(), V::Complex([0.5, 0.0]));
+    }
+    cases.push(("root function householder".into(), root));
     let mut julia = Document::for_formula("rfract:Mandelbrot");
     julia.layers[0].julia = true;
     julia.view.set_center([0.0, 0.0]);

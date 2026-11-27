@@ -1,13 +1,16 @@
 # Formulas
 
 A formula describes one iteration step: how *z* changes from one step to the next, where it
-starts and when it has escaped (the bailout condition). RFract ships 565 formulas:
+starts and when it has escaped (the bailout condition). RFract ships 566 formulas:
 
-- **RFract** (22): Mandelbrot (integer powers), Multibrot (real powers), Burning Ship, Tricorn,
+- **RFract** (23): Mandelbrot (integer powers), Multibrot (real powers), Burning Ship, Tricorn,
   Celtic, Buffalo, Perpendicular Mandelbrot, Phoenix, Lambda, Magnet I and II, Newton, Nova,
   Spider, Manowar, three Barnsley formulas, Lyapunov (Markus–Lyapunov sequences), Truchet
-  tiles, Sierpinski carpet and Root finding (Newton, Halley or Schröder steps for any
-  polynomial up to degree 6, with relaxation and Nova).
+  tiles, Sierpinski carpet, Root finding (polynomial) (Newton, Halley or Schröder steps for
+  any polynomial up to degree 6, with relaxation and Nova) and Root finding (function)
+  (Newton, Halley, Schröder or Householder steps for f(z) = a·fn1(z)^p + b·fn2(z) + c with
+  two function parameters; its derivatives come from `deriv`, so a copy of it finds the
+  roots of any function you write).
 - **Attractors** (9): strange attractors for density layers (see *Layers*).
 - **FractalPark** (534): the published formula library of the open source FractalPark project
   (MIT license), grouped into families such as algebraic powers, transcendental functions,
@@ -110,6 +113,13 @@ rfr-cli formulas --check path/to/formulas
 - Assignments inside expressions: `(x = sqrt(y)) < 1`, `(a = b = 0)`, `abs(r = random(r))`,
   `until (i = i + 1) >= 10` assign and give the assigned value. A single `=` compares when
   its left side cannot be assigned or a text follows (`(@mode = "Julia")`).
+- Derivatives: `deriv(e, x)` is the derivative of the real or complex expression `e` with
+  respect to the variable `x` (for complex functions the complex derivative), built by
+  RFract from the expression. Variables that were assigned earlier in the same section are
+  followed, so `f = z^3 - 1` and then `d = deriv(f, z)` and `dd = deriv(d, z)` give the
+  first and second derivative. Variables that change under a condition or in a loop in
+  between, parameters and rounding functions count as constants. Root finding formulas
+  (Newton, Halley, …) need no hand-written derivatives this way.
 - Colors: `rgb`, `rgba`, `hsl`, `hsla` (hue 0 to 6), `red`, `green`, `blue`, `alpha`, `hue`,
   `sat`, `lum`, `blend`, `compose`, `gradient` (the coloring's gradient) and the merge
   functions (`mergenormal`, `mergemultiply`, `mergescreen`, … `mergeluminance`). Colors are
