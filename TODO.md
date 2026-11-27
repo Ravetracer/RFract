@@ -17,7 +17,9 @@ Open points of the earlier stages (their notes below stay for the details).
       power 2 from 0); only with a solid inside, not in double-float (GPU) and perturbation
       views. Tolerance pixel/65536, floors 3.6e-15 (f64) and 2.4e-7 (f32). Images identical
       to before; CPU 1080p heavy view 141 s → 4 s (timings with a busy GPU, rough).
-- [ ] Automatic iteration count.
+- [x] Automatic iteration count: layer flag `auto_iterations`, app probes after the view
+      settles (`render/iterations.rs`, 192 px CPU probe, doubles while >1 % escape in the
+      second half and some stay inside; never lowers).
 - [ ] Location bookmarks.
 - [ ] Histogram coloring.
 - [ ] Post-transformations.

@@ -969,6 +969,9 @@ pub struct Layer {
     /// Parameter values by name; missing ones use the formula's defaults.
     pub params: BTreeMap<String, ParamValue>,
     pub max_iter: u32,
+    /// The app raises `max_iter` when the view needs more (see
+    /// [`crate::render::iterations::suggest`]); renders use the stored value.
+    pub auto_iterations: bool,
     /// Julia mode (for formulas with a Mandelbrot/Julia switch) and its seed.
     pub julia: bool,
     pub seed: [f64; 2],
@@ -1053,6 +1056,7 @@ impl Default for Layer {
             formula: "rfract:Mandelbrot".into(),
             params: BTreeMap::new(),
             max_iter: 500,
+            auto_iterations: false,
             julia: false,
             seed: [-0.8, 0.156],
             outside_method: OutsideMethod::Smooth,

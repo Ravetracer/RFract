@@ -8,6 +8,7 @@
 pub mod composite;
 pub mod cpu;
 pub mod density;
+pub mod iterations;
 pub mod light;
 pub mod object;
 pub mod oidn;

@@ -78,6 +78,7 @@ pub struct App {
     /// Notes of the last import (what did not carry over), shown in a window.
     import_notes: Option<(String, Vec<String>)>,
     status: Option<(String, Instant, bool)>,
+    auto_iter: crate::auto_iter::AutoIterations,
 }
 
 struct UprPicker {
@@ -151,6 +152,7 @@ impl App {
             editor: Default::default(),
             import_notes: None,
             status: None,
+            auto_iter: Default::default(),
         };
         app.rescan_formulas(&cc.egui_ctx);
         if let Some(p) = initial {
@@ -1027,6 +1029,11 @@ impl eframe::App for App {
                     }
                 }
             }
+        }
+        // Automatic iteration counts (layers with Auto), after the view has settled.
+        let busy = ctx.input(|i| i.pointer.any_down());
+        for m in self.auto_iter.update(&mut self.doc.doc, &ctx, busy) {
+            self.notify(m);
         }
         if self.show_explore {
             let mut picked = None;

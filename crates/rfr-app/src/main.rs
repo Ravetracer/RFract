@@ -7,6 +7,7 @@
 
 mod anim_export;
 mod app;
+mod auto_iter;
 mod browser;
 mod doc;
 mod editor;

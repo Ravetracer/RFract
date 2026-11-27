@@ -546,8 +546,13 @@ fn fractal_sections(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
         }
         widgets::grid(ui, "formula-iter", |ui| {
             widgets::label(ui, "Iterations", "Most iterations per point. Deep views and thin structures need more; more iterations take longer");
-            ui.add(egui::Slider::new(&mut l.max_iter, 10..=100_000).logarithmic(true).clamping(egui::SliderClamping::Never))
-                .on_hover_text("Most iterations per point");
+            ui.horizontal(|ui| {
+                ui.add(egui::Slider::new(&mut l.max_iter, 10..=100_000).logarithmic(true).clamping(egui::SliderClamping::Never))
+                    .on_hover_text("Most iterations per point");
+                ui.checkbox(&mut l.auto_iterations, "Auto").on_hover_text(
+                    "Raise the iterations automatically when the view needs more (checked on a small preview after the view settles; never lowered)",
+                );
+            });
             ui.end_row();
         });
         if program.as_ref().is_some_and(|p| p.has_julia) {

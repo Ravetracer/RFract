@@ -35,6 +35,12 @@ or drag field), complex numbers (real and imaginary part), switches, choices and
 the set (colored by *Inside*). Deep views and thin structures need more iterations; more take
 longer.
 
+**Auto** next to *Iterations* raises the limit by itself: once the view stops moving, a small
+preview of the layer is checked, and while more than one in a hundred of its points escape
+only in the second half of the limit (and some stay inside), the limit doubles. The status bar
+says when it changed. It is never lowered, so lower it by hand after zooming out. Renders
+(export, command line, render queue) use the stored limit.
+
 High limits cost little inside the set when *Inside* is a solid color: an orbit that comes
 back to an earlier point is caught in a cycle and stops early (*periodicity checking*, for
 formulas whose step depends only on z), and the Mandelbrot set skips its main cardioid and

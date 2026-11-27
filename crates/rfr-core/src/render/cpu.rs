@@ -64,7 +64,46 @@ impl<S: Scalar + Send + Sync + 'static> LayerK<S> {
     /// Color (linear RGB, straight alpha) of the layer at plane point `p` of pixel `pix`
     /// (x, y, sample index), its height when the layer is lit (else 0), and whether the orbit
     /// stayed inside for at least [`GUESS_MIN_ITER`] iterations (see [`guess_tile`]).
-    fn eval(&self, f: &mut LayerF<S>, lp: &LayerPlan, plan: &Plan, mut p: Cx<S>, d: Cfx, pix: (u32, u32, u32)) -> ([f32; 4], [f32; 2], bool) {
+    fn eval(&self, f: &mut LayerF<S>, lp: &LayerPlan, plan: &Plan, p: Cx<S>, d: Cfx, pix: (u32, u32, u32)) -> ([f32; 4], [f32; 2], bool) {
+        let Some(o) = self.orbit(f, lp, plan, p, d, pix) else {
+            return ([0.0; 4], [0.0, 3.0e38], false);
+        };
+        let maxit = lp.max_iter;
+        let region = if o.escaped { &lp.outside } else { &lp.inside };
+        let dz = (o.z.re.d() * o.z.re.d() + o.z.im.d() * o.z.im.d()).sqrt();
+        let r = OrbitResult { z: o.z.v(), zprev: o.zprev.v(), zprev2: o.zprev2.v(), iter: o.iter, escaped: o.escaped, dz };
+        // The color and the gradient position before the offset (lit layers' heights).
+        let (color, value) = match region.method {
+            ColorMethod::Formula(_) => {
+                let (k, fr) = if o.escaped { (self.outside.as_ref(), f.outside.as_mut()) } else { (self.inside.as_ref(), f.inside.as_mut()) };
+                match (k, fr) {
+                    (Some(k), Some(fr)) => {
+                        fr.zcur = o.z;
+                        let (index, solid) = k.color_final(fr, o.iter, o.zprev);
+                        let direct = k.direct_color(fr);
+                        let value = if solid || direct.is_some() { 0.0 } else { region.position(index.v()) };
+                        (shade_formula(region, index.v(), solid, direct), value)
+                    }
+                    _ => (region.solid, 0.0),
+                }
+            }
+            _ => {
+                let value = native_value(region, &r, plan.frame.pixel_size()).map_or(0.0, |v| region.position(v));
+                (shade_native(region, &r, plan.frame.pixel_size()), value)
+            }
+        };
+        // Lit layers and layers with effects: the height and the distance to the set in pixels.
+        let field = lp.light.as_ref().map_or([0.0, 3.0e38], |l| {
+            let smooth = if o.escaped { smooth_iter(&r) } else { maxit as f64 };
+            let distance = if l.source == crate::doc::HeightSource::Distance { light::distance_height(&r, plan.frame.pixel_size()) } else { 0.0 };
+            [light::height(l.source, smooth, value, distance, color), light::distance_px(&r, plan.frame.pixel_size())]
+        });
+        (color, field, !o.escaped && maxit >= GUESS_MIN_ITER)
+    }
+
+    /// The orbit of the sample at plane point `p` of pixel `pix` (its transformations, the
+    /// fractal with the colorings' hooks); none when a transformation makes it solid.
+    fn orbit(&self, f: &mut LayerF<S>, lp: &LayerPlan, plan: &Plan, mut p: Cx<S>, d: Cfx, pix: (u32, u32, u32)) -> Option<Orbit<S>> {
         // Screen values and one random stream per program (kernel.wgsl seeds the same way).
         let base = super::hash(pix.0 ^ super::hash(pix.1 ^ super::hash(pix.2.wrapping_add(0x9E37_79B9))));
         let screen = |fr: &mut Frame<S>, tag: u32| {
@@ -88,7 +127,7 @@ impl<S: Scalar + Send + Sync + 'static> LayerK<S> {
         for (t, tf) in self.transforms.iter().zip(f.transforms.iter_mut()) {
             let (q, solid) = t.transform(tf, p);
             if solid {
-                return ([0.0; 4], [0.0, 3.0e38], false);
+                return None;
             }
             p = q;
         }
@@ -135,36 +174,7 @@ impl<S: Scalar + Send + Sync + 'static> LayerK<S> {
                 None => self.fractal.run_with(&mut f.fractal, maxit, hook),
             }
         };
-        let region = if o.escaped { &lp.outside } else { &lp.inside };
-        let dz = (o.z.re.d() * o.z.re.d() + o.z.im.d() * o.z.im.d()).sqrt();
-        let r = OrbitResult { z: o.z.v(), zprev: o.zprev.v(), zprev2: o.zprev2.v(), iter: o.iter, escaped: o.escaped, dz };
-        // The color and the gradient position before the offset (lit layers' heights).
-        let (color, value) = match region.method {
-            ColorMethod::Formula(_) => {
-                let (k, fr) = if o.escaped { (self.outside.as_ref(), f.outside.as_mut()) } else { (self.inside.as_ref(), f.inside.as_mut()) };
-                match (k, fr) {
-                    (Some(k), Some(fr)) => {
-                        fr.zcur = o.z;
-                        let (index, solid) = k.color_final(fr, o.iter, o.zprev);
-                        let direct = k.direct_color(fr);
-                        let value = if solid || direct.is_some() { 0.0 } else { region.position(index.v()) };
-                        (shade_formula(region, index.v(), solid, direct), value)
-                    }
-                    _ => (region.solid, 0.0),
-                }
-            }
-            _ => {
-                let value = native_value(region, &r, plan.frame.pixel_size()).map_or(0.0, |v| region.position(v));
-                (shade_native(region, &r, plan.frame.pixel_size()), value)
-            }
-        };
-        // Lit layers and layers with effects: the height and the distance to the set in pixels.
-        let field = lp.light.as_ref().map_or([0.0, 3.0e38], |l| {
-            let smooth = if o.escaped { smooth_iter(&r) } else { maxit as f64 };
-            let distance = if l.source == crate::doc::HeightSource::Distance { light::distance_height(&r, plan.frame.pixel_size()) } else { 0.0 };
-            [light::height(l.source, smooth, value, distance, color), light::distance_px(&r, plan.frame.pixel_size())]
-        });
-        (color, field, !o.escaped && maxit >= GUESS_MIN_ITER)
+        Some(o)
     }
 }
 
@@ -640,6 +650,34 @@ fn guess_tile(cells: &mut [Cell], w: usize, h: usize, mut sample: impl FnMut(usi
         }
         let (mx, my) = ((x0 + x1) / 2, (y0 + y1) / 2);
         blocks.extend([(x0, y0, mx, my), (mx, y0, x1, my), (x0, my, mx, y1), (mx, my, x1, y1)]);
+    }
+}
+
+/// Iteration counts of the plan's first layer at the pixel centers, row-major: the iterations
+/// of escaped orbits, none for orbits that stay inside (or pixels a transformation makes
+/// solid). Density and 3D object layers give nothing.
+pub fn iteration_counts(plan: &Plan) -> Vec<Option<u32>> {
+    let layers = plan.layers();
+    let Some(lp) = layers.first() else { return Vec::new() };
+    fn run<S: Scalar + Send + Sync + 'static>(k: &LayerK<S>, lp: &LayerPlan, plan: &Plan, lift: impl Fn(C64) -> Cx<S> + Sync) -> Vec<Option<u32>> {
+        let (w, h) = (plan.frame.width as usize, plan.frame.height as usize);
+        let mut out = vec![None; w * h];
+        out.par_chunks_mut(w).enumerate().for_each_init(
+            || k.frames(),
+            |f, (y, row)| {
+                for (x, o) in row.iter_mut().enumerate() {
+                    let (px, py) = (x as f64 + 0.5, y as f64 + 0.5);
+                    let (p, d) = (plan.frame.plane(px, py), plan.frame.offset_fx(px, py));
+                    *o = k.orbit(f, lp, plan, lift(p), d, (x as u32, y as u32, 0)).filter(|o| o.escaped).map(|o| o.iter);
+                }
+            },
+        );
+        out
+    }
+    match Kernel::new(lp, plan) {
+        Kernel::Plain(k) => run(&k, lp, plan, |p| p),
+        Kernel::Dual(k) => run(&k, lp, plan, |p| Cx::new(Dual::new(p.re, 1.0), Dual::new(p.im, 0.0))),
+        Kernel::Density(_) | Kernel::Object => Vec::new(),
     }
 }
 
