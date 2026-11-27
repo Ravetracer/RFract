@@ -58,7 +58,7 @@ struct Uni {
     lrad: array<vec4<f32>, 4>,
     // shadow length (pixels, 0: none), softness, occlusion strength, occlusion radius (pixels)
     lshadow: vec4<f32>,
-    // reflection, environment image slot (-1: the sky colors), normal output, unused
+    // reflection, environment image slot (-1: the sky colors), normal output, point lights
     lenv: vec4<f32>,
     // sky at the horizon and at the zenith (linear RGB)
     lsky0: vec4<f32>,
@@ -80,6 +80,10 @@ struct Uni {
     fx2: vec4<f32>,
     // colors of the shadow, the outer and inner glow and the neon
     fxc: array<vec4<f32>, 4>,
+    // point lights (the document's light sources): position in pixels (x, y down, z up), unused;
+    // color times intensity
+    lpos: array<vec4<f32>, 4>,
+    lprad: array<vec4<f32>, 4>,
 }
 
 struct Params {

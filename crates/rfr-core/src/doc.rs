@@ -1145,6 +1145,9 @@ pub struct Lighting {
     pub environment: String,
     pub horizon: [f32; 3],
     pub zenith: [f32; 3],
+    /// The document's light sources ([`LightSource`]) also light the layer, as point lights
+    /// at their position and height.
+    pub scene_lights: bool,
     /// Show the relief as a 3D terrain seen by `camera` instead of from straight above;
     /// `terrain_height` is the height of its highest part as a share of the image height.
     pub terrain: bool,
@@ -1194,6 +1197,7 @@ impl Default for Lighting {
             environment: String::new(),
             horizon: [0.85, 0.8, 0.75],
             zenith: [0.15, 0.3, 0.7],
+            scene_lights: false,
             terrain: false,
             terrain_height: 0.15,
             camera: Camera::default(),

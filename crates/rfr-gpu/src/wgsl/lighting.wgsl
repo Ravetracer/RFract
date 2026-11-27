@@ -335,9 +335,9 @@ fn l_occlusion(px: f32, py: f32, z0: f32, k: f32, radius: f32, strength: f32, tu
 }
 
 // rfr_core::render::light::shade (normal from the slopes; shade.wgsl)
-fn l_shade(color: vec4<f32>, gx: f32, gy: f32, seen: array<f32, 4>, open: f32, v: vec3<f32>) -> vec4<f32> {
+fn l_shade(color: vec4<f32>, gx: f32, gy: f32, seen: array<f32, 4>, open: f32, v: vec3<f32>, pts: array<vec4<f32>, 4>) -> vec4<f32> {
     let k = U.light.y;
-    return l_shade_n(color, normalize(vec3<f32>(-k * gx, -k * gy, 1.0)), seen, open, v);
+    return l_shade_n(color, normalize(vec3<f32>(-k * gx, -k * gy, 1.0)), seen, open, v, pts);
 }
 
 @compute @workgroup_size(8, 8)
@@ -402,13 +402,25 @@ fn lit(@builtin(global_invocation_id) gid: vec3<u32>) {
                 seen[i] = l_shadow(U.ldir[i].xyz, px, py, z0, k, U.lshadow.x, U.lshadow.y, l_rnd(&rng));
             }
         }
+        // Point lights: the direction from here; shadows reach no farther than the light
+        // (light::point_dir).
+        var pts = array<vec4<f32>, 4>();
+        for (var i = 0u; i < u32(U.lenv.w); i = i + 1u) {
+            let d = vec3<f32>(U.lpos[i].x - px, py - U.lpos[i].y, U.lpos[i].z - z0);
+            let dir = normalize(d);
+            var sn = 1.0;
+            if U.lshadow.x > 0.0 {
+                sn = l_shadow(dir, px, py, z0, k, min(U.lshadow.x, length(d.xy)), U.lshadow.y, l_rnd(&rng));
+            }
+            pts[i] = vec4<f32>(dir, sn);
+        }
         var open = 1.0;
         if U.lshadow.z > 0.0 && U.lshadow.w > 0.0 {
             let turn = l_rnd(&rng);
             let jitter = l_rnd(&rng);
             open = l_occlusion(px, py, z0, k, U.lshadow.w, U.lshadow.z, turn, jitter);
         }
-        col = l_shade(color, gx, gy, seen, open, view);
+        col = l_shade(color, gx, gy, seen, open, view, pts);
     }
     if U.lighti.w == 0u && U.fx2.w > 0.5 {
         col = l_effects(col, px, py, de, &rng);

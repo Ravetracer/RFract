@@ -26,7 +26,7 @@ pub fn select(ctx: &egui::Context, i: usize) {
 /// Screen position of `light` in the image rectangle `rect`.
 pub fn screen_of(doc: &Document, rect: Rect, light: &LightSource) -> Option<Pos2> {
     let (w, h) = (doc.image.width.max(1), doc.image.height.max(1));
-    let (x, y) = rfr_core::flare::pixel_of(doc, &light.position, w, h)?;
+    let (x, y) = rfr_core::flare::screen_pos(doc, light, w, h)?;
     let p = Pos2::new(rect.min.x + (x / w as f64) as f32 * rect.width(), rect.min.y + (y / h as f64) as f32 * rect.height());
     p.is_finite().then_some(p)
 }
@@ -94,7 +94,15 @@ pub fn section(ui: &mut Ui, doc: &mut Document) {
             l.position = doc.view.center.clone();
         }
         ui.end_row();
-        widgets::color(ui, "Color", "Color of the light (its glow and flare)", &mut l.color);
+        widgets::slider(
+            ui,
+            "Height",
+            "Height above the plane as a share of the image height: where it lights lit layers from (Document lights) and where it hangs over a 3D terrain",
+            &mut l.height,
+            0.0..=2.0,
+            d.height,
+        );
+        widgets::color(ui, "Color", "Color of the light (its glow, its flare and the light it casts)", &mut l.color);
         widgets::slider(ui, "Intensity", "Brightness of the glow and the flare together", &mut l.intensity, 0.0..=5.0, d.intensity);
         widgets::checkbox(ui, "Visible", "The light itself shows as a glow", &mut l.visible);
         if l.visible {

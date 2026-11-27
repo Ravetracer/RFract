@@ -129,6 +129,10 @@ shine on it from above. Switch on **Lit** and choose where the heights come from
 - Up to four **lights**, each with a direction (degrees counterclockwise from the right edge of
   the image), a height above the image (low lights rake across the relief), an intensity and a
   color. *+ Light* adds one from the opposite side.
+- **Document lights** lets the light sources of the *Lights* section (see *Effects*) light
+  the layer too, as points: each lights the relief from its position in the plane and its
+  *Height*, so slopes facing it brighten and shadows fall away from it (no farther than the
+  light). Up to four light sources count; they do not get dimmer with distance.
 
 ### 3D terrain
 

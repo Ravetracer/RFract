@@ -32,6 +32,11 @@ pub struct LightPlan {
     /// Per light: the direction toward it (x right, y up, z toward the viewer) and its color
     /// times its intensity.
     pub lights: Vec<([f32; 3], [f32; 3])>,
+    /// Lit by the document's light sources (see [`LightPlan::set_points`]).
+    pub scene_lights: bool,
+    /// Point lights (the document's light sources): position in pixels (x right, y down, z
+    /// up) and color times intensity.
+    pub points: Vec<([f32; 3], [f32; 3])>,
     /// Shadow length as a share of the image height (0: no shadows) and the light's apparent
     /// size (0: hard shadows).
     pub shadow: f32,
@@ -125,6 +130,8 @@ impl LightPlan {
             roughness: l.roughness.clamp(0.02, 1.0) as f32,
             model: l.model,
             lights,
+            scene_lights: l.scene_lights,
+            points: Vec::new(),
             shadow: if l.shadows { l.shadow_length.max(0.0) as f32 } else { 0.0 },
             softness: l.softness.max(0.0) as f32,
             occlusion: l.occlusion.max(0.0) as f32,
@@ -176,6 +183,25 @@ impl LightPlan {
             Some(_) => self.terrain_height * image_height as f32 / self.height_range,
             None => self.relief * image_height as f32 * 2.0,
         }
+    }
+
+    /// The point lights of the document's light sources for an image of `doc`'s view at
+    /// `w` × `h` (at most [`crate::doc::MAX_LIGHTS`], the enabled ones).
+    pub fn set_points(&mut self, doc: &crate::doc::Document, w: u32, h: u32) {
+        self.points = if self.scene_lights {
+            doc.lights
+                .iter()
+                .filter(|s| s.enabled && s.intensity > 0.0)
+                .filter_map(|s| {
+                    let (x, y) = crate::flare::pixel_of(doc, &s.position, w, h)?;
+                    let k = s.intensity as f32;
+                    Some(([x as f32, y as f32, (s.height * h as f64) as f32], s.color.map(|c| c * k)))
+                })
+                .take(crate::doc::MAX_LIGHTS)
+                .collect()
+        } else {
+            Vec::new()
+        };
     }
 
     /// The size of the height values of the source for a terrain: smooth iterations up to
@@ -243,14 +269,32 @@ pub fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
 /// Shades `color` (linear RGB, straight alpha) at a point whose heights rise by `gx` per pixel
 /// to the right and `gy` per pixel upward (`k`: [`LightPlan::slope_scale`]); `light_seen` is
 /// the share of each light that reaches the point (shadows), `open` the share of the sky
-/// (ambient occlusion), `v` the direction toward the viewer ((0, 0, 1) from straight above).
+/// (ambient occlusion), `v` the direction toward the viewer ((0, 0, 1) from straight above);
+/// `points`: per point light the direction toward it from this point and its seen share.
 #[allow(clippy::too_many_arguments)]
-pub fn shade(l: &LightPlan, color: [f32; 4], gx: f32, gy: f32, k: f32, light_seen: &[f32], open: f32, v: [f32; 3]) -> [f32; 4] {
-    shade_normal(l, color, normalize([-k * gx, -k * gy, 1.0]), light_seen, open, v)
+pub fn shade(
+    l: &LightPlan,
+    color: [f32; 4],
+    gx: f32,
+    gy: f32,
+    k: f32,
+    light_seen: &[f32],
+    open: f32,
+    v: [f32; 3],
+    points: &[([f32; 3], f32)],
+) -> [f32; 4] {
+    shade_normal(l, color, normalize([-k * gx, -k * gy, 1.0]), light_seen, open, v, points)
+}
+
+/// The direction from the surface point (`px`, `py`, pixels, y down; `z0` up) toward a point
+/// light at `pos` (x right, y up, z up) and the horizontal distance to it in pixels.
+pub fn point_dir(pos: [f32; 3], px: f32, py: f32, z0: f32) -> ([f32; 3], f32) {
+    let d = [pos[0] - px, py - pos[1], pos[2] - z0];
+    (normalize(d), (d[0] * d[0] + d[1] * d[1]).sqrt())
 }
 
 /// [`shade`] with the surface normal `n` (unit length; x right, y up, z toward the sky).
-pub fn shade_normal(l: &LightPlan, color: [f32; 4], n: [f32; 3], light_seen: &[f32], open: f32, v: [f32; 3]) -> [f32; 4] {
+pub fn shade_normal(l: &LightPlan, color: [f32; 4], n: [f32; 3], light_seen: &[f32], open: f32, v: [f32; 3], points: &[([f32; 3], f32)]) -> [f32; 4] {
     if l.normal_output {
         return [n[0] * 0.5 + 0.5, n[1] * 0.5 + 0.5, n[2] * 0.5 + 0.5, color[3]];
     }
@@ -258,8 +302,10 @@ pub fn shade_normal(l: &LightPlan, color: [f32; 4], n: [f32; 3], light_seen: &[f
     let a = l.roughness * l.roughness;
     let mut diffuse = [l.ambient * open; 3];
     let mut spec = [0.0f32; 3];
-    for (i, (dir, rad)) in l.lights.iter().enumerate() {
-        let seen = light_seen.get(i).copied().unwrap_or(1.0);
+    let directional = l.lights.iter().enumerate().map(|(i, (dir, rad))| (*dir, *rad, light_seen.get(i).copied().unwrap_or(1.0)));
+    let point = points.iter().zip(&l.points).map(|((dir, seen), (_, rad))| (*dir, *rad, *seen));
+    for (dir, rad, seen) in directional.chain(point) {
+        let dir = &dir;
         if seen <= 0.0 {
             continue;
         }
@@ -473,9 +519,18 @@ impl Field {
                 seen[i] = self.shadow(dir, px, py, z0, k, len, l.softness, rnd(rng));
             }
         }
+        // Point lights: the direction from here; shadows reach no farther than the light.
+        let mut points = [([0.0f32; 3], 1.0f32); crate::doc::MAX_LIGHTS];
+        for (i, (pos, _)) in l.points.iter().enumerate() {
+            let (dir, dist) = point_dir(*pos, px, py, z0);
+            points[i].0 = dir;
+            if len > 0.0 {
+                points[i].1 = self.shadow(&dir, px, py, z0, k, len.min(dist), l.softness, rnd(rng));
+            }
+        }
         let radius = l.occlusion_radius * self.height as f32;
         let open = if l.occlusion > 0.0 && radius > 0.0 { self.occlusion(px, py, z0, k, radius, l.occlusion, rnd(rng), rnd(rng)) } else { 1.0 };
-        shade(l, color, gx, gy, k, &seen, open, v)
+        shade(l, color, gx, gy, k, &seen, open, v, &points[..l.points.len()])
     }
 
     /// The layer's alpha blurred with a Gaussian of `sigma` pixels around (x, y), estimated from
@@ -712,15 +767,15 @@ mod tests {
         for model in [SpecularModel::BlinnPhong, SpecularModel::Ggx] {
             let l = plan(model);
             let grey = [0.5, 0.5, 0.5, 1.0];
-            let flat = shade(&l, grey, 0.0, 0.0, 1.0, &[], 1.0, [0.0, 0.0, 1.0]);
+            let flat = shade(&l, grey, 0.0, 0.0, 1.0, &[], 1.0, [0.0, 0.0, 1.0], &[]);
             // Heights falling to the right face the light on the right.
-            let facing = shade(&l, grey, -0.5, 0.0, 1.0, &[], 1.0, [0.0, 0.0, 1.0]);
-            let away = shade(&l, grey, 0.5, 0.0, 1.0, &[], 1.0, [0.0, 0.0, 1.0]);
+            let facing = shade(&l, grey, -0.5, 0.0, 1.0, &[], 1.0, [0.0, 0.0, 1.0], &[]);
+            let away = shade(&l, grey, 0.5, 0.0, 1.0, &[], 1.0, [0.0, 0.0, 1.0], &[]);
             assert!(facing[0] > flat[0] && flat[0] > away[0], "{model:?}: {facing:?} {flat:?} {away:?}");
             assert_eq!(flat[3], 1.0);
             // Without lights only the ambient part remains.
             let dark = LightPlan { lights: Vec::new(), ..l.clone() };
-            assert!((shade(&dark, grey, 0.3, 0.1, 1.0, &[], 1.0, [0.0, 0.0, 1.0])[1] - 0.5 * l.ambient).abs() < 1e-6);
+            assert!((shade(&dark, grey, 0.3, 0.1, 1.0, &[], 1.0, [0.0, 0.0, 1.0], &[])[1] - 0.5 * l.ambient).abs() < 1e-6);
         }
     }
 
@@ -732,7 +787,7 @@ mod tests {
         let f = Field { width: w, height: h, data, mips: Vec::new() };
         let l = plan(SpecularModel::Ggx);
         let lit = f.shade(&l, 2, 2, 0);
-        let flat = shade(&l, [0.5, 0.5, 0.5, 1.0], 0.0, 0.0, l.slope_scale(h), &[], 1.0, [0.0, 0.0, 1.0]);
+        let flat = shade(&l, [0.5, 0.5, 0.5, 1.0], 0.0, 0.0, l.slope_scale(h), &[], 1.0, [0.0, 0.0, 1.0], &[]);
         assert!(lit[0] < flat[0], "{lit:?} vs {flat:?}");
     }
 

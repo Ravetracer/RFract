@@ -306,7 +306,7 @@ impl ObjectPlan {
         }
         let open = if l.occlusion > 0.0 && l.occlusion_radius > 0.0 { self.occlusion(q, n, rnd(&mut rng)) } else { 1.0 };
         let color = gradient(trap as f64 * 4.0);
-        shade_normal(l, color, n, &seen, open, [-d[0], -d[1], -d[2]])
+        shade_normal(l, color, n, &seen, open, [-d[0], -d[1], -d[2]], &[])
     }
 }
 

@@ -22,7 +22,8 @@ fn l_environment(r: vec3<f32>) -> vec3<f32> {
 }
 
 // rfr_core::render::light::shade_normal
-fn l_shade_n(color: vec4<f32>, n: vec3<f32>, seen: array<f32, 4>, open: f32, v: vec3<f32>) -> vec4<f32> {
+// `pts`: per point light the direction toward it from the point (xyz) and its seen share (w).
+fn l_shade_n(color: vec4<f32>, n: vec3<f32>, seen: array<f32, 4>, open: f32, v: vec3<f32>, pts: array<vec4<f32>, 4>) -> vec4<f32> {
     // The denoiser's normal image (LightPlan::normal_output).
     if U.lenv.z > 0.5 {
         return vec4<f32>(n * 0.5 + vec3<f32>(0.5), color.w);
@@ -31,11 +32,24 @@ fn l_shade_n(color: vec4<f32>, n: vec3<f32>, seen: array<f32, 4>, open: f32, v: 
     let a = U.light.w * U.light.w;
     var diffuse = vec3<f32>(U.light.x * open);
     var spec = vec3<f32>(0.0);
-    for (var i = 0u; i < U.lighti.y; i = i + 1u) {
-        if seen[i] <= 0.0 {
+    let np = u32(U.lenv.w);
+    for (var j = 0u; j < U.lighti.y + np; j = j + 1u) {
+        var dir: vec3<f32>;
+        var rad: vec3<f32>;
+        var sn: f32;
+        if j < U.lighti.y {
+            dir = U.ldir[j].xyz;
+            rad = U.lrad[j].xyz;
+            sn = seen[j];
+        } else {
+            let i = j - U.lighti.y;
+            dir = pts[i].xyz;
+            rad = U.lprad[i].xyz;
+            sn = pts[i].w;
+        }
+        if sn <= 0.0 {
             continue;
         }
-        let dir = U.ldir[i].xyz;
         let nl = dot(n, dir);
         if nl <= 0.0 {
             continue;
@@ -51,9 +65,8 @@ fn l_shade_n(color: vec4<f32>, n: vec3<f32>, seen: array<f32, 4>, open: f32, v: 
             let t = nh * nh * (a2 - 1.0) + 1.0;
             s = a2 / (3.141592653589793 * t * t) / (4.0 * nv);
         }
-        let rad = U.lrad[i].xyz * seen[i];
-        diffuse = diffuse + rad * nl;
-        spec = spec + rad * s;
+        diffuse = diffuse + rad * sn * nl;
+        spec = spec + rad * sn * s;
     }
     var out = color.xyz * diffuse + U.light.z * spec;
     // Reflection of the environment, stronger at grazing angles.

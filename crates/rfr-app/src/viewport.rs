@@ -318,9 +318,12 @@ impl Viewport {
             if let Some(p) = resp.interact_pointer_pos()
                 && i < doc.lights.len()
             {
-                let mut v = doc.view.clone();
-                v.pan(offset_at(&doc.view, rect, p));
-                doc.lights[i].position = v.center;
+                let (w, h) = (doc.image.width.max(1), doc.image.height.max(1));
+                let x = ((p.x - rect.min.x) / rect.width()) as f64 * w as f64;
+                let y = ((p.y - rect.min.y) / rect.height()) as f64 * h as f64;
+                if let Some(pos) = rfr_core::flare::position_at(doc, &doc.lights[i], x, y, w, h) {
+                    doc.lights[i].position = pos;
+                }
             }
             if !resp.dragged() {
                 self.light_drag = None;

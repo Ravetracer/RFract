@@ -101,6 +101,8 @@ struct Uni {
     fx1: [f32; 4],
     fx2: [f32; 4],
     fxc: [[f32; 4]; 4],
+    lpos: [[f32; 4]; 4],
+    lprad: [[f32; 4]; 4],
 }
 
 /// The lighting a layer's shaders use: a lit layer's or a 3D object's.
@@ -306,8 +308,10 @@ fn layer_uni(plan: &Plan, lp: &LayerPlan) -> Uni {
         // The environment image follows the layer's image parameters.
         lenv: light_of(lp).map_or([0.0; 4], |l| {
             let slot = if l.environment.is_some() { codegen::layer_images(lp).len() as f32 } else { -1.0 };
-            [l.reflection, slot, l.normal_output as u32 as f32, 0.0]
+            [l.reflection, slot, l.normal_output as u32 as f32, l.points.len() as f32]
         }),
+        lpos: point_rows(lp, |(p, _)| *p),
+        lprad: point_rows(lp, |(_, r)| *r),
         lsky0: light_of(lp).map_or([0.0; 4], |l| [l.horizon[0], l.horizon[1], l.horizon[2], 0.0]),
         lsky1: light_of(lp).map_or([0.0; 4], |l| [l.zenith[0], l.zenith[1], l.zenith[2], 0.0]),
         lcam: match &lp.object {
@@ -338,6 +342,17 @@ fn layer_uni(plan: &Plan, lp: &LayerPlan) -> Uni {
 }
 
 /// Per light one row of the lit layer's uniforms (direction or color).
+fn point_rows(lp: &LayerPlan, f: impl Fn(&([f32; 3], [f32; 3])) -> [f32; 3]) -> [[f32; 4]; 4] {
+    let mut out = [[0.0; 4]; 4];
+    if let Some(l) = &lp.light {
+        for (row, li) in out.iter_mut().zip(&l.points) {
+            let v = f(li);
+            *row = [v[0], v[1], v[2], 0.0];
+        }
+    }
+    out
+}
+
 fn light_rows(lp: &LayerPlan, f: impl Fn(&([f32; 3], [f32; 3])) -> [f32; 3]) -> [[f32; 4]; 4] {
     let mut out = [[0.0; 4]; 4];
     if let Some(l) = light_of(lp) {
@@ -1519,7 +1534,8 @@ impl GpuRenderer {
             }
             return;
         }
-        let key = format!("{:?}|{:?}|{w}x{h}", doc.lights, doc.view);
+        // The layers count for 3D terrains (the camera places the lights).
+        let key = format!("{:?}|{:?}|{:?}|{w}x{h}", doc.lights, doc.view, doc.layers);
         if self.lights.as_ref().is_some_and(|(k, _)| *k == key) {
             return;
         }

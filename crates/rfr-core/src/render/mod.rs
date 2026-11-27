@@ -416,14 +416,35 @@ impl Plan {
     }
 
     pub fn sized(doc: &Document, width: u32, height: u32) -> Result<Plan, String> {
-        Ok(Plan {
+        let mut plan = Plan {
             frame: ViewFrame::of(doc, width, height),
             center_text: doc.view.center.clone(),
             background: doc.image.background,
             adaptive: 0.0,
             nodes: nodes(&doc.layers)?,
         }
-        .with_adaptive(doc.image.adaptive as f32))
+        .with_adaptive(doc.image.adaptive as f32);
+        // Lit layers lit by the document's light sources.
+        fn walk(list: &mut [Node], doc: &Document, w: u32, h: u32) {
+            for n in list {
+                let (layer, mask) = match n {
+                    Node::Layer { layer, mask, .. } => (Some(layer.as_mut()), mask),
+                    Node::Group { children, mask, .. } => {
+                        walk(children, doc, w, h);
+                        (None, mask)
+                    }
+                };
+                let mask = mask.as_mut().map(|m| &mut m.layer);
+                for lp in layer.into_iter().chain(mask) {
+                    if let Some(l) = lp.light.as_mut() {
+                        l.set_points(doc, w, h);
+                    }
+                }
+            }
+        }
+        let (w, h) = (plan.frame.width, plan.frame.height);
+        walk(&mut plan.nodes, doc, w, h);
+        Ok(plan)
     }
 
     /// The plan with adaptive sampling at noise tolerance `tolerance` (0: off; never with

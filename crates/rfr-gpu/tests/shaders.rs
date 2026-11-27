@@ -179,7 +179,7 @@ fn gpu_matches_the_cpu_renderer() {
         l.occlusion = 1.0;
         l.lights[0].elevation = 25.0;
         l.lights.push(Light { azimuth: 330.0, elevation: 15.0, color: [0.3, 0.5, 1.0], intensity: 0.6 });
-        cases.push(("lit shadows".into(), sh));
+        cases.push(("lit shadows".into(), sh.clone()));
         // Distance heights (derivatives) with the sky reflected, and an environment image.
         let mut de = lit.clone();
         de.layers[0].light.height = HeightSource::Distance;
@@ -201,6 +201,24 @@ fn gpu_matches_the_cpu_renderer() {
         l.shadows = true;
         l.camera.yaw = 30.0;
         cases.push(("lit terrain".into(), ter.clone()));
+        // Point lights from the document's light sources, with shadows, flat and as a terrain.
+        let light = |x: &str, y: &str, h: f64, color: [f32; 3]| rfr_core::doc::LightSource {
+            position: [x.into(), y.into()],
+            height: h,
+            color,
+            visible: false,
+            ..Default::default()
+        };
+        let mut pl = sh.clone();
+        pl.layers[0].light.scene_lights = true;
+        pl.layers[0].light.ambient = 0.1;
+        pl.lights.push(light("-1.3", "0.5", 0.3, [1.0, 0.6, 0.3]));
+        pl.lights.push(light("0.4", "-0.4", 0.1, [0.3, 0.6, 1.0]));
+        cases.push(("lit point lights".into(), pl.clone()));
+        let mut pt = ter.clone();
+        pt.layers[0].light.scene_lights = true;
+        pt.lights = pl.lights.clone();
+        cases.push(("terrain point lights".into(), pt));
         // The denoiser's normal images of a lit layer and a terrain.
         cases.push(("normals lit".into(), rfr_core::render::post::aux_documents(&lit).unwrap()[1].clone()));
         cases.push(("normals terrain".into(), rfr_core::render::post::aux_documents(&ter).unwrap()[1].clone()));

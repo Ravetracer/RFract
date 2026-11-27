@@ -13,7 +13,8 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
   needs more.
 - Light sources (*Lights* in the inspector): points in the plane with a visible glow and lens
   flares (core, haze, star rays, streak, ghosts, ring, sparkles, lens dirt) with presets;
-  drag them in the view.
+  drag them in the view. Lit layers and 3D terrains can be lit by them as point lights
+  (*Document lights*); over a terrain they hang at their height, seen through the camera.
 
 ### Removed
 

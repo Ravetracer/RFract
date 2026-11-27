@@ -45,7 +45,11 @@ light** puts one at the center of the view. In the view every light shows as a s
 (*View › Light gizmos* hides them); drag the circle to move the light, click it to select it.
 The position fields hold the exact coordinates, so a light stays in place at any depth.
 
-- **Color** and **Intensity** apply to the glow and the flare together.
+- **Height** is how high the light hangs above the plane, as a share of the image height. It
+  matters for lit layers with *Document lights* (see *Lighting*) and in 3D terrain views,
+  where the light hangs above the landscape at that height and its glow and flare show where
+  the camera sees it; dragging its circle there moves it at its height.
+- **Color** and **Intensity** apply to the glow, the flare and the light it casts.
 - **Visible** shows the light itself as a glow: *Soft* (a bright core with a long falloff),
   *Sharp* (a small spot), *Ball* (a glowing disc with a bright rim) or *Halo*, with its size
   (a share of the image height) and strength.

@@ -653,6 +653,19 @@ fn guess_tile(cells: &mut [Cell], w: usize, h: usize, mut sample: impl FnMut(usi
     }
 }
 
+/// The height value (the lit field's, before scaling) of the plan's first layer at the view
+/// center, as a 3D terrain's camera aims at it; none for layers without lighting.
+pub fn center_height(plan: &Plan) -> Option<f32> {
+    let layers = plan.layers();
+    let lp = layers.first()?;
+    lp.light.as_ref()?;
+    let k = Kernel::new(lp, plan);
+    let mut f = k.frames();
+    let (x, y) = (plan.frame.width as f64 * 0.5, plan.frame.height as f64 * 0.5);
+    let (_, [h, _], _) = k.eval(&mut f, lp, plan, (plan.frame.plane(x, y), plan.frame.offset_fx(x, y)), 0.0, (0, 0, 0));
+    Some(h)
+}
+
 /// Iteration counts of the plan's first layer at the pixel centers, row-major: the iterations
 /// of escaped orbits, none for orbits that stay inside (or pixels a transformation makes
 /// solid). Density and 3D object layers give nothing.
@@ -830,6 +843,26 @@ mod tests {
             };
             assert_eq!(image(plan), image(off), "doc {k}");
         }
+    }
+
+    #[test]
+    fn document_lights_light_lit_layers() {
+        // No directional lights and no ambient light: dark unless the document's light reaches.
+        let mut doc = Document::default();
+        doc.image.adaptive = 0.0;
+        let l = &mut doc.layers[0].light;
+        l.enabled = true;
+        l.ambient = 0.0;
+        l.lights.clear();
+        doc.lights.push(crate::doc::LightSource { position: ["-1.5".into(), "0.8".into()], height: 0.4, visible: false, ..Default::default() });
+        let mean = |d: &Document| {
+            let img = render(d, 64, 36, 1).unwrap().rgba8();
+            img.chunks(4).map(|p| p[0] as f64 + p[1] as f64 + p[2] as f64).sum::<f64>() / (img.len() / 4) as f64
+        };
+        let off = mean(&doc);
+        doc.layers[0].light.scene_lights = true;
+        let on = mean(&doc);
+        assert!(off < 1.0 && on > 5.0, "off {off}, on {on}");
     }
 
     #[test]

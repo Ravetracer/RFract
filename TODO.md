@@ -25,9 +25,13 @@ Open points of the earlier stages (their notes below stay for the details).
       CPU image added as glow (`post::Glow::with_lights`, GPU: `levels` region 5 at
       `post::light_size`), inspector section, gizmos (drag, select), keyframes interpolate
       positions. The threshold flare of the effects is gone.
-- [ ] Light sources, part 2: point lighting of lit layers by the document lights (`height`),
-      lights in terrain and 3D object views (projection through the camera, occlusion),
-      ghost list editor; posters use the light image at the glow size (soft at 20k).
+- [x] Light sources, part 2: point lighting of lit layers and terrains by the document lights
+      (`Lighting::scene_lights`, `LightPlan::points`, CPU and GPU, shadows up to the light);
+      terrain views place glow, flare and gizmo through the camera (`flare::screen_pos`,
+      `position_at`; the camera's center height from one CPU sample).
+- [ ] Light sources, open: lights in 3D object views (object world), flares hidden behind
+      the terrain, falloff with distance, ghost list editor; posters use the light image at
+      the glow size (soft at 20k).
 - [ ] Location bookmarks.
 - [ ] Histogram coloring.
 - [ ] Post-transformations.

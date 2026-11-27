@@ -640,6 +640,100 @@ pub fn pixel_of(doc: &Document, pos: &[String; 2], w: u32, h: u32) -> Option<(f6
     Some((rx + w as f64 * 0.5, -ry + h as f64 * 0.5))
 }
 
+/// A 3D terrain view of the document: the camera of its top terrain layer, the pixels per
+/// height unit and the height the camera aims at (field units: pixels, y down, z up).
+#[derive(Clone, Copy, Debug)]
+struct Terrain {
+    cam: [f32; 4],
+    zc: f32,
+}
+
+/// The document's 3D terrain (the top visible lit layer shown as a terrain) at `w` × `h`.
+fn terrain(doc: &Document, w: u32, h: u32) -> Option<Terrain> {
+    fn find(list: &[crate::doc::Layer]) -> Option<&crate::doc::Layer> {
+        list.iter().rev().filter(|l| l.visible).find_map(|l| match l.kind {
+            crate::doc::LayerKind::Group => find(&l.children),
+            crate::doc::LayerKind::Fractal if l.light.enabled && l.light.terrain => Some(l),
+            _ => None,
+        })
+    }
+    let layer = find(&doc.layers)?;
+    let mut lp = crate::render::light::LightPlan::new(&layer.light);
+    lp.set_height_range(layer.max_iter);
+    let cam = lp.camera?;
+    let k = lp.slope_scale(h);
+    // The height at the center: one sample of the layer alone (cached per layer and view).
+    static CACHE: std::sync::Mutex<Option<(String, f32)>> = std::sync::Mutex::new(None);
+    let key = format!("{:?}|{:?}|{w}x{h}", layer, doc.view);
+    let cached = CACHE.lock().ok().and_then(|c| c.as_ref().filter(|(k, _)| *k == key).map(|(_, v)| *v));
+    let h0 = match cached {
+        Some(v) => v,
+        None => {
+            let mut one = doc.clone();
+            one.layers = vec![crate::doc::Layer { mask: None, effects: Default::default(), ..layer.clone() }];
+            let v = crate::render::Plan::sized(&one, w, h).ok().and_then(|p| crate::render::cpu::center_height(&p)).unwrap_or(0.0);
+            if let Ok(mut c) = CACHE.lock() {
+                *c = Some((key, v));
+            }
+            v
+        }
+    };
+    Some(Terrain { cam, zc: k * h0 })
+}
+
+/// Camera basis of a terrain view (as [`crate::render::light::camera_ray`]): origin,
+/// forward, right, up.
+fn terrain_basis(t: &Terrain, w: u32, h: u32) -> [[f32; 3]; 4] {
+    let (o, f) = crate::render::light::camera_ray(t.cam, w, h, t.zc, w as f32 * 0.5, h as f32 * 0.5);
+    let r = crate::render::light::normalize([-f[1], f[0], 0.0]);
+    let u = [f[1] * r[2] - f[2] * r[1], f[2] * r[0] - f[0] * r[2], f[0] * r[1] - f[1] * r[0]];
+    [o, f, r, u]
+}
+
+/// Where light `l` shows in the image (pixels, y down) at `w` × `h`: its plane position, or in
+/// a 3D terrain view its point above the terrain seen through the camera (none behind it).
+pub fn screen_pos(doc: &Document, l: &crate::doc::LightSource, w: u32, h: u32) -> Option<(f64, f64)> {
+    let (x, y) = pixel_of(doc, &l.position, w, h)?;
+    let Some(t) = terrain(doc, w, h) else { return Some((x, y)) };
+    let [o, f, r, u] = terrain_basis(&t, w, h);
+    let p = [x as f32, y as f32, (l.height * h as f64) as f32];
+    let d = [p[0] - o[0], p[1] - o[1], p[2] - o[2]];
+    let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let z = dot(d, f);
+    if z <= 1e-6 {
+        return None;
+    }
+    let (wf, hf) = (w as f32, h as f32);
+    let tan = t.cam[3];
+    let (sx, sy) = (dot(d, r) / z, dot(d, u) / z);
+    Some(((((sx / (tan * wf / hf)) + 1.0) * 0.5 * wf) as f64, ((1.0 - sy / tan) * 0.5 * hf) as f64))
+}
+
+/// The plane position (decimal strings) that puts light `l` at image point (`x`, `y`) of a
+/// `w` × `h` image: the point itself, or in a 3D terrain view the point at the light's height
+/// on the camera ray (none when the ray does not reach that height).
+pub fn position_at(doc: &Document, l: &crate::doc::LightSource, x: f64, y: f64, w: u32, h: u32) -> Option<[String; 2]> {
+    let (fx, fy) = match terrain(doc, w, h) {
+        None => (x, y),
+        Some(t) => {
+            let (o, d) = crate::render::light::camera_ray(t.cam, w, h, t.zc, x as f32, y as f32);
+            let zl = (l.height * h as f64) as f32;
+            if d[2].abs() < 1e-6 {
+                return None;
+            }
+            let s = (zl - o[2]) / d[2];
+            if s <= 0.0 {
+                return None;
+            }
+            ((o[0] + d[0] * s) as f64, (o[1] + d[1] * s) as f64)
+        }
+    };
+    let frame = crate::render::ViewFrame::of(doc, w, h);
+    let off = frame.offset_fx(fx, fy);
+    let scale = frame.pixel_size_fx() * 1e-3;
+    Some([crate::math::big::add(&doc.view.center[0], off.re_fx(), scale), crate::math::big::add(&doc.view.center[1], off.im_fx(), scale)])
+}
+
 /// The light of the document's light sources at `width` × `height` (linear RGB per pixel, top
 /// row first): their glows and lens flares; none when no light shows.
 pub fn image(doc: &Document, width: u32, height: u32) -> Option<Vec<[f32; 3]>> {
@@ -650,7 +744,7 @@ pub fn image(doc: &Document, width: u32, height: u32) -> Option<Vec<[f32; 3]>> {
         if !l.enabled || l.intensity <= 0.0 {
             continue;
         }
-        let Some((lx, ly)) = pixel_of(doc, &l.position, width, height) else { continue };
+        let Some((lx, ly)) = screen_pos(doc, l, width, height) else { continue };
         // Fades out as the light leaves the image.
         let out = (-lx).max(lx - w).max(-ly).max(ly - h).max(0.0);
         let edge = 1.0 - smoothstep(0.0, 0.35 * h, out);
@@ -737,6 +831,24 @@ mod tests {
         let (x, y) = at(&d, ["0.5", "0.3"]);
         let p = crate::render::ViewFrame::of(&d, 200, 100).plane(x, y);
         assert!((p.re - 0.5).abs() < 1e-9 && (p.im - 0.3).abs() < 1e-9, "{p:?}");
+    }
+
+    #[test]
+    fn terrain_views_place_lights_through_the_camera() {
+        let mut d = Document::default();
+        d.layers[0].light.enabled = true;
+        d.layers[0].light.terrain = true;
+        d.layers[0].light.terrain_height = 0.2;
+        let l = LightSource { position: ["-0.7".into(), "0.2".into()], height: 0.3, ..LightSource::default() };
+        let (w, h) = (160u32, 90u32);
+        let (x, y) = screen_pos(&d, &l, w, h).expect("in front of the camera");
+        // Dragging back to that image point gives the same plane position.
+        let p = position_at(&d, &l, x, y, w, h).unwrap();
+        let back: Vec<f64> = p.iter().map(|s| s.parse().unwrap()).collect();
+        assert!((back[0] + 0.7).abs() < 1e-3 && (back[1] - 0.2).abs() < 1e-3, "{p:?}");
+        // Flat: the plane position.
+        d.layers[0].light.terrain = false;
+        assert_eq!(screen_pos(&d, &l, w, h), pixel_of(&d, &l.position, w, h));
     }
 
     #[test]

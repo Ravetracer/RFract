@@ -264,5 +264,5 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         open = o_occlusion(q, n, l_rnd(&rng));
     }
     let color = region_color(false, hit.y * 4.0);
-    l_blend(gid, x, l_shade_n(color, n, seen, open, -d));
+    l_blend(gid, x, l_shade_n(color, n, seen, open, -d, array<vec4<f32>, 4>()));
 }
