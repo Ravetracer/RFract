@@ -14,10 +14,15 @@ use rfr_gpu::{GpuContext, GpuRenderer};
 
 use crate::theme;
 
+/// A finished image (8-bit RGBA and a note on the denoising), or why there is none.
+type Finished = Result<(Vec<u8>, Option<String>), String>;
+
 enum Engine {
     Gpu(Box<GpuRenderer>),
     /// CPU render on a worker thread: progress is unknown, the result arrives at the end.
-    Cpu(Receiver<Result<Vec<u8>, String>>),
+    Cpu(Receiver<Finished>),
+    /// The GPU is done; denoising and effects run on a worker thread.
+    Finishing(Receiver<Finished>),
 }
 
 struct Job {
@@ -54,7 +59,7 @@ impl Export {
                 let d = doc.clone();
                 std::thread::spawn(move || {
                     let r = rfr_core::render::cpu::render(&d, d.image.width, d.image.height, d.image.samples.max(1))
-                        .map(|r| rfr_core::render::post::finish(&r.linear(), d.image.width, d.image.height, &d.post));
+                        .map(|r| rfr_core::render::post::finish_export(r.linear(), d.image.width, d.image.height, &d.post));
                     let _ = tx.send(r);
                 });
                 Engine::Cpu(rx)
@@ -68,34 +73,48 @@ impl Export {
     /// when it finished, failed or was cancelled.
     pub fn update(&mut self, ctx: &egui::Context) -> Option<String> {
         let job = self.job.as_mut()?;
-        let mut result: Option<Result<Vec<u8>, String>> = None;
+        let mut result: Option<Finished> = None;
+        let mut finishing = None;
         let progress = match &mut job.engine {
             Engine::Gpu(r) => {
                 r.work(Duration::from_millis(30), job.samples);
                 if let Some(e) = r.error() {
                     result = Some(Err(e.to_string()));
                 } else if r.samples() >= job.samples {
-                    let (w, h, post) = (job.doc.image.width, job.doc.image.height, &job.doc.post);
-                    result = Some(
-                        r.read_linear()
-                            .map(|lin| rfr_core::render::post::finish(&lin, w, h, post))
-                            .ok_or_else(|| "could not read the image back from the GPU".to_string()),
-                    );
+                    match r.read_linear() {
+                        Some(lin) => {
+                            // Denoising can take seconds: off the interface thread.
+                            let (tx, rx) = channel();
+                            let (w, h, post) = (job.doc.image.width, job.doc.image.height, job.doc.post.clone());
+                            std::thread::spawn(move || {
+                                let _ = tx.send(Ok(rfr_core::render::post::finish_export(lin, w, h, &post)));
+                            });
+                            finishing = Some(rx);
+                        }
+                        None => result = Some(Err("could not read the image back from the GPU".to_string())),
+                    }
                 }
                 r.samples() as f32 / job.samples as f32
             }
-            Engine::Cpu(rx) => {
+            Engine::Cpu(rx) | Engine::Finishing(rx) => {
                 if let Ok(r) = rx.try_recv() {
                     result = Some(r);
                 }
                 f32::NAN
             }
         };
+        if let Some(rx) = finishing {
+            job.engine = Engine::Finishing(rx);
+        }
+        let finishing_now = matches!(job.engine, Engine::Finishing(_));
         let mut cancel = false;
         egui::Window::new("Export").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
             ui.label(format!("Rendering {} × {}, {} samples per pixel", job.doc.image.width, job.doc.image.height, job.samples));
             ui.label(RichText::new(job.path.display().to_string()).size(theme::fs(11.0)).color(theme::TEXT_MUTED));
-            if progress.is_nan() {
+            if finishing_now {
+                let text = if job.doc.post.denoise { "denoising and finishing…" } else { "finishing…" };
+                ui.add(egui::ProgressBar::new(1.0).animate(true).text(text));
+            } else if progress.is_nan() {
                 ui.add(egui::ProgressBar::new(0.0).animate(true).text("rendering on the CPU…"));
             } else {
                 ui.add(egui::ProgressBar::new(progress).show_percentage());
@@ -112,9 +131,16 @@ impl Export {
         }
         let r = result?;
         let job = self.job.take()?;
-        Some(match r.and_then(|rgba| rfr_core::io::png::write_rgba8(&job.path, job.doc.image.width, job.doc.image.height, &rgba, Some(&job.doc))) {
-            Ok(()) => format!("Exported {} in {:.1} s", job.path.display(), job.start.elapsed().as_secs_f64()),
-            Err(e) => format!("Export failed: {e}"),
-        })
+        Some(
+            match r.and_then(|(rgba, note)| {
+                rfr_core::io::png::write_rgba8(&job.path, job.doc.image.width, job.doc.image.height, &rgba, Some(&job.doc)).map(|_| note)
+            }) {
+                Ok(note) => {
+                    let note = note.map(|n| format!(", {n}")).unwrap_or_default();
+                    format!("Exported {} in {:.1} s{note}", job.path.display(), job.start.elapsed().as_secs_f64())
+                }
+                Err(e) => format!("Export failed: {e}"),
+            },
+        )
     }
 }

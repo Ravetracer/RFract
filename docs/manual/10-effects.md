@@ -31,6 +31,15 @@ sliders answer at once; the preview and the exported image show the same.
 
 Glow also spreads over transparent parts of the image, which then become partly opaque.
 
+## Denoise
+
+**Denoise exports** runs exported images and command line renders through Intel Open Image
+Denoise before the other effects: grain from few samples (soft shadows, occlusion, glows,
+density layers) disappears. The preview is not denoised. The denoiser also softens very fine
+detail such as thin filaments; *Denoise amount* below 1 keeps part of the original. The export
+message says whether the image was denoised and on which device; without the library (see
+*Installation*) the image is saved as it is.
+
 ## Lens and film
 
 - **Sharpen** makes edges crisper.

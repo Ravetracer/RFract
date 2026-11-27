@@ -1274,6 +1274,25 @@ fn effects_section(ui: &mut Ui, p: &mut rfr_core::doc::Post) {
             widgets::color(ui, "Streak tint", "Color of the streaks", &mut p.streak_tint);
         }
     });
+    sub(ui, "Denoise");
+    widgets::grid(ui, "fx-denoise", |ui| {
+        widgets::checkbox(
+            ui,
+            "Denoise exports",
+            "Exported images (and command line renders) go through Intel Open Image Denoise before the other effects; the preview is not denoised",
+            &mut p.denoise,
+        );
+        if p.denoise {
+            widgets::slider(
+                ui,
+                "Denoise amount",
+                "Share of the denoised image (1: only denoised, lower values keep some grain)",
+                &mut p.denoise_blend,
+                0.0..=1.0,
+                d.denoise_blend,
+            );
+        }
+    });
     sub(ui, "Lens and film");
     widgets::grid(ui, "fx-lens", |ui| {
         widgets::slider(ui, "Sharpen", "Crisper edges (unsharp mask over 3 × 3 pixels)", &mut p.sharpen, 0.0..=3.0, d.sharpen);

@@ -93,6 +93,10 @@ pub struct Post {
     pub contrast: f64,
     pub vignette: f64,
     pub grain: f64,
+    /// Exports only: denoise the image (Intel Open Image Denoise) before the other effects;
+    /// `denoise_blend` is the share of the denoised image (1: only denoised).
+    pub denoise: bool,
+    pub denoise_blend: f64,
 }
 
 impl Default for Post {
@@ -122,6 +126,8 @@ impl Default for Post {
             contrast: 1.0,
             vignette: 0.0,
             grain: 0.0,
+            denoise: false,
+            denoise_blend: 1.0,
         }
     }
 }

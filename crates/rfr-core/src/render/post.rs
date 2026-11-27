@@ -426,6 +426,36 @@ pub fn finish(lin: &[[f32; 4]], w: u32, h: u32, post: &Post) -> Vec<u8> {
     apply(lin, w, h, post).iter().flat_map(|c| [q(c[0]), q(c[1]), q(c[2]), q(c[3])]).collect()
 }
 
+/// Denoises the averaged image `lin` (linear, straight alpha) in place with OIDN (its light,
+/// premultiplied), mixed with the original by `blend`. Returns the device used.
+pub fn denoise(lin: &mut [[f32; 4]], w: u32, h: u32, blend: f64) -> Result<super::oidn::DeviceType, String> {
+    let ok = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
+    let orig: Vec<f32> = lin.iter().flat_map(|c| [ok(c[0]) * c[3], ok(c[1]) * c[3], ok(c[2]) * c[3]]).collect();
+    let mut color = orig.clone();
+    let used = super::oidn::denoise(&mut color, w as usize, h as usize, true, false, super::oidn::DeviceType::Default, None, None)?;
+    let k = blend.clamp(0.0, 1.0) as f32;
+    for (i, c) in lin.iter_mut().enumerate() {
+        let a = c[3];
+        if a > 1e-6 {
+            for ch in 0..3 {
+                let v = orig[i * 3 + ch] + (color[i * 3 + ch] - orig[i * 3 + ch]) * k;
+                c[ch] = v.max(0.0) / a;
+            }
+        }
+    }
+    Ok(used)
+}
+
+/// The finished image for saving: denoised first when the effects ask for it, then
+/// [`finish`]. The note says how the denoising went (None without it).
+pub fn finish_export(mut lin: Vec<[f32; 4]>, w: u32, h: u32, post: &Post) -> (Vec<u8>, Option<String>) {
+    let note = post.denoise.then(|| match denoise(&mut lin, w, h, post.denoise_blend) {
+        Ok(dev) => format!("denoised ({})", dev.label()),
+        Err(e) => format!("not denoised: {e}"),
+    });
+    (finish(&lin, w, h, post), note)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -472,5 +502,33 @@ mod tests {
         assert!(g[0] > g[2]);
         let v = Post { vignette: 1.0, ..Post::default() };
         assert!(grade([0.5; 3], 0, 0, 64, 64, &v)[0] < grade([0.5; 3], 32, 32, 64, 64, &v)[0]);
+    }
+
+    #[test]
+    fn denoising_reduces_noise_when_available() {
+        if let Err(e) = super::super::oidn::library() {
+            eprintln!("OIDN not available, skipped ({e})");
+            return;
+        }
+        let (w, h) = (96u32, 64u32);
+        let clean = image(w, h, |x, y| [x as f32 / w as f32, y as f32 / h as f32, 0.5, 1.0]);
+        let noisy: Vec<[f32; 4]> = clean
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let n = |k: u32| (hash(i as u32 * 3 + k) >> 8) as f32 / 16_777_216.0 - 0.5;
+                [c[0] + n(0) * 0.4, c[1] + n(1) * 0.4, c[2] + n(2) * 0.4, 1.0]
+            })
+            .collect();
+        let rms = |a: &[[f32; 4]]| {
+            (a.iter().zip(&clean).map(|(p, q)| (0..3).map(|k| (p[k] - q[k]).powi(2)).sum::<f32>()).sum::<f32>() / a.len() as f32).sqrt()
+        };
+        let mut den = noisy.clone();
+        denoise(&mut den, w, h, 1.0).unwrap();
+        assert!(rms(&den) < rms(&noisy) * 0.5, "{} -> {}", rms(&noisy), rms(&den));
+        // Half the amount lands between.
+        let mut half = noisy.clone();
+        denoise(&mut half, w, h, 0.5).unwrap();
+        assert!(rms(&half) < rms(&noisy) && rms(&half) > rms(&den));
     }
 }

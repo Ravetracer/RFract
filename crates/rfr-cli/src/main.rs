@@ -137,7 +137,7 @@ fn render(args: &[String]) -> Result<(), String> {
                 let mode = rfr_gpu::renderer::renderer_mode(&plan);
                 match rfr_gpu::render_blocking(ctx, &plan, s, |_| true) {
                     Ok(lin) => {
-                        rgba = Some(rfr_core::render::post::finish(&lin, w, h, &doc.post));
+                        rgba = Some(rfr_core::render::post::finish_export(lin, w, h, &doc.post));
                         how = format!("on {name} ({mode:?})");
                     }
                     Err(e) => eprintln!("GPU render failed ({e}); rendering on the CPU"),
@@ -148,8 +148,12 @@ fn render(args: &[String]) -> Result<(), String> {
     }
     let rgba = match rgba {
         Some(v) => v,
-        None => rfr_core::render::post::finish(&rfr_core::render::cpu::render(&doc, w, h, s)?.linear(), w, h, &doc.post),
+        None => rfr_core::render::post::finish_export(rfr_core::render::cpu::render(&doc, w, h, s)?.linear(), w, h, &doc.post),
     };
+    let (rgba, note) = rgba;
+    if let Some(n) = note {
+        how = format!("{how}, {n}");
+    }
     let mut saved = doc.clone();
     saved.image.width = w;
     saved.image.height = h;
