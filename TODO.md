@@ -15,8 +15,9 @@ that come up along the way.
 - [x] Environment reflections (gradient sky or image), distance estimation as height source.
 - [x] 3D height view: the field as a terrain under a perspective camera (height-field
       ray tracing over a maximum pyramid, CPU and GPU).
-- [ ] Terrain: orbit and dolly the camera with the mouse; a terrain larger than the view
-      (more detail near the camera); optional path tracing into OIDN.
+- [x] Terrain: orbit (Ctrl-drag) and dolly (Ctrl-wheel) the camera with the mouse.
+- [ ] Terrain: larger than the view (more detail near the camera), optional walls down to a
+      base, optional path tracing into OIDN.
 - [ ] 3D object layers: Mandelbulb, quaternion/bicomplex Julia and a few DE formulas,
       raymarched with the same lights.
 - [ ] Exit: lit 2.5D renders, fly-over of a Mandelbrot landscape (camera path).

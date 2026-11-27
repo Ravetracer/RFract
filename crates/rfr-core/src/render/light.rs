@@ -386,7 +386,7 @@ impl Field {
     }
 
     /// Where the ray from `o` in direction `d` (pixel units, y down, z up; z = k · height)
-    /// first meets the surface, in pixel units; `None` when it misses the field. Cells whose
+    /// first meets the surface from above, in pixel units; `None` when it misses. Cells whose
     /// highest point stays below the ray are skipped level by level; in a level-0 cell the
     /// bilinear surface is searched in steps and the crossing refined by bisection.
     pub fn trace(&self, o: [f32; 3], d: [f32; 3], k: f32) -> Option<(f32, f32)> {
@@ -424,6 +424,11 @@ impl Field {
             let (x, y) = at(t);
             o[2] + d[2] * t - k * self.height_at(x, y)
         };
+        // A ray that enters the field below the surface comes in through a side (or from
+        // underneath): the terrain is an open sheet without walls.
+        if above(t0) < 0.0 {
+            return None;
+        }
         let mut t = t0;
         let mut level = top;
         for _ in 0..TRACE_ITERATIONS {

@@ -2,8 +2,9 @@
 
 //! The view: progressive GPU preview of the document (in the document's aspect ratio) and the
 //! navigation. Drag pans, the wheel zooms around the cursor, Shift-drag or right-drag zooms into
-//! a box, Ctrl-drag rotates, double-click zooms in, Alt-click picks a Julia seed. While the user
-//! navigates, the preview renders at a lower resolution.
+//! a box, Ctrl-drag rotates, double-click zooms in, Alt-click picks a Julia seed. When the
+//! selected layer is a 3D terrain, Ctrl-drag orbits its camera and Ctrl-wheel moves it closer
+//! or farther. While the user navigates, the preview renders at a lower resolution.
 
 use std::time::{Duration, Instant};
 
@@ -21,6 +22,8 @@ use crate::theme;
 const NAVIGATE_HOLD: Duration = Duration::from_millis(250);
 
 pub struct Viewport {
+    /// The selected layer is a 3D terrain (Ctrl-drag orbits its camera).
+    pub terrain: bool,
     gpu: Option<GpuRenderer>,
     texture: Option<(egui::TextureId, u64)>,
     /// What the renderer currently has: document, size, fast mode.
@@ -91,6 +94,7 @@ impl Viewport {
             GpuRenderer::new(ctx)
         });
         Viewport {
+            terrain: false,
             gpu,
             texture: None,
             last: None,
@@ -190,9 +194,31 @@ impl Viewport {
         let (mods, scroll, pointer) = ui.input(|i| (i.modifiers, i.smooth_scroll_delta.y, i.pointer.hover_pos()));
         self.hover = pointer.filter(|p| rect.contains(*p)).map(|p| plane_at(&doc.view, rect, p));
         let mut touched = false;
+        self.terrain = target(doc, sel).is_some_and(|l| l.light.enabled && l.light.terrain);
+
+        // 3D terrain: Ctrl-drag orbits the camera, Ctrl-wheel changes its distance.
+        let orbit = self.terrain && mods.command;
+        if orbit && let Some(l) = target_mut(doc, sel) {
+            let cam = &mut l.light.camera;
+            // egui turns Ctrl-wheel into a zoom gesture.
+            let zoom = ui.input(|i| i.zoom_delta());
+            if resp.hovered() && zoom != 1.0 {
+                cam.distance = (cam.distance / zoom as f64).clamp(0.05, 10.0);
+                touched = true;
+            }
+            if resp.dragged() {
+                let d = resp.drag_delta();
+                if d != Vec2::ZERO {
+                    cam.yaw = (cam.yaw - d.x as f64 * 0.3 + 180.0).rem_euclid(360.0) - 180.0;
+                    cam.pitch = (cam.pitch + d.y as f64 * 0.2).clamp(1.0, 89.0);
+                    touched = true;
+                }
+            }
+        }
 
         // Wheel: zoom around the cursor.
-        if resp.hovered()
+        if !orbit
+            && resp.hovered()
             && scroll != 0.0
             && let Some(p) = pointer
         {
@@ -206,7 +232,7 @@ impl Viewport {
             self.box_start = if boxing { resp.interact_pointer_pos() } else { None };
             self.rotate_last = None;
         }
-        if resp.dragged() && self.box_start.is_none() {
+        if resp.dragged() && self.box_start.is_none() && !orbit {
             if mods.command {
                 // Rotate around the image center.
                 if let Some(p) = resp.interact_pointer_pos() {

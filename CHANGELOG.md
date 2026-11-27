@@ -12,7 +12,8 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
   the CPU. Brightness heights on image layers give bump maps. Soft shadows over the relief,
   ambient occlusion, reflections of a sky or a panorama image, heights from distance
   estimation. *3D terrain* shows the relief as a landscape under an orbiting perspective
-  camera (height-field ray tracing over a maximum pyramid of the heights).
+  camera (height-field ray tracing over a maximum pyramid of the heights); Ctrl-drag orbits
+  the camera, Ctrl-wheel changes its distance.
 
 ### Fixed
 

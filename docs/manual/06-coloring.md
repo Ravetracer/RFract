@@ -130,8 +130,12 @@ from straight above. The terrain is the part of the plane the 2D view shows, so 
 zooming the view moves and scales the landscape under the camera. *Camera direction* turns the
 camera around the middle of the terrain (0: from the bottom edge of the image), *Camera
 height* is its angle above the ground, *Camera distance* its distance in image heights and
-*Field of view* its opening angle. Where no terrain is seen, the layer is transparent: the
-layers below and the background show, for example a gradient fill layer as a sky.
+*Field of view* its opening angle. While the terrain layer is selected, **Ctrl-drag** in the
+view orbits the camera (left and right: direction, up and down: height) and **Ctrl-wheel**
+moves it closer or farther; plain dragging and the wheel still move and zoom the plane under
+it. Where no terrain is seen, the layer is transparent: the layers below and the background
+show, for example a gradient fill layer as a sky. The terrain is an open sheet: its edges have
+no walls.
 
 The lights, shadows, occlusion and reflections work on the terrain as on the flat relief. A
 small *Relief* (0.02 to 0.2) gives natural landscapes; heights from *Distance* give smooth

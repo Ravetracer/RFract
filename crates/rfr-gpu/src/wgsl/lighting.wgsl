@@ -181,6 +181,10 @@ fn l_trace(o: vec3<f32>, d: vec3<f32>, k: f32) -> vec3<f32> {
     if t0 > t1 {
         return vec3<f32>(0.0);
     }
+    // Entering below the surface: through a side or from underneath (no walls).
+    if l_above(o, d, k, t0) < 0.0 {
+        return vec3<f32>(0.0);
+    }
     var t = t0;
     var level = top;
     for (var it = 0u; it < 1024u; it = it + 1u) {
