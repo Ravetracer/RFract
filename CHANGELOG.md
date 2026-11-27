@@ -4,6 +4,12 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
 
 ## [Unreleased]
 
+### Changed
+
+- 3D terrain: its own *Terrain height* (a share of the image height) instead of the relief,
+  with heights normalized per source; before, the set rose as a column thousands of pixels
+  high and the walls looked like streaks.
+
 ### Added
 
 - Effects on the finished image (inspector section *Effects*): exposure, tone mapping

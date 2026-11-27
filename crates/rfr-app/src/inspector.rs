@@ -763,8 +763,18 @@ fn lighting_section(ui: &mut Ui, l: &mut Layer) {
         );
     }
     widgets::grid(ui, "light-grid2", |ui| {
-        if !object {
+        if !object && !li.terrain {
             widgets::slider(ui, "Relief", "Steepness of the relief (negative values turn it inside out)", &mut li.relief, -10.0..=10.0, def.relief);
+        }
+        if !object && li.terrain {
+            widgets::slider(
+                ui,
+                "Terrain height",
+                "Height of the terrain's highest parts as a share of the image height (0: flat)",
+                &mut li.terrain_height,
+                0.0..=1.0,
+                def.terrain_height,
+            );
         }
         widgets::slider(ui, "Ambient", "Light from all directions: brightens the shadowed sides", &mut li.ambient, 0.0..=2.0, def.ambient);
         widgets::slider(ui, "Highlights", "Strength of the highlights", &mut li.specular, 0.0..=3.0, def.specular);

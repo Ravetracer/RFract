@@ -137,9 +137,12 @@ it. Where no terrain is seen, the layer is transparent: the layers below and the
 show, for example a gradient fill layer as a sky. The terrain is an open sheet: its edges have
 no walls.
 
-The lights, shadows, occlusion and reflections work on the terrain as on the flat relief. A
-small *Relief* (0.02 to 0.2) gives natural landscapes; heights from *Distance* give smooth
-slopes up to the set, *Iterations* a plateau with steep walls. The terrain has as many
+**Terrain height** (instead of *Relief*) sets how high the terrain's highest parts rise, as a
+share of the image height: with *Iterations* the set is a plateau at exactly that height,
+with *Distance* the slopes rise smoothly to the set at that height. The lights, shadows,
+occlusion and reflections work on the terrain as on the flat relief. Very steep walls show
+the colors of the few pixels they stand on, stretched; a lower terrain height or *Distance*
+heights avoid them. The terrain has as many
 points as the image has pixels, so close-ups of the ground look soft.
 
 Every render pass computes the layer's heights over the whole image before it shades it, so

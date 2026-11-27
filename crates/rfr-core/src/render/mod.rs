@@ -239,6 +239,7 @@ impl LayerPlan {
                     p.camera = None;
                 }
                 p.fx = (l.effects.active() && p.camera.is_none()).then(|| light::FxPlan::new(&l.effects));
+                p.set_height_range(l.max_iter);
                 p
             }),
             object: (l.kind == LayerKind::Object).then(|| object::ObjectPlan::new(&l.object, &l.light)),

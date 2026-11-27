@@ -47,6 +47,10 @@ pub struct LightPlan {
     /// 3D terrain: the camera's direction and pitch (radians), distance (image heights) and
     /// tan(vertical field of view / 2).
     pub camera: Option<[f32; 4]>,
+    /// 3D terrain: the height of the highest part (share of the image height) and the height
+    /// value that reaches it (see [`LightPlan::set_height_range`]).
+    pub terrain_height: f32,
+    pub height_range: f32,
     /// Whether the layer is lit (else a layer with effects keeps its colors).
     pub shading: bool,
     /// The layer's effects (2D layers only).
@@ -127,6 +131,8 @@ impl LightPlan {
             environment: if l.reflection > 0.0 { crate::images::get(&l.environment) } else { None },
             horizon: l.horizon,
             zenith: l.zenith,
+            terrain_height: l.terrain_height.max(0.0) as f32,
+            height_range: 1.0,
             shading: true,
             fx: None,
             camera: l.terrain.then(|| {
@@ -159,10 +165,25 @@ impl LightPlan {
         }
     }
 
-    /// Height units per pixel step for normals: the relief scales with the image height, so a
-    /// larger render of the same view looks the same.
+    /// Pixels per height unit (z = k · height) for normals, shadows and terrains: the relief
+    /// scales with the image height, so a larger render of the same view looks the same. A 3D
+    /// terrain uses its own height instead: the height range reaches the terrain height.
     pub fn slope_scale(&self, image_height: u32) -> f32 {
-        self.relief * image_height as f32 * 2.0
+        match self.camera {
+            Some(_) => self.terrain_height * image_height as f32 / self.height_range,
+            None => self.relief * image_height as f32 * 2.0,
+        }
+    }
+
+    /// The size of the height values of the source for a terrain: smooth iterations up to
+    /// ln(1 + iteration limit) (the set), distances down to ln(1001) (a thousand pixels away),
+    /// coloring values and brightness about 1.
+    pub fn set_height_range(&mut self, max_iter: u32) {
+        self.height_range = match self.source {
+            HeightSource::Smooth => (max_iter.max(1) as f32).ln_1p(),
+            HeightSource::Distance => 1000f32.ln_1p(),
+            HeightSource::Value | HeightSource::Luminance => 1.0,
+        };
     }
 }
 

@@ -1095,8 +1095,10 @@ pub struct Lighting {
     pub environment: String,
     pub horizon: [f32; 3],
     pub zenith: [f32; 3],
-    /// Show the relief as a 3D terrain seen by `camera` instead of from straight above.
+    /// Show the relief as a 3D terrain seen by `camera` instead of from straight above;
+    /// `terrain_height` is the height of its highest part as a share of the image height.
     pub terrain: bool,
+    pub terrain_height: f64,
     pub camera: Camera,
 }
 
@@ -1139,6 +1141,7 @@ impl Default for Lighting {
             horizon: [0.85, 0.8, 0.75],
             zenith: [0.15, 0.3, 0.7],
             terrain: false,
+            terrain_height: 0.15,
             camera: Camera::default(),
         }
     }
