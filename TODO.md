@@ -14,7 +14,9 @@ that come up along the way.
       animation export with progress.
 - [x] Deep-zoom sequence mode: one image per 2× zoom step (at twice the frame size, kept in
       memory two at a time), frames composed by scaling; motion blur by blending zooms.
-- [ ] Flight recording → keyframes, cameraman smoothing.
+- [x] Fly mode (hold to fly in/out toward the cursor, smooth speed ramps), flight recording →
+      keyframes (fewest within a tolerance), recorded timing with smoothed speed, cameraman
+      smoothing (Gaussian, scale-aware centers, ends kept).
 - [ ] Drivers and expressions, audio-reactive values, render queue.
 - [ ] Exit: 1-minute 1080p deep zoom with palette rotation and motion blur (app and CLI);
       fly-over of a lit Mandelbrot landscape.
@@ -125,13 +127,6 @@ that come up along the way.
 - The view's orbit display and a Julia preview inset are not there yet.
 
 ## Ideas
-
-- **Fly mode** (owner's wish, do whenever it fits): holding the left mouse button flies into
-  the fractal toward the cursor continuously, the right button flies out, the mouse wheel sets
-  the speed. The speed ramps up and down smoothly like a real drive (gentle acceleration
-  when a button is pressed, gentle braking when it is released; XaoS does this nicely). Fast
-  preview while flying, full quality once the flight stops; the cameraman/recording of
-  stage 8 can reuse the flight path.
 
 - Check Gnofract 4D's `formulas/` (BSD since 2.0) file by file and bundle what is clean.
 

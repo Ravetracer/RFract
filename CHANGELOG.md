@@ -15,6 +15,12 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
   scrubbing, playback in the view, timing, palette rotation, motion blur and *Export
   animation…*. *Zoom sequence*: a straight deep zoom composed from one image per doubling
   of the zoom (many times faster for long zooms).
+- Fly mode (*View › Fly mode*, F): hold the left mouse button to fly into the fractal toward
+  the cursor, the right one to fly out, the wheel sets the speed; the speed ramps up and
+  down smoothly.
+- Flight recording in the timeline: the view and the 3D cameras while navigating become
+  keyframes (as few as the *Tolerance* allows) with the recorded timing (*As flown*, speed
+  changes smoothed); the *Cameraman* smooths jerky moves.
 
 ## [0.8.0] - 2026-11-27
 

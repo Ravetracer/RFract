@@ -20,6 +20,26 @@ so a zoom heads straight for its target; this stays exact at any zoom depth. Rot
 the short way round, as do angles of lights and cameras. Distances (camera distances,
 iteration counts) blend on a logarithmic scale.
 
+## Recording a flight
+
+Instead of setting keyframes by hand you can fly: press **Record flight** in the timeline,
+navigate (fly mode, dragging, zooming, orbiting a terrain camera: everything that changes the
+view or a 3D camera counts) and press **Stop recording**. The still time before the first and
+after the last move is cut off. RFract places as few keyframes as needed along the flight and
+switches the timing to *As flown*.
+
+The *FLIGHT* column sets how the recording becomes keyframes:
+
+- **Cameraman** smooths the flight like a camera operator: zooming, moving, turning and the
+  3D cameras are evened out over this many seconds, so jerks of the mouse become smooth moves
+  (0: exactly as flown). The start and the end stay where they were.
+- **Tolerance**: how far the path through the keyframes may stray from the flight (a share of
+  the view): smaller values give more keyframes that follow the flight more closely.
+- **Keyframes again** makes the keyframes anew with these settings; **Forget** drops the
+  recording (the keyframes stay). The recording lives until RFract closes; the keyframes are
+  saved with the document. Settings other than the view and the cameras come from the
+  document as it is when the keyframes are made.
+
 ## Playing and scrubbing
 
 Click or drag on the time bar to look at a frame; ▶ plays the animation in the view at fast
@@ -33,6 +53,8 @@ The time bar marks the seconds and the keyframes.
 - **Steady**: one steady speed over the whole *Length*, as it looks on the screen (zooming,
   moving relative to the view and turning together), with *Ease in* and *Ease out* seconds
   to speed up at the start and slow down at the end.
+- **As flown**: the pace of a recorded flight (each keyframe keeps its time), with speed
+  changes evened out over *Smooth speed* seconds (0: exactly as flown).
 - **Frames per second** of the movie.
 - **Palette rotation** turns all gradients over time (turns per second).
 - **Motion blur** exposes each frame for a share of the frame time (0.5: a film camera's

@@ -13,6 +13,16 @@
 | Alt+click | Julia set of the point (Alt+click again goes back) |
 | J | Julia set of the point under the cursor, or back |
 | Home | Back to the formula's suggested view |
+| F | Fly mode on or off |
+
+### Fly mode
+
+In fly mode (*View › Fly mode* or F) you fly through the fractal: hold the left mouse button
+to fly in toward the cursor, the right button to fly out; steer by moving the mouse. The
+speed builds up gently when you press a button and runs out gently when you let go, like a
+real drive. The mouse wheel sets the speed (zoom steps of two per second, shown at the bottom
+left of the view). Ctrl+drag still orbits the camera of a 3D terrain. The timeline can record
+a flight as an animation (see *Animation*).
 
 While you navigate, the preview renders at a lower resolution (Preferences › Preview › While
 navigating) and switches back to full resolution once you stop.

@@ -535,6 +535,9 @@ impl App {
             if !typing && i.consume_key(M::NONE, Key::Home) {
                 return Some(Action::ResetView);
             }
+            if !typing && i.consume_key(M::NONE, Key::F) {
+                self.viewport.fly = !self.viewport.fly;
+            }
             None
         })
     }
@@ -626,6 +629,9 @@ impl App {
                 {
                     action = Some(Action::ToggleJulia);
                 }
+                ui.add(egui::Checkbox::new(&mut self.viewport.fly, "Fly mode  (F)")).on_hover_text(
+                    "Hold the left mouse button to fly into the fractal toward the cursor, the right button to fly out; the wheel sets the speed",
+                );
                 ui.separator();
                 ui.checkbox(&mut self.viewport.cycling, "Cycle colors")
                     .on_hover_text("Turn the gradients in the view (the document keeps its colors)");
@@ -687,6 +693,8 @@ impl App {
             } else if self.viewport.hovered {
                 let hint = if self.viewport.object {
                     "Drag: orbit the camera · Wheel: camera distance"
+                } else if self.viewport.fly {
+                    "Fly mode (F): hold left: fly in toward the cursor · hold right: fly out · Wheel: speed · Ctrl-drag: orbit a terrain"
                 } else if self.viewport.terrain {
                     "Drag: move the terrain · Wheel: zoom · Ctrl-drag: orbit the camera · Ctrl-wheel: camera distance · Alt-click: Julia"
                 } else {
@@ -1028,7 +1036,7 @@ impl eframe::App for App {
                 .size_range(120.0..=420.0)
                 .frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(12, 8)))
                 .show(ui, |ui| {
-                    if let Some(a) = self.timeline.show(ui, &mut self.doc.doc) {
+                    if let Some(a) = self.timeline.show(ui, &mut self.doc.doc, &mut self.viewport) {
                         timeline_action = Some(a);
                     }
                 });

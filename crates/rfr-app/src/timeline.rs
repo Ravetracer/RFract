@@ -5,15 +5,18 @@
 //!
 //! Editing always happens on the document. Scrubbing and playback show frames in the view
 //! without touching the document ("preview"); clicking a keyframe loads it for editing,
-//! "Update" stores the current document back into it.
+//! "Update" stores the current document back into it. A recorded flight (the view and the 3D
+//! cameras while navigating, fly mode included) becomes keyframes with the recorded timing,
+//! smoothed by the cameraman.
 
 use std::time::Instant;
 
 use egui::{Color32, RichText, Sense, Ui, pos2, vec2};
 use egui_phosphor::regular as ph;
-use rfr_core::animation::{Animation, AnimationPlan, Easing, Keyframe, Timing};
+use rfr_core::animation::{Animation, AnimationPlan, Easing, FlightSample, Keyframe, Timing, keyframes_from_flight, smooth_flight};
 use rfr_core::doc::Document;
 
+use crate::viewport::{Recording, Viewport};
 use crate::{theme, widgets};
 
 /// What the panel asks the app to do.
@@ -22,8 +25,24 @@ pub enum TimelineAction {
     Message(String),
 }
 
+/// The last recorded flight and how it becomes keyframes.
+struct Flight {
+    samples: Vec<FlightSample>,
+    /// Cameraman smoothing in seconds.
+    smooth_s: f64,
+    /// Keyframe detail: how closely the keyframes follow the flight.
+    tolerance: f64,
+}
+
+impl Default for Flight {
+    fn default() -> Self {
+        Flight { samples: Vec::new(), smooth_s: 0.5, tolerance: 0.05 }
+    }
+}
+
 #[derive(Default)]
 pub struct Timeline {
+    flight: Flight,
     frame: usize,
     playing: bool,
     play_pos: f64,
@@ -67,8 +86,9 @@ impl Timeline {
         Some((p.doc_at(f as f64), p.palette_phase(f as f64), playing))
     }
 
-    pub fn show(&mut self, ui: &mut Ui, doc: &mut Document) -> Option<TimelineAction> {
+    pub fn show(&mut self, ui: &mut Ui, doc: &mut Document, view: &mut Viewport) -> Option<TimelineAction> {
         let mut action = None;
+        let recording = view.recording.is_some();
         let anim = doc.animation.as_deref().cloned().unwrap_or_default();
         let fps = anim.fps.clamp(1.0, 240.0);
         let (count, key_frames, plan_err) = match self.plan(&anim) {
@@ -93,7 +113,7 @@ impl Timeline {
 
         // ---- transport row
         ui.horizontal(|ui| {
-            ui.add_enabled_ui(count > 1, |ui| {
+            ui.add_enabled_ui(count > 1 && !recording, |ui| {
                 if widgets::icon_button(ui, ph::SKIP_BACK, "First frame").clicked() {
                     self.frame = 0;
                     self.previewing = true;
@@ -132,7 +152,27 @@ impl Timeline {
                 self.stop_preview();
             }
             ui.separator();
-            ui.add_enabled_ui(count > 0, |ui| {
+            let rec_text = if recording {
+                RichText::new(format!("{}  Stop recording", ph::STOP)).color(Color32::from_rgb(255, 110, 100))
+            } else {
+                RichText::new(format!("{}  Record flight", ph::RECORD))
+            };
+            if ui
+                .button(rec_text)
+                .on_hover_text(
+                    "Records the view and the 3D cameras while you navigate (fly mode: F). When you stop, keyframes follow the flight with its timing; smoothing and detail are set under FLIGHT",
+                )
+                .clicked()
+            {
+                if let Some(rec) = view.recording.take() {
+                    action = Some(self.finish_recording(doc, rec.samples));
+                } else {
+                    self.stop_preview();
+                    view.recording = Some(Recording { start: Instant::now(), samples: Vec::new() });
+                    action = Some(TimelineAction::Message("Recording: navigate or fly (F), then Stop recording".into()));
+                }
+            }
+            ui.add_enabled_ui(count > 0 && !recording, |ui| {
                 if ui
                     .button(format!("{}  Export animation…", crate::icons::EXPORT))
                     .on_hover_text("Render the animation into a movie or PNG images")
@@ -213,6 +253,13 @@ impl Timeline {
                     ui.set_width(300.0);
                     timing_ui(ui, &mut a);
                 });
+                ui.separator();
+                ui.vertical(|ui| {
+                    ui.set_width(300.0);
+                    if let Some(m) = self.flight_ui(ui, doc, &mut a, view) {
+                        action = Some(m);
+                    }
+                });
             });
         });
         if a != anim {
@@ -222,6 +269,86 @@ impl Timeline {
             self.stop_preview();
         }
         action
+    }
+
+    /// Keeps a recorded flight (without the still time before and after it) and makes
+    /// keyframes of it.
+    fn finish_recording(&mut self, doc: &mut Document, samples: Vec<FlightSample>) -> TimelineAction {
+        let moved = |a: &FlightSample, b: &FlightSample| a.view != b.view || a.cameras != b.cameras;
+        let first = samples.iter().position(|s| moved(s, &samples[0]));
+        let last = samples.iter().rposition(|s| samples.last().is_some_and(|e| moved(s, e)));
+        let (Some(first), Some(last)) = (first, last) else {
+            return TimelineAction::Message("Nothing recorded: the view did not move".into());
+        };
+        let (a, b) = (first - 1, (last + 1).min(samples.len() - 1));
+        let t0 = samples[a].t;
+        self.flight.samples = samples[a..=b].iter().map(|s| FlightSample { t: s.t - t0, ..s.clone() }).collect();
+        let n = self.make_keyframes(doc);
+        TimelineAction::Message(format!("Recorded {:.1} s: {n} keyframes", self.flight.samples.last().map_or(0.0, |s| s.t)))
+    }
+
+    /// Replaces the keyframes by keyframes along the recorded flight (recorded timing).
+    fn make_keyframes(&mut self, doc: &mut Document) -> usize {
+        let mut a = doc.animation.as_deref().cloned().unwrap_or_default();
+        let smooth = smooth_flight(&self.flight.samples, self.flight.smooth_s);
+        a.keyframes = keyframes_from_flight(&smooth, self.flight.tolerance, &snapshot(doc), a.fps.clamp(1.0, 240.0));
+        a.timing = Timing::Recorded;
+        let n = a.keyframes.len();
+        doc.animation = Some(Box::new(a));
+        self.selected = None;
+        self.frame = 0;
+        n
+    }
+
+    fn flight_ui(&mut self, ui: &mut Ui, doc: &mut Document, a: &mut Animation, view: &mut Viewport) -> Option<TimelineAction> {
+        let mut msg = None;
+        ui.label(RichText::new("FLIGHT").size(theme::fs(11.0)).color(theme::TEXT_MUTED));
+        ui.checkbox(&mut view.fly, "Fly mode (F)").on_hover_text(
+            "Hold the left mouse button to fly into the fractal toward the cursor, the right button to fly out; the wheel sets the speed",
+        );
+        if self.flight.samples.is_empty() {
+            ui.label(
+                RichText::new("Record flight, navigate or fly, stop: keyframes follow the flight.").size(theme::fs(11.5)).color(theme::TEXT_MUTED),
+            );
+            return None;
+        }
+        let secs = self.flight.samples.last().map_or(0.0, |s| s.t);
+        ui.label(RichText::new(format!("Recorded: {secs:.1} s, {} samples", self.flight.samples.len())).color(theme::TEXT_MUTED));
+        let d = Flight::default();
+        widgets::grid(ui, "flight", |ui| {
+            widgets::slider(
+                ui,
+                "Cameraman",
+                "Smooths the flight like a camera operator: seconds over which zooming, moving and turning are evened out (0: as flown)",
+                &mut self.flight.smooth_s,
+                0.0..=5.0,
+                d.smooth_s,
+            );
+            widgets::slider_log(
+                ui,
+                "Tolerance",
+                "How far the keyframe path may stray from the flight (share of the view; smaller: more keyframes, closer to the flight)",
+                &mut self.flight.tolerance,
+                0.005..=0.5,
+                d.tolerance,
+            );
+        });
+        ui.horizontal(|ui| {
+            if ui
+                .button(format!("{}  Keyframes again", ph::ARROWS_CLOCKWISE))
+                .on_hover_text("Makes the keyframes from the recorded flight again with these settings (replaces the keyframes; the other settings of the document come from the current document)")
+                .clicked()
+            {
+                let n = self.make_keyframes(doc);
+                *a = doc.animation.as_deref().cloned().unwrap_or_default();
+                msg = Some(TimelineAction::Message(format!("{n} keyframes from the recorded flight")));
+            }
+            if ui.button("Forget").on_hover_text("Removes the recorded flight (the keyframes stay)").clicked() {
+                self.flight.samples.clear();
+                msg = Some(TimelineAction::Message("Recorded flight removed".into()));
+            }
+        });
+        msg
     }
 
     /// Loads keyframe `k` into the document for editing.
@@ -246,7 +373,7 @@ impl Timeline {
             {
                 let at = self.selected.map_or(a.keyframes.len(), |s| s + 1);
                 let frames = a.keyframes.last().map_or(60, |k| k.frames);
-                a.keyframes.insert(at, Keyframe { doc: snapshot(doc), frames, easing: Easing::Linear });
+                a.keyframes.insert(at, Keyframe { doc: snapshot(doc), frames, easing: Easing::Linear, time_s: None });
                 self.selected = Some(at);
                 msg = Some(TimelineAction::Message(format!("Keyframe {} added", at + 1)));
             }
@@ -322,6 +449,7 @@ fn timing_ui(ui: &mut Ui, a: &mut Animation) {
                 ui.selectable_value(&mut a.timing, t, t.label()).on_hover_text(match t {
                     Timing::Keyframes => "Frames and easing set per keyframe",
                     Timing::Steady => "One steady speed (zoom, movement and turning as seen) over the whole length",
+                    Timing::Recorded => "The pace of the recorded flight (keyframe times), with its speed changes smoothed",
                 });
             }
         });
@@ -330,6 +458,16 @@ fn timing_ui(ui: &mut Ui, a: &mut Animation) {
             widgets::slider_log(ui, "Length", "Length of the animation in seconds", &mut a.length_s, 0.5..=3600.0, d.length_s);
             widgets::slider(ui, "Ease in", "Seconds to speed up at the start", &mut a.ease_in_s, 0.0..=30.0, d.ease_in_s);
             widgets::slider(ui, "Ease out", "Seconds to slow down at the end", &mut a.ease_out_s, 0.0..=30.0, d.ease_out_s);
+        }
+        if a.timing == Timing::Recorded {
+            widgets::slider(
+                ui,
+                "Smooth speed",
+                "Seconds over which speed changes of the flight are smoothed (0: exactly as flown)",
+                &mut a.speed_smoothing_s,
+                0.0..=10.0,
+                d.speed_smoothing_s,
+            );
         }
         widgets::slider(
             ui,

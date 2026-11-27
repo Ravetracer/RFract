@@ -4,12 +4,16 @@
 //! navigation. Drag pans, the wheel zooms around the cursor, Shift-drag or right-drag zooms into
 //! a box, Ctrl-drag rotates, double-click zooms in, Alt-click picks a Julia seed. When the
 //! selected layer is a 3D terrain, Ctrl-drag orbits its camera and Ctrl-wheel moves it closer
-//! or farther; on a 3D object layer dragging and the wheel do that without Ctrl. While the user
-//! navigates, the preview renders at a lower resolution.
+//! or farther; on a 3D object layer dragging and the wheel do that without Ctrl. In fly mode
+//! holding the left button flies into the fractal toward the cursor, the right button flies
+//! out and the wheel sets the speed, which ramps up and down smoothly. While the user
+//! navigates, the preview renders at a lower resolution. A flight recording samples the view
+//! and the 3D cameras (timeline).
 
 use std::time::{Duration, Instant};
 
 use egui::{Color32, Pos2, Rect, Stroke, Ui, Vec2};
+use rfr_core::animation::FlightSample;
 use rfr_core::doc::{Document, View};
 use rfr_core::render::{Plan, Precision};
 use rfr_gpu::codegen::Mode;
@@ -21,6 +25,17 @@ use crate::theme;
 
 /// How long after the last navigation input the preview stays in the fast mode.
 const NAVIGATE_HOLD: Duration = Duration::from_millis(250);
+/// Fly mode: seconds to reach the set speed after pressing a button and to stop after letting
+/// go (time constant).
+const FLY_RAMP: f64 = 0.45;
+/// Flight recording: samples per second.
+const RECORD_RATE: f64 = 30.0;
+
+/// A flight being recorded: the view and the 3D cameras over time.
+pub struct Recording {
+    pub start: Instant,
+    pub samples: Vec<FlightSample>,
+}
 
 pub struct Viewport {
     /// The selected layer is a 3D terrain (Ctrl-drag orbits its camera) or a 3D object
@@ -64,6 +79,15 @@ pub struct Viewport {
     pub cycle_speed: f64,
     phase: f64,
     last_tick: Instant,
+    /// Fly mode: on, set speed (zoom doublings per second), current speed (positive: in),
+    /// the clock and the point the flight heads for.
+    pub fly: bool,
+    pub fly_speed: f64,
+    fly_rate: f64,
+    fly_tick: Option<Instant>,
+    fly_at: Option<Pos2>,
+    /// The flight being recorded.
+    pub recording: Option<Recording>,
 }
 
 /// The largest rectangle with aspect `aspect` (width / height) centered in `avail`.
@@ -128,6 +152,12 @@ impl Viewport {
             cycle_speed: 0.1,
             phase: 0.0,
             last_tick: Instant::now(),
+            fly: false,
+            fly_speed: 1.0,
+            fly_rate: 0.0,
+            fly_tick: None,
+            fly_at: None,
+            recording: None,
         }
     }
 
@@ -165,7 +195,40 @@ impl Viewport {
     }
 
     fn navigating(&self) -> bool {
-        self.cycling || self.navigating_until.is_some_and(|t| Instant::now() < t)
+        self.cycling || self.fly_rate.abs() > 1e-3 || self.navigating_until.is_some_and(|t| Instant::now() < t)
+    }
+
+    /// Fly mode: the speed follows the buttons smoothly and the view zooms around the point
+    /// the flight heads for. True when the view moved.
+    fn fly_step(&mut self, ui: &Ui, resp: &egui::Response, doc: &mut Document, rect: Rect, pointer: Option<Pos2>, scroll: f32) -> bool {
+        let now = Instant::now();
+        let dt = self.fly_tick.map_or(0.0, |t| now.duration_since(t).as_secs_f64().min(0.1));
+        self.fly_tick = Some(now);
+        if resp.hovered() && scroll != 0.0 {
+            self.fly_speed = (self.fly_speed * (scroll as f64 * 0.002).exp()).clamp(0.05, 20.0);
+        }
+        let (left, right) = ui.input(|i| (i.pointer.primary_down(), i.pointer.secondary_down()));
+        let held = resp.is_pointer_button_down_on();
+        let target = if held && left {
+            self.fly_speed
+        } else if held && right {
+            -self.fly_speed
+        } else {
+            0.0
+        };
+        if held && let Some(p) = pointer.filter(|p| rect.contains(*p)) {
+            self.fly_at = Some(p);
+        }
+        self.fly_rate += (target - self.fly_rate) * (1.0 - (-dt / FLY_RAMP).exp());
+        if target == 0.0 && self.fly_rate.abs() < 1e-3 {
+            self.fly_rate = 0.0;
+            self.fly_tick = None;
+            return false;
+        }
+        ui.ctx().request_repaint();
+        let at = offset_at(&doc.view, rect, self.fly_at.unwrap_or(rect.center()));
+        doc.view.zoom_at(at, (-self.fly_rate * dt).exp2());
+        dt > 0.0
     }
 
     /// Switches the active layer to Julia mode with `seed` (remembering the view) or back.
@@ -267,8 +330,18 @@ impl Viewport {
             }
         }
 
+        // Fly mode: the buttons fly in and out, the wheel sets the speed.
+        let flying = self.fly && !orbit;
+        if flying {
+            touched |= self.fly_step(ui, &resp, doc, rect, pointer, scroll);
+        } else {
+            self.fly_rate = 0.0;
+            self.fly_tick = None;
+        }
+
         // Wheel: zoom around the cursor.
         if !orbit
+            && !flying
             && resp.hovered()
             && scroll != 0.0
             && let Some(p) = pointer
@@ -278,12 +351,12 @@ impl Viewport {
             doc.view.zoom_at(at, f);
             touched = true;
         }
-        let boxing = mods.shift || resp.dragged_by(egui::PointerButton::Secondary);
+        let boxing = !flying && (mods.shift || resp.dragged_by(egui::PointerButton::Secondary));
         if resp.drag_started() {
             self.box_start = if boxing { resp.interact_pointer_pos() } else { None };
             self.rotate_last = None;
         }
-        if resp.dragged() && self.box_start.is_none() && !orbit {
+        if resp.dragged() && self.box_start.is_none() && !orbit && !flying {
             if mods.command {
                 // Rotate around the image center.
                 if let Some(p) = resp.interact_pointer_pos() {
@@ -332,6 +405,7 @@ impl Viewport {
                 // Alt-click in Julia mode goes back; the pick mode always picks a new seed.
                 message = if julia_on && !picking { self.set_julia(doc, sel, None) } else { self.set_julia(doc, sel, Some(at)) };
                 touched = true;
+            } else if flying {
             } else if resp.double_clicked() {
                 doc.view.pan(offset_at(&doc.view, rect, p));
                 doc.view.radius *= 0.5;
@@ -344,8 +418,16 @@ impl Viewport {
         if touched {
             self.navigating_until = Some(Instant::now() + NAVIGATE_HOLD);
         }
-        if self.picking_julia {
+        if self.picking_julia || flying {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+        }
+        // Flight recording: the view and the cameras a few dozen times per second.
+        if let Some(rec) = &mut self.recording {
+            let t = rec.start.elapsed().as_secs_f64();
+            if rec.samples.last().is_none_or(|s| t - s.t >= 1.0 / RECORD_RATE) {
+                rec.samples.push(FlightSample::of(doc, t));
+            }
+            ui.ctx().request_repaint();
         }
 
         // Render.
@@ -377,6 +459,30 @@ impl Viewport {
         }
         if let (Some(s), Some(p)) = (self.box_start, resp.interact_pointer_pos()) {
             painter.rect_stroke(Rect::from_two_pos(s, p), 0.0, Stroke::new(1.5, theme::ACCENT), egui::StrokeKind::Middle);
+        }
+        let font = egui::FontId::proportional(theme::fs(13.0));
+        if let Some(rec) = &self.recording {
+            let at = rect.right_top() + Vec2::new(-12.0, 12.0);
+            painter.circle_filled(at + Vec2::new(-6.0, 8.0), 6.0, Color32::from_rgb(230, 60, 50));
+            painter.text(
+                at + Vec2::new(-18.0, 8.0),
+                egui::Align2::RIGHT_CENTER,
+                format!("REC {:.1} s", rec.start.elapsed().as_secs_f64()),
+                font.clone(),
+                Color32::from_rgb(255, 120, 110),
+            );
+        }
+        if flying {
+            painter.text(
+                rect.left_bottom() + Vec2::new(10.0, -10.0),
+                egui::Align2::LEFT_BOTTOM,
+                format!("Fly: {:.2} zoom steps per second (wheel) · now {:+.2}", self.fly_speed, self.fly_rate),
+                font.clone(),
+                theme::ACCENT,
+            );
+            if let Some(p) = self.fly_at.filter(|_| self.fly_rate.abs() > 1e-3) {
+                painter.circle_stroke(p, 6.0, Stroke::new(1.5, theme::ACCENT));
+            }
         }
         if self.picking_julia {
             painter.text(

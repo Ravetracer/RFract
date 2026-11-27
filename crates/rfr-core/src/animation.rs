@@ -19,7 +19,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::doc::{Document, View};
+use crate::doc::{Camera, Document, Layer, View};
 use crate::math::big;
 use crate::math::fx::Fx;
 
@@ -44,6 +44,8 @@ pub struct Animation {
     /// (its center and settings), composed from one image per doubling of the zoom (much
     /// faster for long zooms; no palette rotation).
     pub zoom_sequence: bool,
+    /// Recorded timing: speed changes are smoothed over this many seconds (0: as flown).
+    pub speed_smoothing_s: f64,
 }
 
 impl Default for Animation {
@@ -58,6 +60,7 @@ impl Default for Animation {
             palette_speed: 0.0,
             shutter: 0.0,
             zoom_sequence: false,
+            speed_smoothing_s: 1.0,
         }
     }
 }
@@ -71,11 +74,14 @@ pub struct Keyframe {
     pub frames: u32,
     /// Keyframe timing: how the frames to the next keyframe are spread.
     pub easing: Easing,
+    /// Recorded timing: seconds from the start of the flight (keyframes from a recording).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_s: Option<f64>,
 }
 
 impl Default for Keyframe {
     fn default() -> Self {
-        Keyframe { doc: Document::default(), frames: 60, easing: Easing::Linear }
+        Keyframe { doc: Document::default(), frames: 60, easing: Easing::Linear, time_s: None }
     }
 }
 
@@ -122,15 +128,18 @@ pub enum Timing {
     Keyframes,
     /// One steady perceived speed over the whole length.
     Steady,
+    /// The pace of a recorded flight (keyframe times), speed changes smoothed.
+    Recorded,
 }
 
 impl Timing {
-    pub const ALL: [Timing; 2] = [Timing::Keyframes, Timing::Steady];
+    pub const ALL: [Timing; 3] = [Timing::Keyframes, Timing::Steady, Timing::Recorded];
 
     pub fn label(self) -> &'static str {
         match self {
             Timing::Keyframes => "Per keyframe",
             Timing::Steady => "Steady",
+            Timing::Recorded => "As flown",
         }
     }
 }
@@ -177,9 +186,7 @@ pub struct AnimationPlan {
     keys: Vec<Document>,
     /// The keyframes as JSON (angles unwrapped).
     values: Vec<Value>,
-    views: Vec<View>,
-    /// Unwrapped view rotations.
-    rotations: Vec<f64>,
+    path: Path,
     /// Keyframe position (0 at the first keyframe, 1 at the second …) of every frame.
     us: Vec<f64>,
     fps: f64,
@@ -203,22 +210,10 @@ impl AnimationPlan {
             .collect();
         let mut values: Vec<Value> = keys.iter().map(|d| serde_json::to_value(d).unwrap_or(Value::Null)).collect();
         unwrap_angles(&mut values);
-        let views: Vec<View> = keys.iter().map(|d| d.view.clone()).collect();
-        let mut rotations: Vec<f64> = views.iter().map(|v| v.rotation).collect();
-        for i in 1..rotations.len() {
-            rotations[i] = unwrap(rotations[i - 1], rotations[i]);
-        }
+        let path = Path::new(keys.iter().map(|d| d.view.clone()).collect(), keys.iter().map(cameras).collect());
         let fps = anim.fps.clamp(1.0, 240.0);
-        let mut plan = AnimationPlan {
-            keys,
-            values,
-            views,
-            rotations,
-            us: Vec::new(),
-            fps,
-            palette_speed: anim.palette_speed,
-            shutter: anim.shutter.clamp(0.0, 1.0),
-        };
+        let mut plan =
+            AnimationPlan { keys, values, path, us: Vec::new(), fps, palette_speed: anim.palette_speed, shutter: anim.shutter.clamp(0.0, 1.0) };
         plan.us = plan.frame_params(anim);
         Ok(plan)
     }
@@ -281,37 +276,7 @@ impl AnimationPlan {
 
     /// The view at keyframe position `u`.
     pub fn view_at(&self, u: f64) -> View {
-        let n = self.views.len();
-        let i = (u.floor().max(0.0) as usize).min(n.saturating_sub(2));
-        let a = (u - i as f64).clamp(0.0, 1.0);
-        if n == 1 {
-            return self.views[0].clone();
-        }
-        // Neighbours of the segment; missing ones at the ends continue it straight.
-        let four = |f: &dyn Fn(usize) -> f64| {
-            let (x1, x2) = (f(i), f(i + 1));
-            let x0 = if i > 0 { f(i - 1) } else { 2.0 * x1 - x2 };
-            let x3 = if i + 2 < n { f(i + 2) } else { 2.0 * x2 - x1 };
-            (x0, x1, x2, x3)
-        };
-        let (l0, l1, l2, l3) = four(&|k| self.views[k].radius.log2());
-        let l = monotone(l0, l1, l2, l3, a);
-        let radius = Fx::from_f64(1.0) * pow2(l);
-        let (r0, r1, r2, r3) = four(&|k| self.rotations[k]);
-        let rotation = monotone(r0, r1, r2, r3, a).rem_euclid(360.0);
-        // Center: the next keyframe's center stays put while zooming toward it; even when the
-        // radius does not change.
-        let k = if (l2 - l1).abs() > 1e-9 { (pow2_f(l - l2) - 1.0) / (pow2_f(l1 - l2) - 1.0) } else { 1.0 - a };
-        let (v1, v2) = (&self.views[i], &self.views[i + 1]);
-        let scale = radius * 1e-3;
-        // Enough bits for the finest of the two keyframes and the current view.
-        let finest = [scale, v1.radius * 1e-3, v2.radius * 1e-3].into_iter().min_by(|a, b| a.log2().total_cmp(&b.log2())).unwrap_or(scale);
-        let bits = big::bits_for(finest) + 64;
-        let center = std::array::from_fn(|c| {
-            let diff = big::parse(&v1.center[c], bits) - big::parse(&v2.center[c], bits);
-            big::add(&v2.center[c], big::to_fx(&diff) * k, scale)
-        });
-        View { center, radius, rotation }
+        self.path.view_at(u)
     }
 
     /// Keyframe position of every frame for the animation's timing.
@@ -321,7 +286,7 @@ impl AnimationPlan {
         if n == 1 {
             let frames = match anim.timing {
                 Timing::Steady => (anim.length_s * fps).round().max(1.0) as usize,
-                Timing::Keyframes => anim.keyframes[0].frames.max(1) as usize,
+                Timing::Keyframes | Timing::Recorded => anim.keyframes[0].frames.max(1) as usize,
             };
             return vec![0.0; frames];
         }
@@ -349,38 +314,69 @@ impl AnimationPlan {
                 }
                 prof.iter().map(|p| invert(&u, &s, p * total)).collect()
             }
+            Timing::Recorded => {
+                // Key times: recorded, else from the frame counts.
+                let mut times: Vec<f64> = Vec::with_capacity(n);
+                let mut acc = 0.0;
+                for (i, k) in anim.keyframes.iter().enumerate() {
+                    let t = k.time_s.unwrap_or(acc);
+                    times.push(if i > 0 { t.max(times[i - 1] + 1e-3) } else { t });
+                    acc = times[i] + k.frames.max(1) as f64 / fps;
+                }
+                let t0 = times[0];
+                let frames = ((times[n - 1] - t0) * fps).round().max(1.0) as usize + 1;
+                // Keyframe position per frame as flown (even within a segment).
+                let flown: Vec<f64> = (0..frames)
+                    .map(|f| {
+                        let t = t0 + f as f64 / fps;
+                        let k = times.iter().rposition(|x| *x <= t).unwrap_or(0).min(n - 2);
+                        k as f64 + ((t - times[k]) / (times[k + 1] - times[k])).clamp(0.0, 1.0)
+                    })
+                    .collect();
+                let sigma = anim.speed_smoothing_s.max(0.0) * fps;
+                let (u, s) = self.perceived_length();
+                let total = *s.last().unwrap_or(&0.0);
+                if sigma < 0.3 || total <= 1e-12 {
+                    return flown;
+                }
+                // The perceived speed as flown, smoothed (held at the ends), scaled to the path.
+                let pos: Vec<f64> = flown.iter().map(|x| lerp_at(&s, x * PATH_STEPS as f64)).collect();
+                let speed = gauss(&pos.windows(2).map(|w| w[1] - w[0]).collect::<Vec<_>>(), sigma);
+                let sum: f64 = speed.iter().sum();
+                let k = if sum > 0.0 { total / sum } else { 0.0 };
+                let mut acc = 0.0;
+                let mut us = vec![0.0];
+                for v in speed {
+                    acc += v * k;
+                    us.push(invert(&u, &s, acc));
+                }
+                us
+            }
         }
     }
 
     /// The perceived distance along the keyframes: zoom (factors of two), movement relative to
-    /// the view and turning (radians), sampled finely; positions and cumulative lengths.
+    /// the view, turning and 3D camera moves (radians, distance factors), sampled finely;
+    /// positions and cumulative lengths.
     fn perceived_length(&self) -> (Vec<f64>, Vec<f64>) {
-        const STEPS: usize = 64;
         let n = self.keys.len();
         let mut u = vec![0.0];
         let mut s = vec![0.0];
-        let mut prev = self.view_at(0.0);
+        let mut prev = self.path.view_at(0.0);
+        let mut prev_cams = self.path.cams_at(0.0);
         for k in 0..n - 1 {
-            for j in 1..=STEPS {
-                let uu = k as f64 + j as f64 / STEPS as f64;
-                let v = self.view_at(uu);
+            for j in 1..=PATH_STEPS {
+                let uu = k as f64 + j as f64 / PATH_STEPS as f64;
+                let v = self.path.view_at(uu);
+                let cams = self.path.cams_at(uu);
                 let zoom = (v.radius.log2() - prev.radius.log2()).abs();
-                let r = prev.radius.to_f64().max(1e-300);
-                let (c0, c1) = (prev.center_f64(), v.center_f64());
-                // Deep views: the difference in f64 is not exact, but relative to the radius it
-                // only needs a few digits; compute it on the text there.
-                let pan = if r < 1e-12 {
-                    let bits = big::bits_for(prev.radius * 1e-6) + 64;
-                    let d = |c: usize| big::to_fx(&(big::parse(&v.center[c], bits) - big::parse(&prev.center[c], bits))).to_f64();
-                    d(0).hypot(d(1)) / r
-                } else {
-                    (c1[0] - c0[0]).hypot(c1[1] - c0[1]) / r
-                };
-                let turn = (v.rotation - prev.rotation + 540.0).rem_euclid(360.0) - 180.0;
-                let ds = zoom + pan + turn.abs().to_radians();
+                let o = rel_offset(&prev, &v);
+                let turn = angle_diff(v.rotation, prev.rotation).abs().to_radians();
+                let ds = zoom + o[0].hypot(o[1]) + turn + cam_diff(&cams, &prev_cams);
                 u.push(uu);
                 s.push(s.last().unwrap_or(&0.0) + ds);
                 prev = v;
+                prev_cams = cams;
             }
         }
         (u, s)
@@ -402,6 +398,382 @@ impl AnimationPlan {
             })
             .collect()
     }
+}
+
+/// Steps per keyframe segment when the path is sampled (perceived length, flight errors).
+const PATH_STEPS: usize = 64;
+
+/// The camera path through the keyframes: the views (radius on a monotone cubic in log space,
+/// the next keyframe's center kept in place, the unwrapped rotation on a monotone cubic) and
+/// the 3D cameras (the same curves as the document blend: yaw unwrapped, distance in log).
+struct Path {
+    views: Vec<View>,
+    /// Unwrapped view rotations.
+    rotations: Vec<f64>,
+    /// The 3D cameras of every keyframe (none when the keyframes differ in layers): yaw
+    /// (unwrapped), pitch, ln distance, field of view.
+    cams: Vec<Vec<[f64; 4]>>,
+}
+
+/// A camera as path channels (yaw, pitch, ln distance, field of view).
+fn cam_channels(c: &Camera) -> [f64; 4] {
+    [c.yaw, c.pitch, c.distance.max(1e-300).ln(), c.fov]
+}
+
+impl Path {
+    fn new(views: Vec<View>, cams: Vec<Vec<Camera>>) -> Path {
+        let mut rotations: Vec<f64> = views.iter().map(|v| v.rotation).collect();
+        for i in 1..rotations.len() {
+            rotations[i] = unwrap(rotations[i - 1], rotations[i]);
+        }
+        let same = cams.iter().all(|c| c.len() == cams[0].len());
+        let mut cams: Vec<Vec<[f64; 4]>> =
+            if same { cams.iter().map(|c| c.iter().map(cam_channels).collect()).collect() } else { vec![Vec::new(); views.len()] };
+        for i in 1..cams.len() {
+            let (a, b) = cams.split_at_mut(i);
+            for (p, c) in a[i - 1].iter().zip(b[0].iter_mut()) {
+                c[0] = unwrap(p[0], c[0]);
+            }
+        }
+        Path { views, rotations, cams }
+    }
+
+    /// Segment and position in it of keyframe position `u`.
+    fn segment(&self, u: f64) -> (usize, f64) {
+        let n = self.views.len();
+        let i = (u.floor().max(0.0) as usize).min(n.saturating_sub(2));
+        (i, (u - i as f64).clamp(0.0, 1.0))
+    }
+
+    /// Monotone cubic of `f` over keyframes on segment `i` at `a`; missing neighbours at the
+    /// ends continue the segment straight.
+    fn curve(&self, i: usize, a: f64, f: &dyn Fn(usize) -> f64) -> f64 {
+        let n = self.views.len();
+        let (x1, x2) = (f(i), f(i + 1));
+        let x0 = if i > 0 { f(i - 1) } else { 2.0 * x1 - x2 };
+        let x3 = if i + 2 < n { f(i + 2) } else { 2.0 * x2 - x1 };
+        monotone(x0, x1, x2, x3, a)
+    }
+
+    /// Log2 radius, unwrapped rotation and center factor k (center = c₂ + (c₁ − c₂)·k on
+    /// segment i) at keyframe position `u`.
+    fn parts(&self, u: f64) -> (usize, f64, f64, f64) {
+        let (i, a) = self.segment(u);
+        let l = self.curve(i, a, &|k| self.views[k].radius.log2());
+        let rot = self.curve(i, a, &|k| self.rotations[k]);
+        let (l1, l2) = (self.views[i].radius.log2(), self.views[i + 1].radius.log2());
+        // The next keyframe's center stays put while zooming toward it; even when the radius
+        // does not change.
+        let k = if (l2 - l1).abs() > 1e-9 { (pow2_f(l - l2) - 1.0) / (pow2_f(l1 - l2) - 1.0) } else { 1.0 - a };
+        (i, l, rot, k)
+    }
+
+    fn view_at(&self, u: f64) -> View {
+        if self.views.len() == 1 {
+            return self.views[0].clone();
+        }
+        let (i, l, rot, k) = self.parts(u);
+        let radius = Fx::from_f64(1.0) * pow2(l);
+        let (v1, v2) = (&self.views[i], &self.views[i + 1]);
+        let scale = radius * 1e-3;
+        // Enough bits for the finest of the two keyframes and the current view.
+        let finest = [scale, v1.radius * 1e-3, v2.radius * 1e-3].into_iter().min_by(|a, b| a.log2().total_cmp(&b.log2())).unwrap_or(scale);
+        let bits = big::bits_for(finest) + 64;
+        let center = std::array::from_fn(|c| {
+            let diff = big::parse(&v1.center[c], bits) - big::parse(&v2.center[c], bits);
+            big::add(&v2.center[c], big::to_fx(&diff) * k, scale)
+        });
+        View { center, radius, rotation: rot.rem_euclid(360.0) }
+    }
+
+    /// The camera channels at keyframe position `u`.
+    fn cams_at(&self, u: f64) -> Vec<[f64; 4]> {
+        if self.views.len() == 1 {
+            return self.cams[0].clone();
+        }
+        let (i, a) = self.segment(u);
+        (0..self.cams[0].len()).map(|j| std::array::from_fn(|c| self.curve(i, a, &|k| self.cams[k][j][c]))).collect()
+    }
+}
+
+/// Offset of `to`'s center from `from`'s in units of `from`'s radius (exact digits at depth).
+fn rel_offset(from: &View, to: &View) -> [f64; 2] {
+    if from.radius.log2() > -40.0 {
+        let r = from.radius.to_f64();
+        let (a, b) = (from.center_f64(), to.center_f64());
+        return [(b[0] - a[0]) / r, (b[1] - a[1]) / r];
+    }
+    let bits = big::bits_for(from.radius * 1e-6) + 64;
+    let d = |c: usize| (big::to_fx(&(big::parse(&to.center[c], bits) - big::parse(&from.center[c], bits))) / from.radius).to_f64();
+    [d(0), d(1)]
+}
+
+/// The shortest turn from `b` to `a` (degrees, −180..180).
+fn angle_diff(a: f64, b: f64) -> f64 {
+    (a - b + 180.0).rem_euclid(360.0) - 180.0
+}
+
+/// How far apart two sets of camera channels look: turning and field of view in radians plus
+/// distance factors (ln).
+fn cam_diff(a: &[[f64; 4]], b: &[[f64; 4]]) -> f64 {
+    a.iter().zip(b).map(|(a, b)| (angle_diff(a[0], b[0]).abs() + (a[1] - b[1]).abs() + (a[3] - b[3]).abs()).to_radians() + (a[2] - b[2]).abs()).sum()
+}
+
+/// `v` at fractional index `x` (linear between the entries).
+fn lerp_at(v: &[f64], x: f64) -> f64 {
+    let i = (x.floor().max(0.0) as usize).min(v.len().saturating_sub(2));
+    let a = (x - i as f64).clamp(0.0, 1.0);
+    match v.len() {
+        0 => 0.0,
+        1 => v[0],
+        _ => v[i] + (v[i + 1] - v[i]) * a,
+    }
+}
+
+/// Gaussian smoothing over `sigma` entries, mirrored at the ends (values held there).
+fn gauss(v: &[f64], sigma: f64) -> Vec<f64> {
+    let n = v.len() as isize;
+    let r = (3.0 * sigma).ceil() as isize;
+    let w: Vec<f64> = (-r..=r).map(|d| (-(d * d) as f64 / (2.0 * sigma * sigma)).exp()).collect();
+    (0..n)
+        .map(|i| {
+            let (mut sum, mut ws) = (0.0, 0.0);
+            for d in -r..=r {
+                let mut j = i + d;
+                while j < 0 || j >= n {
+                    j = if j < 0 { -j - 1 } else { 2 * n - j - 1 };
+                }
+                sum += v[j as usize] * w[(d + r) as usize];
+                ws += w[(d + r) as usize];
+            }
+            sum / ws
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------------------------
+// Flight recording → keyframes
+
+/// The 3D cameras of all layers (terrain and object camera of every layer, groups included,
+/// in tree order).
+pub fn cameras(doc: &Document) -> Vec<Camera> {
+    fn walk(layers: &[Layer], out: &mut Vec<Camera>) {
+        for l in layers {
+            out.push(l.light.camera.clone());
+            out.push(l.object.camera.clone());
+            walk(&l.children, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(&doc.layers, &mut out);
+    out
+}
+
+/// Sets the 3D cameras of all layers (the order of [`cameras`]).
+pub fn set_cameras(doc: &mut Document, cams: &[Camera]) {
+    fn walk<'a>(layers: &mut [Layer], it: &mut impl Iterator<Item = &'a Camera>) {
+        for l in layers {
+            if let Some(c) = it.next() {
+                l.light.camera = c.clone();
+            }
+            if let Some(c) = it.next() {
+                l.object.camera = c.clone();
+            }
+            walk(&mut l.children, it);
+        }
+    }
+    walk(&mut doc.layers, &mut cams.iter());
+}
+
+/// One moment of a recorded flight: seconds since the start, the view and the 3D cameras.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FlightSample {
+    pub t: f64,
+    pub view: View,
+    pub cameras: Vec<Camera>,
+}
+
+impl FlightSample {
+    pub fn of(doc: &Document, t: f64) -> FlightSample {
+        FlightSample { t, view: doc.view.clone(), cameras: cameras(doc) }
+    }
+}
+
+/// A flight as numbers: centers (binary floats with bits for the finest view), log2 radii,
+/// unwrapped rotations and camera channels.
+struct Channels {
+    centers: Vec<[big::Big; 2]>,
+    l: Vec<f64>,
+    rot: Vec<f64>,
+    cams: Vec<Vec<[f64; 4]>>,
+}
+
+impl Channels {
+    fn new(samples: &[FlightSample]) -> Channels {
+        let finest = samples.iter().map(|s| s.view.radius.log2()).fold(f64::INFINITY, f64::min);
+        let bits = big::bits_for(Fx::from_f64(1.0) * pow2(finest) * 1e-6) + 64;
+        let centers = samples.iter().map(|s| std::array::from_fn(|c| big::parse(&s.view.center[c], bits))).collect();
+        let l = samples.iter().map(|s| s.view.radius.log2()).collect();
+        let mut rot: Vec<f64> = samples.iter().map(|s| s.view.rotation).collect();
+        for i in 1..rot.len() {
+            rot[i] = unwrap(rot[i - 1], rot[i]);
+        }
+        let same = samples.iter().all(|s| s.cameras.len() == samples[0].cameras.len());
+        let mut cams: Vec<Vec<[f64; 4]>> =
+            samples.iter().map(|s| if same { s.cameras.iter().map(cam_channels).collect() } else { Vec::new() }).collect();
+        for i in 1..cams.len() {
+            let (a, b) = cams.split_at_mut(i);
+            for (p, c) in a[i - 1].iter().zip(b[0].iter_mut()) {
+                c[0] = unwrap(p[0], c[0]);
+            }
+        }
+        Channels { centers, l, rot, cams }
+    }
+}
+
+/// Cameraman smoothing of a recorded flight: zoom, turning, the 3D cameras and the movement
+/// are averaged over a window of about `seconds` (Gaussian), so jerks of the mouse and keys
+/// become smooth moves. The window narrows toward the ends, which stay where they were.
+/// Centers average relative to each moment's view: views much wider than the current one
+/// count less (a deep zoom keeps its target).
+#[allow(clippy::needless_range_loop)]
+pub fn smooth_flight(samples: &[FlightSample], seconds: f64) -> Vec<FlightSample> {
+    let n = samples.len();
+    if seconds <= 0.0 || n < 3 {
+        return samples.to_vec();
+    }
+    let ch = Channels::new(samples);
+    let sigma = seconds / 2.0;
+    let (t0, t1) = (samples[0].t, samples[n - 1].t);
+    (0..n)
+        .map(|i| {
+            let s = &samples[i];
+            let h = (3.0 * sigma).min(s.t - t0).min(t1 - s.t);
+            if h <= 0.0 {
+                return s.clone();
+            }
+            let (mut ws, mut wc) = (0.0, 0.0);
+            let (mut l, mut rot) = (0.0, 0.0);
+            let mut cams = vec![[0.0; 4]; ch.cams[i].len()];
+            let mut off = [Fx::ZERO, Fx::ZERO];
+            let lo = samples.partition_point(|x| x.t < s.t - h);
+            let hi = samples.partition_point(|x| x.t <= s.t + h);
+            for j in lo..hi {
+                let dt = samples[j].t - s.t;
+                let w = (-dt * dt / (2.0 * sigma * sigma)).exp();
+                ws += w;
+                l += w * ch.l[j];
+                rot += w * ch.rot[j];
+                for (c, v) in cams.iter_mut().zip(&ch.cams[j]) {
+                    for k in 0..4 {
+                        c[k] += w * v[k];
+                    }
+                }
+                let wcj = w * pow2_f(2.0 * (ch.l[i] - ch.l[j]).min(0.0));
+                if j != i && wcj > 1e-9 {
+                    for c in 0..2 {
+                        off[c] = off[c] + big::to_fx(&(ch.centers[j][c].clone() - ch.centers[i][c].clone())) * wcj;
+                    }
+                }
+                wc += wcj;
+            }
+            let l = l / ws;
+            let radius = Fx::from_f64(1.0) * pow2(l);
+            let scale = radius * 1e-3;
+            let center = std::array::from_fn(|c| big::add(&s.view.center[c], off[c] / wc.max(1e-300), scale));
+            let cameras = cams
+                .iter()
+                .map(|c| Camera { yaw: angle_diff(c[0] / ws, 0.0), pitch: c[1] / ws, distance: (c[2] / ws).exp(), fov: c[3] / ws })
+                .collect();
+            FlightSample { t: s.t, view: View { center, radius, rotation: (rot / ws).rem_euclid(360.0) }, cameras }
+        })
+        .collect()
+}
+
+/// Keyframes for a recorded flight: as few as needed so that the path through them stays
+/// within `tolerance` of the flight (movement relative to the view, zoom in factors of two,
+/// turning in radians, 3D camera moves). The keyframes are `base` with the recorded view and
+/// cameras, their times those of the flight (for the recorded timing).
+#[allow(clippy::needless_range_loop)]
+pub fn keyframes_from_flight(samples: &[FlightSample], tolerance: f64, base: &Document, fps: f64) -> Vec<Keyframe> {
+    let n = samples.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let ch = Channels::new(samples);
+    let mut keys = vec![0usize];
+    if n > 1 {
+        keys.push(n - 1);
+    }
+    let tol = tolerance.max(1e-6);
+    // Worst error per segment (error, sample); None: to be measured.
+    let mut worst: Vec<Option<(f64, usize)>> = vec![None; keys.len().saturating_sub(1)];
+    loop {
+        let path = Path::new(keys.iter().map(|&k| samples[k].view.clone()).collect(), keys.iter().map(|&k| samples[k].cameras.clone()).collect());
+        for seg in 0..worst.len() {
+            if worst[seg].is_none() {
+                worst[seg] = Some(segment_error(&path, seg, &keys, &ch, samples));
+            }
+        }
+        let (seg, (e, at)) =
+            worst.iter().enumerate().map(|(i, w)| (i, w.unwrap_or((0.0, 0)))).max_by(|a, b| a.1.0.total_cmp(&b.1.0)).unwrap_or((0, (0.0, 0)));
+        if e <= tol || keys.len() >= 1000 {
+            break;
+        }
+        keys.insert(seg + 1, at);
+        // The new keyframe changes its segments and (through the tangents) their neighbours.
+        worst.insert(seg + 1, None);
+        let end = (seg + 3).min(worst.len());
+        for w in worst.iter_mut().take(end).skip(seg.saturating_sub(1)) {
+            *w = None;
+        }
+    }
+    let t0 = samples[0].t;
+    keys.iter()
+        .enumerate()
+        .map(|(j, &k)| {
+            let s = &samples[k];
+            let mut doc = Document { animation: None, view: s.view.clone(), ..base.clone() };
+            set_cameras(&mut doc, &s.cameras);
+            let next = keys.get(j + 1).map(|&m| samples[m].t).unwrap_or(s.t);
+            Keyframe { doc, frames: ((next - s.t) * fps).round().max(1.0) as u32, easing: Easing::Linear, time_s: Some(s.t - t0) }
+        })
+        .collect()
+}
+
+/// The largest distance of a sample between keyframes `seg` and `seg + 1` from the path there
+/// (to the nearest of finely spaced path points), and that sample.
+#[allow(clippy::needless_range_loop)]
+fn segment_error(path: &Path, seg: usize, keys: &[usize], ch: &Channels, samples: &[FlightSample]) -> (f64, usize) {
+    let (a, b) = (keys[seg], keys[seg + 1]);
+    if b <= a + 1 {
+        return (0.0, a);
+    }
+    let points: Vec<(f64, f64, f64, Vec<[f64; 4]>)> = (0..=PATH_STEPS)
+        .map(|j| {
+            let u = seg as f64 + j as f64 / PATH_STEPS as f64;
+            let (_, l, rot, k) = path.parts(u);
+            (l, rot, k, path.cams_at(u))
+        })
+        .collect();
+    // Centers on the segment: c_b + (c_a − c_b)·k; relative to a sample s: (c_b − c_s) + (c_a − c_b)·k.
+    let e: [Fx; 2] = std::array::from_fn(|c| big::to_fx(&(ch.centers[a][c].clone() - ch.centers[b][c].clone())));
+    let mut worst = (0.0, a);
+    for i in a + 1..b {
+        let r = samples[i].view.radius;
+        let d: [Fx; 2] = std::array::from_fn(|c| big::to_fx(&(ch.centers[b][c].clone() - ch.centers[i][c].clone())));
+        let best = points
+            .iter()
+            .map(|(l, rot, k, cams)| {
+                let off = |c: usize| ((d[c] + e[c] * *k) / r).to_f64();
+                off(0).hypot(off(1)) + (l - ch.l[i]).abs() + angle_diff(*rot, ch.rot[i]).abs().to_radians() + cam_diff(cams, &ch.cams[i])
+            })
+            .fold(f64::INFINITY, f64::min);
+        if best > worst.0 {
+            worst = (best, i);
+        }
+    }
+    worst
 }
 
 fn pow2(l: f64) -> Fx {
@@ -578,7 +950,7 @@ mod tests {
     fn key(center: [&str; 2], radius: f64, rotation: f64, frames: u32) -> Keyframe {
         let doc =
             Document { view: View { center: [center[0].into(), center[1].into()], radius: Fx::from_f64(radius), rotation }, ..Document::default() };
-        Keyframe { doc, frames, easing: Easing::Linear }
+        Keyframe { doc, frames, easing: Easing::Linear, time_s: None }
     }
 
     #[test]
@@ -661,5 +1033,109 @@ mod tests {
         assert_eq!(ex.len(), 8);
         assert_eq!(ex.iter().map(|e| e.1).sum::<u32>(), 8);
         assert!(ex[0].0 < 20.0 && ex[7].0 > 20.0 && ex[7].0 - ex[0].0 < 0.5);
+    }
+
+    /// A flight: zooming into a deep point while drifting and turning, with jitter.
+    fn flight(seconds: f64, depth: f64, jitter: f64) -> Vec<FlightSample> {
+        let target = ["-0.7436438870371587047", "0.1318259042053198403"];
+        let mut doc = Document::default();
+        let mut out = Vec::new();
+        let frames = (seconds * 30.0) as usize;
+        for f in 0..=frames {
+            let t = f as f64 / 30.0;
+            let x = t / seconds;
+            // Zoom by 2^(depth·x) toward the target, drifting around it at half the radius.
+            let l = 0.5 - depth * x * x * (3.0 - 2.0 * x) + jitter * (f as f64 * 1.7).sin();
+            let r = Fx::from_f64(1.0) * pow2(l);
+            let a = x * 4.0;
+            doc.view.center = std::array::from_fn(|c| {
+                let o = if c == 0 { a.cos() } else { a.sin() } * 0.5 * (1.0 - x);
+                big::add(target[c], r * o, r * 1e-3)
+            });
+            doc.view.radius = r;
+            doc.view.rotation = (t * 40.0 + jitter * 30.0 * (f as f64 * 2.3).sin()).rem_euclid(360.0);
+            doc.layers[0].light.camera.yaw = angle_diff(t * 50.0, 0.0);
+            out.push(FlightSample::of(&doc, t));
+        }
+        out
+    }
+
+    #[test]
+    fn flights_become_few_keyframes_that_follow_them() {
+        for depth in [10.0, 100.0] {
+            let samples = flight(12.0, depth, 0.0);
+            let keys = keyframes_from_flight(&samples, 0.02, &Document::default(), 30.0);
+            assert!(keys.len() >= 3 && keys.len() < 100, "{} keyframes", keys.len());
+            let anim = Animation { keyframes: keys, timing: Timing::Recorded, speed_smoothing_s: 0.0, fps: 30.0, ..Animation::default() };
+            let plan = AnimationPlan::new(&anim).unwrap();
+            assert_eq!(plan.frame_count(), samples.len());
+            // As flown: every frame is near the recorded moment.
+            let mut worst = 0.0f64;
+            for (f, s) in samples.iter().enumerate().step_by(7) {
+                let v = plan.view_at(plan.us[f]);
+                let o = rel_offset(&s.view, &v);
+                let e =
+                    o[0].hypot(o[1]) + (v.radius.log2() - s.view.radius.log2()).abs() + angle_diff(v.rotation, s.view.rotation).abs().to_radians();
+                worst = worst.max(e);
+            }
+            // Within a segment the pace is even in keyframe position: a fraction of a zoom
+            // step off the recorded moment at most.
+            assert!(worst < 0.25, "depth {depth}: {worst}");
+            // The end is exact.
+            let last = plan.doc_at((plan.frame_count() - 1) as f64);
+            assert_eq!(last.view, samples.last().unwrap().view);
+            let yaw = |d: &Document| d.layers[0].light.camera.yaw;
+            assert!(angle_diff(yaw(&plan.doc_at(100.0)), yaw(&Document { view: View::default(), ..Document::default() })).abs() > 1.0);
+        }
+    }
+
+    #[test]
+    fn cameraman_smooths_jerks_and_keeps_the_ends() {
+        let rough = flight(8.0, 30.0, 0.05);
+        let smooth = smooth_flight(&rough, 0.6);
+        assert_eq!(smooth.first(), rough.first());
+        assert_eq!(smooth.last(), rough.last());
+        let jerk = |s: &[FlightSample]| -> f64 {
+            let ch = Channels::new(s);
+            ch.l.windows(3).map(|w| (w[0] - 2.0 * w[1] + w[2]).abs()).sum::<f64>()
+                + ch.rot.windows(3).map(|w| (w[0] - 2.0 * w[1] + w[2]).abs()).sum::<f64>() / 30.0
+        };
+        let (a, b) = (jerk(&rough), jerk(&smooth));
+        assert!(b < a * 0.1, "jerk {a} → {b}");
+        // The deep end keeps its target: the smoothed views stay near the rough ones.
+        for (r, s) in rough.iter().zip(&smooth).skip(rough.len() / 2) {
+            let o = rel_offset(&r.view, &s.view);
+            assert!(o[0].hypot(o[1]) < 0.5, "{o:?} at {}", r.t);
+        }
+        // Fewer keyframes for the smoothed flight.
+        let doc = Document::default();
+        let (kr, ks) = (keyframes_from_flight(&rough, 0.05, &doc, 30.0).len(), keyframes_from_flight(&smooth, 0.05, &doc, 30.0).len());
+        assert!(ks < kr, "{kr} → {ks}");
+    }
+
+    #[test]
+    fn recorded_timing_smooths_the_speed() {
+        // Two halves at very different speeds.
+        let mut s = flight(6.0, 20.0, 0.0);
+        for (i, x) in s.iter_mut().enumerate() {
+            x.t = if i < 90 { i as f64 / 30.0 } else { 3.0 + (i - 90) as f64 / 10.0 };
+        }
+        let keys = keyframes_from_flight(&s, 0.02, &Document::default(), 30.0);
+        let mut anim = Animation { keyframes: keys, timing: Timing::Recorded, speed_smoothing_s: 0.0, fps: 30.0, ..Animation::default() };
+        let speed = |anim: &Animation| -> Vec<f64> {
+            let p = AnimationPlan::new(anim).unwrap();
+            let (u, len) = p.perceived_length();
+            let pos: Vec<f64> = p.us.iter().map(|x| lerp_at(&len, x * PATH_STEPS as f64)).collect();
+            assert!((u.last().unwrap() - (p.keys.len() - 1) as f64).abs() < 1e-9);
+            pos.windows(2).map(|w| w[1] - w[0]).collect()
+        };
+        let raw = speed(&anim);
+        anim.speed_smoothing_s = 2.0;
+        let smooth = speed(&anim);
+        assert_eq!(raw.len(), smooth.len());
+        let jump = |v: &[f64]| v.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0, f64::max);
+        assert!(jump(&smooth) < jump(&raw) * 0.2, "{} → {}", jump(&raw), jump(&smooth));
+        // Duration as flown.
+        assert!(((smooth.len()) as f64 / 30.0 - s.last().unwrap().t).abs() < 0.1);
     }
 }
