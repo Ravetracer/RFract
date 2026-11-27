@@ -3,6 +3,31 @@
 The stages and their scope are in PLAN.md. This file holds the next concrete steps and wishes
 that come up along the way.
 
+## Stage 11 – Network rendering and scripting
+
+- [ ] Network rendering (`rfr-net`, port of `rmb-net`): frames and poster tiles on render nodes.
+- [ ] Lua scripting (from RWildFire).
+
+## Stage 10 – Road to 1.0
+
+Open points of the earlier stages (their notes below stay for the details).
+
+- [ ] Deep zoom: periodicity checking and interior checks (cardioid, bulbs).
+- [ ] Automatic iteration count.
+- [ ] Location bookmarks.
+- [ ] Histogram coloring.
+- [ ] Post-transformations.
+- [ ] Orbit display, Julia preview inset.
+- [ ] Distance estimation in double-float views (dual double-float) and perturbation views.
+- [ ] Windows of a larger frame: poster tiles with lit layers, effects, density layers and 3D
+      objects; shadow field margin.
+- [ ] Terrain: larger than the view, walls down to a base, optional path tracing into OIDN.
+- [ ] 3D objects: bicomplex Julia and more DE formulas, 3D formula programs, depth compositing
+      with terrains.
+- [ ] Perturbation: BLA for formulas with more than z, double-float reference values on the
+      GPU, fallback or hint for formulas that cannot be perturbed.
+- [ ] Exit: full renders of stage 8 (deep zoom from the app, 1080p fly-over).
+
 ## Stage 9 – Explore, scale, polish
 
 - [x] Explore lane: presets (the manual's examples), random documents framed by zooming into
@@ -26,7 +51,7 @@ that come up along the way.
       270 of 921600 pixels at 4 spp); `rfr-cli --no-guess` turns it off.
 - [x] Manual: how-tos chapter, introduction updated, screenshots of the timeline, explore lane
       and render queue; example documents as explore presets.
-- [ ] Optional: network rendering (`rfr-net`), Lua scripting, shared crate extraction.
+- Network rendering and Lua scripting moved to stage 11; shared crate extraction stays an idea.
 
 ## Stage 8 – Animation
 

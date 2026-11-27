@@ -65,7 +65,7 @@ Same shape as RMandelbulb3D (Rust 2024, `resolver = "3"`, toolchain pinned in
 | `rfr-gpu` | wgpu renderer: per-layer generated WGSL, composite and accumulation passes, `df64.wgsl`, perturbation kernels, density kernels, post/display shaders, batch/tiled rendering |
 | `rfr-app` | egui/eframe application |
 | `rfr-cli` | Command line: render, animate, batch, formula check/import report, denoise |
-| `rfr-net` | (stage 9, optional) network rendering, port of `rmb-net` |
+| `rfr-net` | (stage 11) network rendering, port of `rmb-net` |
 
 ### 3.2 Document model
 
@@ -197,7 +197,7 @@ RFract stage 2 – the APIs should settle first.
 
 Each stage ends with a tag built by the pipeline from stage 0, a manual update and a CHANGELOG
 entry. Versions during development: stage N ends with `v0.N.0` (`v0.1.0` = stage 0, …,
-`v0.10.0` = stage 9); `v0.*` tags build all packages as workflow artifacts but publish no
+`v0.12.0` = stage 11); `v0.*` tags build all packages as workflow artifacts but publish no
 GitHub release. The first public release is **1.0.0**, after all stages. Sizes are relative (S < M < L < XL).
 
 ### Stage 0 – Foundation and distribution (S)
@@ -373,10 +373,40 @@ GitHub release. The first public release is **1.0.0**, after all stages. Sizes a
 
 - Explore lane: presets, random documents, mutations, quality filter (from RMandelbulb3D).
 - Tiled poster renders (20k+ px, tile-wise denoising), batch rendering, render queue polish.
-- Optional: network rendering (`rfr-net`, port of `rmb-net`), Lua scripting (from RWildFire),
-  shared crate extraction (section 4).
 - Performance: adaptive AA, CPU guessing/boundary tracing, shader cache on disk.
 - Complete manual with how-tos and example documents.
+- (Network rendering and Lua scripting moved to stage 11.)
+
+### Stage 10 – Road to 1.0: open points, terrain and 3D (L)
+
+The open points the earlier stages left, in this order:
+
+- Deep zoom: periodicity checking and interior checks (cardioid, bulbs), automatic iteration
+  count, location bookmarks.
+- Coloring: histogram coloring (a pass over the whole image), post-transformations (on z after
+  the iteration).
+- Viewer: orbit display, Julia preview inset.
+- Distance estimation in double-float views (dual double-float mode) and in perturbation views
+  (derivative deltas).
+- Windows of a larger frame in both renderers: poster tiles for lit layers, layer effects,
+  density layers and 3D objects; a field margin for shadows from beyond the image border.
+- Terrain: larger than the view (more detail near the camera), walls down to a base, optional
+  path tracing into OIDN.
+- 3D objects: bicomplex Julia and more DE formulas, 3D programs in the formula language, depth
+  for compositing with terrains.
+- Perturbation: BLA for formulas that carry more than z, double-float reference values on the
+  GPU (long orbits), a CPU arbitrary-precision fallback or a hint for formulas that cannot be
+  perturbed.
+- **Exit**: all of the above in app, CLI and manual with CPU/GPU parity; the full renders of
+  stage 8's exit (deep zoom from the app, 1080p fly-over).
+
+### Stage 11 – Network rendering and scripting (M)
+
+- Network rendering (`rfr-net`, port of `rmb-net`): render nodes for frames and poster tiles.
+- Lua scripting (from RWildFire): documents, layers, parameters, rendering and the render
+  queue from scripts.
+- **Exit**: an animation and a poster rendered across two machines; a script that builds and
+  renders a document. Then 1.0.0.
 
 ---
 
