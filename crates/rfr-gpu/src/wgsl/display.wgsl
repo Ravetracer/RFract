@@ -25,6 +25,16 @@ struct Disp {
     // streak tint times strength, on; streak level
     streak: vec4<f32>,
     slv: vec4<u32>,
+    // levels black, white, midtones, spectral chromatic aberration; tone curve outputs
+    tone: vec4<f32>,
+    curve_a: vec4<f32>,
+    curve_b: vec4<f32>,
+    // god rays: strength, light position x, y, length; their bright light
+    rays: vec4<f32>,
+    rays_lv: vec4<u32>,
+    // lens flares: strength, ghosts, dispersal, halo radius; their bright light
+    flare: vec4<f32>,
+    flare_lv: vec4<u32>,
 }
 
 @group(0) @binding(0) var<uniform> D: Disp;
@@ -83,6 +93,55 @@ fn level_sample(l: vec4<u32>, u: f32, v: f32) -> vec3<f32> {
     return top + (bottom - top) * ty;
 }
 
+// post::god_rays
+fn god_rays(u: f32, v: f32) -> vec3<f32> {
+    let l = D.rays.yz;
+    var s = vec3<f32>(0.0);
+    var wsum = 0.0;
+    for (var i = 0u; i < 48u; i = i + 1u) {
+        let f = f32(i) / 48.0;
+        let wt = 1.0 - f;
+        s = s + level_sample(D.rays_lv, u + (l.x - u) * f * D.rays.w, v + (l.y - v) * f * D.rays.w) * wt;
+        wsum = wsum + wt;
+    }
+    return s / wsum * D.rays.x;
+}
+
+fn flare_falloff(x: f32, y: f32, p: f32) -> f32 {
+    return pow(max(1.0 - length(vec2<f32>(0.5 - x, 0.5 - y)) / 0.70710677, 0.0), p);
+}
+
+// post::ghost_tint
+fn ghost_tint(i: u32, n: u32) -> vec3<f32> {
+    let h = f32(i) / f32(max(n, 1u));
+    let t = 6.283185307179586;
+    return vec3<f32>(0.5 + 0.5 * cos(t * h), 0.5 + 0.5 * cos(t * (h - 1.0 / 3.0)), 0.5 + 0.5 * cos(t * (h - 2.0 / 3.0)));
+}
+
+// post::lens_flare
+fn lens_flare(u: f32, v: f32) -> vec3<f32> {
+    let fu = 1.0 - u;
+    let fv = 1.0 - v;
+    let g = vec2<f32>(0.5 - fu, 0.5 - fv) * D.flare.z;
+    var s = vec3<f32>(0.0);
+    let n = u32(D.flare.y);
+    for (var i = 0u; i < n; i = i + 1u) {
+        let o = vec2<f32>(fu, fv) + g * f32(i);
+        if o.x < 0.0 || o.x > 1.0 || o.y < 0.0 || o.y > 1.0 {
+            continue;
+        }
+        s = s + level_sample(D.flare_lv, o.x, o.y) * flare_falloff(o.x, o.y, 10.0) * ghost_tint(i, n);
+    }
+    let gl = length(g);
+    if gl > 1e-6 {
+        let o = vec2<f32>(fu, fv) + g / gl * D.flare.w;
+        if o.x >= 0.0 && o.x <= 1.0 && o.y >= 0.0 && o.y <= 1.0 {
+            s = s + level_sample(D.flare_lv, o.x, o.y) * flare_falloff(o.x, o.y, 5.0);
+        }
+    }
+    return s * D.flare.x;
+}
+
 // Sharpened light plus glow (post::apply `mid`).
 fn mid(x: u32, y: u32) -> vec4<f32> {
     let c = pre(x, y);
@@ -109,6 +168,12 @@ fn mid(x: u32, y: u32) -> vec4<f32> {
     }
     if D.streak.w > 0.5 {
         glow = glow + level_sample(D.slv, u, v) * D.streak.xyz;
+    }
+    if D.rays.x > 0.0 {
+        glow = glow + god_rays(u, v);
+    }
+    if D.flare.x > 0.0 {
+        glow = glow + lens_flare(u, v);
     }
     let a = c.w + (1.0 - c.w) * clamp(max(glow.x, max(glow.y, glow.z)), 0.0, 1.0);
     return vec4<f32>(rgb + glow, a);
@@ -178,6 +243,34 @@ fn split_tone(c: vec3<f32>) -> vec3<f32> {
     return c * ts * th;
 }
 
+// post::levels, post::curve
+fn tone_levels(t: f32) -> f32 {
+    return pow(clamp((t - D.tone.x) / max(D.tone.y - D.tone.x, 1e-4), 0.0, 1.0), 1.0 / max(D.tone.z, 0.01));
+}
+
+fn curve_point(i: i32) -> f32 {
+    let c = array<f32, 5>(D.curve_a.x, D.curve_a.y, D.curve_a.z, D.curve_a.w, D.curve_b.x);
+    if i < 0 {
+        return 2.0 * c[0] - c[1];
+    }
+    if i > 4 {
+        return 2.0 * c[4] - c[3];
+    }
+    return c[i];
+}
+
+fn curve(t: f32) -> f32 {
+    let x = clamp(t, 0.0, 1.0) * 4.0;
+    let i = min(i32(floor(x)), 3);
+    let u = x - f32(i);
+    let p0 = curve_point(i - 1);
+    let p1 = curve_point(i);
+    let p2 = curve_point(i + 1);
+    let p3 = curve_point(i + 2);
+    let v = 0.5 * (2.0 * p1 + (p2 - p0) * u + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * u * u + (3.0 * p1 - p0 - 3.0 * p2 + p3) * u * u * u);
+    return clamp(v, 0.0, 1.0);
+}
+
 // post::grade
 fn grade(c_in: vec3<f32>, x: u32, y: u32) -> vec3<f32> {
     var c = max(c_in * D.a.x * D.wb.xyz, vec3<f32>(0.0));
@@ -189,7 +282,9 @@ fn grade(c_in: vec3<f32>, x: u32, y: u32) -> vec3<f32> {
     let vig = max(1.0 - D.b.x * (du * du + dv * dv) * 2.0, 0.0);
     let n = (f32(hash(x ^ hash(y ^ 0x5F3759DFu)) >> 8u) / 16777216.0 - 0.5) * D.b.y * 0.25;
     let s = vec3<f32>(to_srgb(c.x), to_srgb(c.y), to_srgb(c.z));
-    return clamp(((s - vec3<f32>(0.5)) * D.a.y + vec3<f32>(0.5)) * vig + vec3<f32>(n), vec3<f32>(0.0), vec3<f32>(1.0));
+    let t = (s - vec3<f32>(0.5)) * D.a.y + vec3<f32>(0.5);
+    let k = vec3<f32>(curve(tone_levels(t.x)), curve(tone_levels(t.y)), curve(tone_levels(t.z)));
+    return clamp(k * vig + vec3<f32>(n), vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
 @compute @workgroup_size(8, 8)
@@ -222,9 +317,24 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let r2 = (dx * dx + dy * dy) / max(cx * cx + cy * cy, 1e-6);
         let base = 1.0 + dist * r2;
         let g = mid_bilinear(cx + dx * base, cy + dy * base);
-        let r = mid_bilinear(cx + dx * base * (1.0 + ca), cy + dy * base * (1.0 + ca)).x;
-        let b = mid_bilinear(cx + dx * base * (1.0 - ca), cy + dy * base * (1.0 - ca)).z;
-        c = vec4<f32>(r, g.y, b, g.w);
+        if D.tone.w > 0.5 && ca != 0.0 {
+            // Seven wavelengths from blue (inward) to red (outward) (post::spectral_weights).
+            var acc = vec3<f32>(0.0);
+            var sum = vec3<f32>(0.0);
+            for (var k = 0u; k < 7u; k = k + 1u) {
+                let t = -1.0 + 2.0 * f32(k) / 6.0;
+                let sc = base * (1.0 + ca * t);
+                let s = mid_bilinear(cx + dx * sc, cy + dy * sc).xyz;
+                let wt = max(vec3<f32>(1.0 - abs(t - 1.0), 1.0 - abs(t), 1.0 - abs(t + 1.0)), vec3<f32>(0.0));
+                acc = acc + s * wt;
+                sum = sum + wt;
+            }
+            c = vec4<f32>(acc / sum, g.w);
+        } else {
+            let r = mid_bilinear(cx + dx * base * (1.0 + ca), cy + dy * base * (1.0 + ca)).x;
+            let b = mid_bilinear(cx + dx * base * (1.0 - ca), cy + dy * base * (1.0 - ca)).z;
+            c = vec4<f32>(r, g.y, b, g.w);
+        }
     }
     let a = clamp(c.w, 0.0, 1.0);
     var straight = vec3<f32>(0.0);

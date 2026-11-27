@@ -25,6 +25,9 @@ pub struct Document {
     pub post: Post,
 }
 
+/// The tone curve that changes nothing.
+pub const IDENTITY_CURVE: [f64; 5] = [0.0, 0.25, 0.5, 0.75, 1.0];
+
 /// How bright light is brought into the displayable range.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -79,8 +82,23 @@ pub struct Post {
     pub streak_tint: [f32; 3],
     /// Barrel (above 0) or pincushion (below 0) distortion.
     pub distortion: f64,
-    /// Red drawn outward, blue inward, by this share of the distance from the center.
+    /// Red drawn outward, blue inward, by this share of the distance from the center;
+    /// `spectral`: a rainbow of seven wavelengths instead of three channels.
     pub chromatic: f64,
+    pub spectral: bool,
+    /// God rays: light above the threshold smeared toward a light position (share of the
+    /// image width and height from the top left) over a share of the way (length).
+    pub rays: f64,
+    pub rays_threshold: f64,
+    pub rays_position: [f64; 2],
+    pub rays_length: f64,
+    /// Lens flares: ghosts of the light above the threshold mirrored through the image
+    /// center (count, spacing) and a halo ring (radius as a share of the image).
+    pub flare: f64,
+    pub flare_threshold: f64,
+    pub flare_ghosts: u32,
+    pub flare_dispersal: f64,
+    pub flare_halo: f64,
     pub exposure: f64,
     pub temperature: f64,
     pub tint: f64,
@@ -93,6 +111,12 @@ pub struct Post {
     pub contrast: f64,
     pub vignette: f64,
     pub grain: f64,
+    /// Levels (display values): black point, white point, midtones (gamma).
+    pub levels_black: f64,
+    pub levels_white: f64,
+    pub levels_gamma: f64,
+    /// Tone curve: the outputs at inputs 0, ¼, ½, ¾ and 1 (display values).
+    pub curve: [f64; 5],
     /// Exports only: denoise the image (Intel Open Image Denoise) before the other effects;
     /// `denoise_blend` is the share of the denoised image (1: only denoised).
     pub denoise: bool,
@@ -114,6 +138,16 @@ impl Default for Post {
             streak_tint: [1.0, 1.0, 1.0],
             distortion: 0.0,
             chromatic: 0.0,
+            spectral: false,
+            rays: 0.0,
+            rays_threshold: 1.0,
+            rays_position: [0.3, 0.25],
+            rays_length: 0.6,
+            flare: 0.0,
+            flare_threshold: 1.5,
+            flare_ghosts: 4,
+            flare_dispersal: 0.35,
+            flare_halo: 0.45,
             exposure: 0.0,
             temperature: 0.0,
             tint: 0.0,
@@ -126,6 +160,10 @@ impl Default for Post {
             contrast: 1.0,
             vignette: 0.0,
             grain: 0.0,
+            levels_black: 0.0,
+            levels_white: 1.0,
+            levels_gamma: 1.0,
+            curve: IDENTITY_CURVE,
             denoise: false,
             denoise_blend: 1.0,
         }
@@ -150,6 +188,12 @@ impl Post {
             && self.contrast == 1.0
             && self.vignette == 0.0
             && self.grain == 0.0
+            && self.rays <= 0.0
+            && self.flare <= 0.0
+            && self.levels_black == 0.0
+            && self.levels_white == 1.0
+            && self.levels_gamma == 1.0
+            && self.curve == IDENTITY_CURVE
     }
 }
 

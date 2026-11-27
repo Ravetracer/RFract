@@ -22,6 +22,8 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
   (Reinhard, ACES, filmic, AgX), contrast, saturation, white balance, split toning, bloom,
   streaks, sharpening, lens distortion, chromatic aberration, vignette and film grain; the
   preview (GPU) and the export (GPU or CPU, command line) show the same.
+- Effects: god rays toward a light position, lens flares (ghosts and halo), levels (black
+  and white point, midtones), a five-point tone curve and spectral chromatic aberration.
 - *Denoise exports* (Effects): exports and command line renders through Intel Open Image
   Denoise, with an amount; the export message names the device.
 - Procedural noise in the formula language (`noise`, `perlin`, `voronoi`) and the colorings

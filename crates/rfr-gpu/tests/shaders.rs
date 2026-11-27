@@ -515,6 +515,13 @@ fn preview_effects_match_the_export() {
             },
         ),
         ("filmic reinhard", Post { tone_map: ToneMap::Filmic, ..Post::default() }),
+        ("god rays", Post { rays: 1.5, rays_threshold: 0.8, exposure: 1.0, ..Post::default() }),
+        ("lens flares", Post { flare: 2.0, flare_threshold: 0.8, exposure: 1.0, flare_ghosts: 5, ..Post::default() }),
+        ("spectral aberration", Post { chromatic: 0.04, spectral: true, ..Post::default() }),
+        (
+            "levels and curve",
+            Post { levels_black: 0.1, levels_white: 0.85, levels_gamma: 1.4, curve: [0.0, 0.15, 0.5, 0.85, 1.0], ..Post::default() },
+        ),
         ("reinhard", Post { tone_map: ToneMap::Reinhard, exposure: 2.0, ..Post::default() }),
     ];
     let plain = rfr_core::render::post::finish(&lin, w, h, &Post::default());

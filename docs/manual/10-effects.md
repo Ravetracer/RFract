@@ -29,7 +29,24 @@ sliders answer at once; the preview and the exported image show the same.
 - **Streaks** draw lines of light through very bright parts, like a star filter: *Streak
   directions* 1 gives a line, 2 a cross, 3 and 4 stars; length, angle and tint as you like.
 
+- **God rays** smear the light of parts brighter than their threshold toward a *Light
+  position* (a share of the image width and height from the top left; it may lie outside
+  the image): shafts of light, strongest where bright shapes stand in front of darkness.
+  *Rays length* is how much of the way toward the light they reach.
+- **Lens flares** mirror bright spots through the image center as a row of colored *ghosts*
+  (number and spacing) and add a *halo* ring. Small values suit small bright spots; large
+  bright areas flood the image.
+
 Glow also spreads over transparent parts of the image, which then become partly opaque.
+
+## Levels and curve
+
+- **Black point** and **White point** stretch the displayed values: everything at or below
+  the black point becomes black, at or above the white point white. **Midtones** brightens
+  (above 1) or darkens (below 1) the middle tones.
+- The **tone curve** sets the output at five inputs (black, shadows, middle, lights, white);
+  between them it bends smoothly. A straight line changes nothing, an S shape adds contrast.
+  The small plot shows levels and curve together.
 
 ## Denoise
 
@@ -45,7 +62,8 @@ message says whether the image was denoised and on which device; without the lib
 - **Sharpen** makes edges crisper.
 - **Distortion** bends the image like a wide-angle lens (barrel, to the right) or a telephoto
   lens (pincushion, to the left).
-- **Chromatic aberration** lets red and blue drift apart toward the edges.
+- **Chromatic aberration** lets red and blue drift apart toward the edges; *Spectral* spreads
+  seven wavelengths instead of three channels, for smooth rainbow fringes.
 - **Vignette** darkens the corners, **Grain** adds a fixed film grain.
 
 The reset button of the section switches every effect off.

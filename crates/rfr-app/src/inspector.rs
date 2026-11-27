@@ -1273,6 +1273,81 @@ fn effects_section(ui: &mut Ui, p: &mut rfr_core::doc::Post) {
             widgets::slider_u32(ui, "Streak directions", "1: a line, 2: a cross, 3 and 4: stars", &mut p.streak_count, 1..=4, d.streak_count);
             widgets::color(ui, "Streak tint", "Color of the streaks", &mut p.streak_tint);
         }
+        widgets::slider(
+            ui,
+            "God rays",
+            "Shafts of light from bright parts toward a light position (0: off); strongest with bright shapes in front of darkness",
+            &mut p.rays,
+            0.0..=3.0,
+            d.rays,
+        );
+        if p.rays > 0.0 {
+            widgets::slider(
+                ui,
+                "Rays threshold",
+                "Brightness above which parts send out rays (after exposure)",
+                &mut p.rays_threshold,
+                0.0..=4.0,
+                d.rays_threshold,
+            );
+            widgets::label(ui, "Light position", "Where the rays come from, as a share of the image width and height from the top left");
+            ui.horizontal(|ui| {
+                ui.add(egui::DragValue::new(&mut p.rays_position[0]).speed(0.005).range(-1.0..=2.0).max_decimals(3))
+                    .on_hover_text("x (0: left edge, 1: right edge)");
+                ui.add(egui::DragValue::new(&mut p.rays_position[1]).speed(0.005).range(-1.0..=2.0).max_decimals(3))
+                    .on_hover_text("y (0: top edge, 1: bottom edge)");
+            });
+            ui.end_row();
+            widgets::slider(
+                ui,
+                "Rays length",
+                "How far the rays reach toward the light position (1: all the way)",
+                &mut p.rays_length,
+                0.05..=1.0,
+                d.rays_length,
+            );
+        }
+        widgets::slider(
+            ui,
+            "Lens flares",
+            "Ghost images and a halo of bright spots, mirrored through the image center (0: off); small values for small bright spots",
+            &mut p.flare,
+            0.0..=3.0,
+            d.flare,
+        );
+        if p.flare > 0.0 {
+            widgets::slider(
+                ui,
+                "Flare threshold",
+                "Brightness above which spots make flares (after exposure)",
+                &mut p.flare_threshold,
+                0.0..=4.0,
+                d.flare_threshold,
+            );
+            widgets::slider_u32(ui, "Ghosts", "Number of ghost images", &mut p.flare_ghosts, 1..=8, d.flare_ghosts);
+            widgets::slider(
+                ui,
+                "Ghost spacing",
+                "Distance between the ghosts along the line through the center",
+                &mut p.flare_dispersal,
+                0.05..=1.0,
+                d.flare_dispersal,
+            );
+            widgets::slider(ui, "Halo", "Radius of the halo ring as a share of the image (0: none)", &mut p.flare_halo, 0.0..=0.8, d.flare_halo);
+        }
+    });
+    sub(ui, "Levels and curve");
+    widgets::grid(ui, "fx-levels", |ui| {
+        widgets::slider(ui, "Black point", "Displayed values at or below this become black", &mut p.levels_black, 0.0..=0.9, d.levels_black);
+        widgets::slider(ui, "White point", "Displayed values at or above this become white", &mut p.levels_white, 0.1..=1.0, d.levels_white);
+        widgets::slider(ui, "Midtones", "Brightens (above 1) or darkens (below 1) the middle tones", &mut p.levels_gamma, 0.2..=5.0, d.levels_gamma);
+        for (k, name) in ["Curve: black", "Curve: shadows", "Curve: middle", "Curve: lights", "Curve: white"].iter().enumerate() {
+            let tip = format!("Output of the tone curve at input {} (the straight line leaves the image unchanged)", ["0", "¼", "½", "¾", "1"][k]);
+            widgets::slider(ui, name, &tip, &mut p.curve[k], 0.0..=1.0, rfr_core::doc::IDENTITY_CURVE[k]);
+        }
+        widgets::label(ui, "", "");
+        curve_preview(ui, p);
+        ui.end_row();
     });
     sub(ui, "Denoise");
     widgets::grid(ui, "fx-denoise", |ui| {
@@ -1305,9 +1380,30 @@ fn effects_section(ui: &mut Ui, p: &mut rfr_core::doc::Post) {
             0.0..=0.05,
             d.chromatic,
         );
+        if p.chromatic > 0.0 {
+            widgets::checkbox(ui, "Spectral", "A rainbow of seven wavelengths instead of three color channels: smoother fringes", &mut p.spectral);
+        }
         widgets::slider(ui, "Vignette", "Darker corners", &mut p.vignette, 0.0..=2.0, d.vignette);
         widgets::slider(ui, "Grain", "Film grain (a fixed noise pattern)", &mut p.grain, 0.0..=1.0, d.grain);
     });
+}
+
+/// A small plot of the tone curve with its levels (display values in and out).
+fn curve_preview(ui: &mut Ui, p: &rfr_core::doc::Post) {
+    let size = egui::vec2(120.0, 80.0);
+    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 4.0, theme::BG);
+    let pt = |x: f32, y: f32| egui::pos2(rect.left() + x * rect.width(), rect.bottom() - y * rect.height());
+    painter.line_segment([pt(0.0, 0.0), pt(1.0, 1.0)], egui::Stroke::new(1.0, theme::TEXT_MUTED.gamma_multiply(0.4)));
+    let points: Vec<egui::Pos2> = (0..=64)
+        .map(|k| {
+            let x = k as f32 / 64.0;
+            pt(x, rfr_core::render::post::curve(rfr_core::render::post::levels(x, p), p))
+        })
+        .collect();
+    painter.add(egui::Shape::line(points, egui::Stroke::new(1.5, theme::ACCENT)));
+    resp.on_hover_text("The levels and the tone curve: input (across) to output (up)");
 }
 
 fn view_and_image(ui: &mut Ui, doc: &mut Document, sel: &Selection) {

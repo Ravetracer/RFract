@@ -8,14 +8,14 @@ that come up along the way.
 - [x] Global post: exposure, tone mapping (Reinhard, ACES, filmic, AgX), contrast,
       saturation, white balance, split toning, bloom pyramid, streaks, sharpen, lens
       distortion, chromatic aberration, vignette, grain; preview and export agree.
-- [ ] More post: lens flares and god rays from light positions, curves and levels, spectral
+- [x] More post: lens flares and god rays (light position), curves and levels, spectral
       chromatic aberration.
 - [x] Layer effects: DE-based edge glow (neon), drop shadow, outer and inner glow (emboss:
       lit layers with brightness heights).
 - [x] Texture mapping: image textures through coloring coordinates (final z, pixel, orbit
       trap, iteration × angle), procedural patterns (value, Perlin, Voronoi, fractal noise),
       textures as bumps (lit layers with coloring heights).
-- [ ] Droste (log-polar spiral) as a transformation.
+- [x] Droste (log-polar spiral) as a transformation (the *Droste spiral* of stage 2).
 - [x] Denoiser (OIDN) for exports and the command line (color only).
 - [ ] Denoiser: albedo and normal images from lit layers and objects (keeps fine detail).
 - [ ] Exit: effects available in preview and export with identical results.

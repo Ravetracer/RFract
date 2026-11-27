@@ -134,6 +134,13 @@ struct DispUni {
     lw: [[f32; 4]; 6],
     streak: [f32; 4],
     slv: [u32; 4],
+    tone: [f32; 4],
+    curve_a: [f32; 4],
+    curve_b: [f32; 4],
+    rays: [f32; 4],
+    rays_lv: [u32; 4],
+    flare: [f32; 4],
+    flare_lv: [u32; 4],
 }
 
 /// The display uniforms of `post` for a `w` × `h` image after `samples` samples and `row`
@@ -162,6 +169,19 @@ fn disp_uni(post: &rfr_core::doc::Post, w: u32, h: u32, samples: u32, row: u32) 
         u.streak = [post.streak_tint[0] * k, post.streak_tint[1] * k, post.streak_tint[2] * k, 1.0];
         u.slv = streak_regions(w, h).0[3];
     }
+    let c = post.curve.map(|v| v as f32);
+    u.tone = [post.levels_black as f32, post.levels_white as f32, post.levels_gamma as f32, post.spectral as u32 as f32];
+    u.curve_a = [c[0], c[1], c[2], c[3]];
+    u.curve_b = [c[4], 0.0, 0.0, 0.0];
+    let regions = streak_regions(w, h).0;
+    if post.rays > 0.0 {
+        u.rays = [post.rays as f32, post.rays_position[0] as f32, post.rays_position[1] as f32, post.rays_length as f32];
+        u.rays_lv = regions[4];
+    }
+    if post.flare > 0.0 {
+        u.flare = [post.flare as f32, post.flare_ghosts.clamp(1, 8) as f32, post.flare_dispersal as f32, post.flare_halo as f32];
+        u.flare_lv = regions[5];
+    }
     u
 }
 
@@ -177,13 +197,14 @@ fn bloom_levels(w: u32, h: u32) -> (Vec<[u32; 4]>, u32) {
     (out, off)
 }
 
-/// Streak regions after the bloom pyramid: source, two scratch levels, the sum (first texel,
-/// width, height each) and the texels of pyramid and regions.
-fn streak_regions(w: u32, h: u32) -> ([[u32; 4]; 4], u32) {
+/// Regions after the bloom pyramid, each the size of its first level: the streak source, two
+/// scratch levels, the streak sum, the god rays' and the lens flares' bright light (first
+/// texel, width, height each), and the texels of pyramid and regions.
+fn streak_regions(w: u32, h: u32) -> ([[u32; 4]; 6], u32) {
     let (levels, total) = bloom_levels(w, h);
     let (lw, lh) = (levels[0][1], levels[0][2]);
     let n = lw * lh;
-    (std::array::from_fn(|k| [total + k as u32 * n, lw, lh, 0]), total + 4 * n)
+    (std::array::from_fn(|k| [total + k as u32 * n, lw, lh, 0]), total + 6 * n)
 }
 
 /// Uniforms of one bloom pass (bloom.wgsl `BP`).
@@ -1439,7 +1460,8 @@ impl GpuRenderer {
     /// Records the bloom pyramid and streak passes (bloom.wgsl) when the effects have them.
     fn bloom_passes(&mut self, enc: &mut wgpu::CommandEncoder, u: &DispUni) {
         let (bloom_on, streak_on) = (u.bloom[0] > 0.0 && u.bloom[3] > 0.5, u.streak[3] > 0.5);
-        if !bloom_on && !streak_on {
+        let (rays_on, flare_on) = (u.rays[0] > 0.0, u.flare[0] > 0.0);
+        if !bloom_on && !streak_on && !rays_on && !flare_on {
             return;
         }
         let Some(t) = self.target.as_ref() else { return };
@@ -1480,7 +1502,7 @@ impl GpuRenderer {
         if streak_on {
             // Bright part into the source region, then per direction three passes through the
             // scratch regions into the sum (the first direction writes, the others add).
-            let [src, t1, t2, sum] = regions;
+            let [src, t1, t2, sum, _, _] = regions;
             passes.push((0, BloomPass { dst: src, src: [0; 4], img, prm: [exposure, post.streak_threshold as f32, 0.0, 0.0], prm2 }));
             let (step0, a) = rfr_core::render::post::streak_params(post.streak_length, src[1]);
             for (i, dir) in rfr_core::render::post::streak_dirs(post.streak_angle, post.streak_count).into_iter().enumerate() {
@@ -1499,6 +1521,13 @@ impl GpuRenderer {
                     ));
                 }
             }
+        }
+        // God rays and lens flares: their bright light, each with its threshold.
+        if rays_on {
+            passes.push((0, BloomPass { dst: regions[4], src: [0; 4], img, prm: [exposure, post.rays_threshold as f32, 0.0, 0.0], prm2 }));
+        }
+        if flare_on {
+            passes.push((0, BloomPass { dst: regions[5], src: [0; 4], img, prm: [exposure, post.flare_threshold as f32, 0.0, 0.0], prm2 }));
         }
         while self.bloom_passes.len() < passes.len() {
             self.bloom_passes.push(device.create_buffer(&wgpu::BufferDescriptor {

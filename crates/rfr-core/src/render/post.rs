@@ -236,6 +236,61 @@ fn streaks(rad: &[[f32; 3]], w: usize, h: usize, post: &Post) -> Option<Level> {
     Some(Level { w: src.w, h: src.h, px: acc })
 }
 
+/// God rays at image position (u, v): the bright light of `l` along the way toward the light
+/// position, weighted down with the distance.
+fn god_rays(l: &Level, u: f32, v: f32, post: &Post) -> [f32; 3] {
+    let (lx, ly) = (post.rays_position[0] as f32, post.rays_position[1] as f32);
+    let len = post.rays_length as f32;
+    let (mut s, mut wsum) = ([0.0f32; 3], 0.0f32);
+    for i in 0..RAY_SAMPLES {
+        let f = i as f32 / RAY_SAMPLES as f32;
+        let wt = 1.0 - f;
+        let c = sample(l, u + (lx - u) * f * len, v + (ly - v) * f * len);
+        for k in 0..3 {
+            s[k] += c[k] * wt;
+        }
+        wsum += wt;
+    }
+    s.map(|x| x / wsum * post.rays as f32)
+}
+
+/// Lens flare at image position (u, v): ghosts of the bright light of `l` along the line through
+/// the image center (each tinted), and a halo ring.
+fn lens_flare(l: &Level, u: f32, v: f32, post: &Post) -> [f32; 3] {
+    let (fu, fv) = (1.0 - u, 1.0 - v);
+    let (gx, gy) = ((0.5 - fu) * post.flare_dispersal as f32, (0.5 - fv) * post.flare_dispersal as f32);
+    let r0 = std::f32::consts::FRAC_1_SQRT_2;
+    let inside = |x: f32, y: f32| (0.0..=1.0).contains(&x) && (0.0..=1.0).contains(&y);
+    let falloff = |x: f32, y: f32, p: i32| (1.0 - ((0.5 - x).hypot(0.5 - y) / r0)).max(0.0).powi(p);
+    let mut s = [0.0f32; 3];
+    let n = post.flare_ghosts.clamp(1, 8);
+    for i in 0..n {
+        let (ox, oy) = (fu + gx * i as f32, fv + gy * i as f32);
+        if !inside(ox, oy) {
+            continue;
+        }
+        let w = falloff(ox, oy, 10);
+        let c = sample(l, ox, oy);
+        let t = ghost_tint(i, n);
+        for k in 0..3 {
+            s[k] += c[k] * w * t[k];
+        }
+    }
+    let gl = gx.hypot(gy);
+    if gl > 1e-6 {
+        let h = post.flare_halo as f32;
+        let (ox, oy) = (fu + gx / gl * h, fv + gy / gl * h);
+        if inside(ox, oy) {
+            let w = falloff(ox, oy, 5);
+            let c = sample(l, ox, oy);
+            for k in 0..3 {
+                s[k] += c[k] * w;
+            }
+        }
+    }
+    s.map(|x| x * post.flare as f32)
+}
+
 /// White balance factors (temperature: red against blue, tint: green), scaled so gray keeps
 /// its brightness.
 pub fn white_balance(post: &Post) -> [f32; 3] {
@@ -302,6 +357,47 @@ fn srgb(v: f32) -> f32 {
     if c <= 0.003_130_8 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
 }
 
+/// Levels on a display value: black and white point, midtones.
+pub fn levels(t: f32, post: &Post) -> f32 {
+    let (b, w) = (post.levels_black as f32, post.levels_white as f32);
+    ((t - b) / (w - b).max(1e-4)).clamp(0.0, 1.0).powf(1.0 / (post.levels_gamma as f32).max(0.01))
+}
+
+/// The tone curve at a display value: Catmull-Rom through the outputs at 0, ¼, ½, ¾ and 1
+/// (the ends continued straight).
+pub fn curve(t: f32, post: &Post) -> f32 {
+    let c = post.curve.map(|v| v as f32);
+    let p = |i: i32| -> f32 {
+        match i {
+            -1 => 2.0 * c[0] - c[1],
+            5 => 2.0 * c[4] - c[3],
+            i => c[i.clamp(0, 4) as usize],
+        }
+    };
+    let x = t.clamp(0.0, 1.0) * 4.0;
+    let i = (x.floor() as i32).min(3);
+    let u = x - i as f32;
+    let (p0, p1, p2, p3) = (p(i - 1), p(i), p(i + 1), p(i + 2));
+    let v = 0.5 * (2.0 * p1 + (p2 - p0) * u + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * u * u + (3.0 * p1 - p0 - 3.0 * p2 + p3) * u * u * u);
+    v.clamp(0.0, 1.0)
+}
+
+/// Samples of a god ray and the spectral chromatic aberration.
+pub const RAY_SAMPLES: u32 = 48;
+pub const SPECTRAL_SAMPLES: u32 = 7;
+
+/// The weights of red, green and blue for the wavelength at `t` (-1 blue … 1 red).
+pub fn spectral_weights(t: f32) -> [f32; 3] {
+    [(1.0 - (t - 1.0).abs()).max(0.0), (1.0 - t.abs()).max(0.0), (1.0 - (t + 1.0).abs()).max(0.0)]
+}
+
+/// The tint of lens flare ghost `i` of `n` (a rainbow).
+pub fn ghost_tint(i: u32, n: u32) -> [f32; 3] {
+    let h = i as f32 / n.max(1) as f32;
+    let t = std::f32::consts::TAU;
+    [0.5 + 0.5 * (t * h).cos(), 0.5 + 0.5 * (t * (h - 1.0 / 3.0)).cos(), 0.5 + 0.5 * (t * (h - 2.0 / 3.0)).cos()]
+}
+
 /// The display color (sRGB-encoded, 0..1) of a straight linear color at pixel (x, y) of a
 /// `w` × `h` image.
 pub fn grade(c: [f32; 3], x: u32, y: u32, w: u32, h: u32, post: &Post) -> [f32; 3] {
@@ -315,7 +411,10 @@ pub fn grade(c: [f32; 3], x: u32, y: u32, w: u32, h: u32, post: &Post) -> [f32; 
     let (du, dv) = ((x as f32 + 0.5) / w as f32 - 0.5, (y as f32 + 0.5) / h as f32 - 0.5);
     let vig = (1.0 - post.vignette as f32 * (du * du + dv * dv) * 2.0).max(0.0);
     let n = ((hash(x ^ hash(y ^ 0x5F37_59DF)) >> 8) as f32 / 16_777_216.0 - 0.5) * post.grain as f32 * 0.25;
-    c.map(|v| (((srgb(v) - 0.5) * post.contrast as f32 + 0.5) * vig + n).clamp(0.0, 1.0))
+    c.map(|v| {
+        let t = (srgb(v) - 0.5) * post.contrast as f32 + 0.5;
+        (curve(levels(t, post), post) * vig + n).clamp(0.0, 1.0)
+    })
 }
 
 /// The display image: per pixel sRGB-encoded red, green, blue (0..1) and alpha, from the
@@ -335,6 +434,9 @@ pub fn apply(lin: &[[f32; 4]], w: u32, h: u32, post: &Post) -> Vec<[f32; 4]> {
     let bloom = if post.bloom > 0.0 { bloom_levels(&rad, wu, hu, post) } else { Vec::new() };
     let weights = level_weights(post.bloom_size, bloom.len());
     let streak = streaks(&rad, wu, hu, post);
+    let exposure = 2f32.powf(post.exposure as f32);
+    let rays = (post.rays > 0.0).then(|| bright_level(&rad, wu, hu, exposure, post.rays_threshold as f32));
+    let flare = (post.flare > 0.0).then(|| bright_level(&rad, wu, hu, exposure, post.flare_threshold as f32));
     let strength = post.bloom as f32;
     let tint = post.streak_tint.map(|t| t * post.streak as f32);
     let sharpen = post.sharpen as f32;
@@ -373,6 +475,18 @@ pub fn apply(lin: &[[f32; 4]], w: u32, h: u32, post: &Post) -> Vec<[f32; 4]> {
                     glow[k] += s[k] * tint[k];
                 }
             }
+            if let Some(l) = &rays {
+                let g = god_rays(l, u, v, post);
+                for k in 0..3 {
+                    glow[k] += g[k];
+                }
+            }
+            if let Some(l) = &flare {
+                let g = lens_flare(l, u, v, post);
+                for k in 0..3 {
+                    glow[k] += g[k];
+                }
+            }
             let a = c[3] + (1.0 - c[3]) * glow[0].max(glow[1]).max(glow[2]).clamp(0.0, 1.0);
             *o = [rgb[0] + glow[0], rgb[1] + glow[1], rgb[2] + glow[2], a];
         }
@@ -405,7 +519,22 @@ pub fn apply(lin: &[[f32; 4]], w: u32, h: u32, post: &Post) -> Vec<[f32; 4]> {
                 let base = 1.0 + dist * r2;
                 let at = |s: f32| bilinear(cx + dx * s, cy + dy * s);
                 let g = at(base);
-                [at(base * (1.0 + ca))[0], g[1], at(base * (1.0 - ca))[2], g[3]]
+                if post.spectral && ca != 0.0 {
+                    // Seven wavelengths from blue (inward) to red (outward).
+                    let (mut acc, mut sum) = ([0.0f32; 3], [0.0f32; 3]);
+                    for k in 0..SPECTRAL_SAMPLES {
+                        let t = -1.0 + 2.0 * k as f32 / (SPECTRAL_SAMPLES - 1) as f32;
+                        let s = at(base * (1.0 + ca * t));
+                        let wt = spectral_weights(t);
+                        for c in 0..3 {
+                            acc[c] += s[c] * wt[c];
+                            sum[c] += wt[c];
+                        }
+                    }
+                    [acc[0] / sum[0], acc[1] / sum[1], acc[2] / sum[2], g[3]]
+                } else {
+                    [at(base * (1.0 + ca))[0], g[1], at(base * (1.0 - ca))[2], g[3]]
+                }
             };
             let a = c[3];
             let straight = if a > 1e-6 { [c[0] / a, c[1] / a, c[2] / a] } else { [0.0; 3] };
