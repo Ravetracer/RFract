@@ -49,6 +49,8 @@ Commands:
 Options:
   --formula-dir <dir>        Also use the formula files in <dir> (repeatable; ids
                              user:<path in dir>:<entry>, as in the app's formula folders)
+  --no-guess                 CPU renders compute every pixel (guessing fills blocks inside
+                             the set from their border; turn it off for sets with holes)
   -V, --version              Print the version";
 
 fn info() {
@@ -735,6 +737,11 @@ fn main() -> ExitCode {
         }
         dirs.push(PathBuf::from(args.remove(i + 1)));
         args.remove(i);
+    }
+    // CPU renders: no guessing (every pixel computed).
+    if let Some(i) = args.iter().position(|a| a == "--no-guess") {
+        args.remove(i);
+        rfr_core::render::cpu::set_guessing(false);
     }
     if !dirs.is_empty() {
         let n = rfr_core::formula::library::set_user_folders(&dirs);

@@ -15,6 +15,9 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
 - Adaptive sampling (*Image › Adaptive*, on by default): pixels stop taking samples once
   they and their neighbours are smooth; renders with many samples are about three times
   faster.
+- CPU renderer: guessing fills blocks inside the set from their border, so inside areas
+  render two to three times faster without a graphics card (`rfr-cli --no-guess` computes every
+  pixel).
 - Manual: how-tos (deep zoom movie, poster, landscape fly-over, music video, exploring,
   parameter files, overnight renders); the introduction describes the current program.
 

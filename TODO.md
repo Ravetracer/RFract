@@ -20,7 +20,10 @@ that come up along the way.
       accumulation skip done pixels (CPU and GPU). 1080p, 256 spp: 19 s → 6 s, same error.
 - [x] Shader cache on disk: not needed, the drivers cache compiled shaders (NVIDIA: 130–720 ms
       first, 20–80 ms after).
-- [ ] CPU guessing/boundary tracing (CPU renderer only; low priority with the GPU).
+- [x] CPU guessing (solid guessing per 16-px tile on every pass): blocks whose border stayed
+      inside with one color are filled; 1280×720 views with large inside areas 2.4–2.9×
+      faster. Loses isolated slow-escaping pixels inside such blocks (seahorse example:
+      270 of 921600 pixels at 4 spp); `rfr-cli --no-guess` turns it off.
 - [x] Manual: how-tos chapter, introduction updated, screenshots of the timeline, explore lane
       and render queue; example documents as explore presets.
 - [ ] Optional: network rendering (`rfr-net`), Lua scripting, shared crate extraction.

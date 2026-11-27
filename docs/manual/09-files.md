@@ -87,6 +87,10 @@ rfr-cli info
 
 `render` takes a document, a PNG rendered by RFract or a formula id (`rfr-cli formulas` lists
 them) and renders on the graphics card; `--cpu` uses the CPU reference renderer instead.
+The CPU renderer (also used without a graphics card) guesses: blocks whose border lies inside
+the set with one color are filled without computing them, which makes views with large
+inside areas two to three times faster. Formulas whose inside has holes can lose small details
+that way; `--no-guess` (before the command, for all of them) computes every pixel.
 `info` shows the graphics card, the denoiser and the settings folder.
 
 `rfr-cli animate` renders a document's animation into a movie or PNG images (see
