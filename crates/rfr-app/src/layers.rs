@@ -52,6 +52,7 @@ enum Cmd {
     ToggleVisible(Vec<usize>),
     AddLayer,
     AddDensity,
+    AddObject,
     /// Solid fill (0), gradient fill (1), image (2): the Pixel formula with a coloring.
     AddFill(u8),
     AddGroup,
@@ -69,6 +70,7 @@ fn name_of(l: &Layer) -> String {
         LayerKind::Group => format!("{}  {}", icons::FOLDER, l.name),
         LayerKind::Fractal => l.name.clone(),
         LayerKind::Density => format!("{}  {}", icons::DENSITY, l.name),
+        LayerKind::Object => format!("{}  {}", icons::OBJECT, l.name),
     }
 }
 
@@ -163,6 +165,9 @@ pub fn show(ui: &mut Ui, doc: &mut Document, sel: &mut Selection) -> Option<Stri
             if widgets::icon_button(ui, icons::DENSITY, "Add a density layer above the selected layer: the orbits of its formula, counted per pixel (Buddhabrot; strange attractors with the formulas of the Attractors family)").clicked() {
                 cmds.push(Cmd::AddDensity);
             }
+            if widgets::icon_button(ui, icons::OBJECT, "Add a 3D object layer above the selected layer: a Mandelbulb, quaternion Julia set, Mandelbox or Menger sponge, raymarched and lit").clicked() {
+                cmds.push(Cmd::AddObject);
+            }
             if widgets::icon_button(ui, icons::PLUS, "Add a fractal layer above the selected layer").clicked() {
                 cmds.push(Cmd::AddLayer);
             }
@@ -198,7 +203,7 @@ fn apply(doc: &mut Document, sel: &mut Selection, c: Cmd) -> Option<String> {
                 l.visible = !l.visible;
             }
         }
-        Cmd::AddLayer | Cmd::AddGroup | Cmd::AddDensity | Cmd::AddFill(_) => {
+        Cmd::AddLayer | Cmd::AddGroup | Cmd::AddDensity | Cmd::AddObject | Cmd::AddFill(_) => {
             let layer = if let Cmd::AddFill(k) = c {
                 use rfr_core::doc::OutsideMethod;
                 let mut l = Layer { formula: "rfract:Pixel".into(), max_iter: 1, ..Layer::default() };
@@ -225,6 +230,13 @@ fn apply(doc: &mut Document, sel: &mut Selection, c: Cmd) -> Option<String> {
                 l
             } else if matches!(c, Cmd::AddGroup) {
                 Layer { name: new_name(doc, "Group"), kind: LayerKind::Group, ..Layer::default() }
+            } else if matches!(c, Cmd::AddObject) {
+                // A lit Mandelbulb with soft shadows over the layers below.
+                let mut l = Layer { name: new_name(doc, "3D object"), kind: LayerKind::Object, ..Layer::default() };
+                l.light.shadows = true;
+                l.light.occlusion = 0.8;
+                l.outside.transfer = rfr_core::doc::Transfer::Linear;
+                l
             } else if matches!(c, Cmd::AddDensity) {
                 // A Buddhabrot that adds its light to the layers below.
                 let mut l =

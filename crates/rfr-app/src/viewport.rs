@@ -4,7 +4,8 @@
 //! navigation. Drag pans, the wheel zooms around the cursor, Shift-drag or right-drag zooms into
 //! a box, Ctrl-drag rotates, double-click zooms in, Alt-click picks a Julia seed. When the
 //! selected layer is a 3D terrain, Ctrl-drag orbits its camera and Ctrl-wheel moves it closer
-//! or farther. While the user navigates, the preview renders at a lower resolution.
+//! or farther; on a 3D object layer dragging and the wheel do that without Ctrl. While the user
+//! navigates, the preview renders at a lower resolution.
 
 use std::time::{Duration, Instant};
 
@@ -22,8 +23,10 @@ use crate::theme;
 const NAVIGATE_HOLD: Duration = Duration::from_millis(250);
 
 pub struct Viewport {
-    /// The selected layer is a 3D terrain (Ctrl-drag orbits its camera).
+    /// The selected layer is a 3D terrain (Ctrl-drag orbits its camera) or a 3D object
+    /// (dragging orbits its camera).
     pub terrain: bool,
+    pub object: bool,
     gpu: Option<GpuRenderer>,
     texture: Option<(egui::TextureId, u64)>,
     /// What the renderer currently has: document, size, fast mode.
@@ -95,6 +98,7 @@ impl Viewport {
         });
         Viewport {
             terrain: false,
+            object: false,
             gpu,
             texture: None,
             last: None,
@@ -194,23 +198,28 @@ impl Viewport {
         let (mods, scroll, pointer) = ui.input(|i| (i.modifiers, i.smooth_scroll_delta.y, i.pointer.hover_pos()));
         self.hover = pointer.filter(|p| rect.contains(*p)).map(|p| plane_at(&doc.view, rect, p));
         let mut touched = false;
-        self.terrain = target(doc, sel).is_some_and(|l| l.light.enabled && l.light.terrain);
+        self.object = target(doc, sel).is_some_and(|l| l.kind == rfr_core::doc::LayerKind::Object);
+        self.terrain = !self.object && target(doc, sel).is_some_and(|l| l.light.enabled && l.light.terrain);
 
-        // 3D terrain: Ctrl-drag orbits the camera, Ctrl-wheel changes its distance.
-        let orbit = self.terrain && mods.command;
+        // 3D terrain: Ctrl-drag orbits the camera, Ctrl-wheel changes its distance; 3D objects
+        // also without Ctrl.
+        let orbit = self.object || (self.terrain && mods.command);
         if orbit && let Some(l) = target_mut(doc, sel) {
-            let cam = &mut l.light.camera;
+            let object = self.object;
+            let (cam, (near, far), (low, high)) =
+                if object { (&mut l.object.camera, (0.1, 100.0), (-89.0, 89.0)) } else { (&mut l.light.camera, (0.05, 10.0), (1.0, 89.0)) };
             // egui turns Ctrl-wheel into a zoom gesture.
             let zoom = ui.input(|i| i.zoom_delta());
-            if resp.hovered() && zoom != 1.0 {
-                cam.distance = (cam.distance / zoom as f64).clamp(0.05, 10.0);
+            if resp.hovered() && (zoom != 1.0 || scroll != 0.0) {
+                let f = (-scroll as f64 * 0.003).exp() / zoom as f64;
+                cam.distance = (cam.distance * f).clamp(near, far);
                 touched = true;
             }
             if resp.dragged() {
                 let d = resp.drag_delta();
                 if d != Vec2::ZERO {
                     cam.yaw = (cam.yaw - d.x as f64 * 0.3 + 180.0).rem_euclid(360.0) - 180.0;
-                    cam.pitch = (cam.pitch + d.y as f64 * 0.2).clamp(1.0, 89.0);
+                    cam.pitch = (cam.pitch + d.y as f64 * 0.2).clamp(low, high);
                     touched = true;
                 }
             }

@@ -63,8 +63,15 @@ struct Uni {
     // sky at the horizon and at the zenith (linear RGB)
     lsky0: vec4<f32>,
     lsky1: vec4<f32>,
-    // 3D terrain camera: direction and pitch (radians), distance (image heights), tan(fov / 2)
+    // 3D terrain or object camera: direction and pitch (radians), distance (image heights or
+    // object units), tan(fov / 2)
     lcam: vec4<f32>,
+    // 3D objects (object.wgsl): power, scale, detail, bounding radius
+    obj: vec4<f32>,
+    // shape, iterations, Julia mode, unused
+    obji: vec4<u32>,
+    // Julia seed (x, y, z, w)
+    objc: vec4<f32>,
 }
 
 struct Params {

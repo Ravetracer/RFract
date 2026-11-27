@@ -680,7 +680,9 @@ impl App {
                 ui.label(RichText::new(m).color(if *err { theme::WARN } else { theme::TEXT }).size(theme::fs(12.0)));
                 ui.ctx().request_repaint_after(Duration::from_secs(1));
             } else if self.viewport.hovered {
-                let hint = if self.viewport.terrain {
+                let hint = if self.viewport.object {
+                    "Drag: orbit the camera · Wheel: camera distance"
+                } else if self.viewport.terrain {
                     "Drag: move the terrain · Wheel: zoom · Ctrl-drag: orbit the camera · Ctrl-wheel: camera distance · Alt-click: Julia"
                 } else {
                     "Drag: move · Wheel: zoom · Shift/right-drag: box zoom · Ctrl-drag: rotate · Double-click: zoom in · Alt-click: Julia"

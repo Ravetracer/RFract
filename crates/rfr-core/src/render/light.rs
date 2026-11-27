@@ -145,12 +145,12 @@ pub fn height(source: HeightSource, smooth: f64, value: f64, distance: f64, colo
     if h.is_finite() { h } else { 0.0 }
 }
 
-fn normalize(v: [f32; 3]) -> [f32; 3] {
+pub fn normalize(v: [f32; 3]) -> [f32; 3] {
     let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(1e-20);
     [v[0] / l, v[1] / l, v[2] / l]
 }
 
-fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+pub fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
@@ -160,7 +160,11 @@ fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
 /// (ambient occlusion), `v` the direction toward the viewer ((0, 0, 1) from straight above).
 #[allow(clippy::too_many_arguments)]
 pub fn shade(l: &LightPlan, color: [f32; 4], gx: f32, gy: f32, k: f32, light_seen: &[f32], open: f32, v: [f32; 3]) -> [f32; 4] {
-    let n = normalize([-k * gx, -k * gy, 1.0]);
+    shade_normal(l, color, normalize([-k * gx, -k * gy, 1.0]), light_seen, open, v)
+}
+
+/// [`shade`] with the surface normal `n` (unit length; x right, y up, z toward the sky).
+pub fn shade_normal(l: &LightPlan, color: [f32; 4], n: [f32; 3], light_seen: &[f32], open: f32, v: [f32; 3]) -> [f32; 4] {
     let nv = dot(n, v).max(0.05);
     let a = l.roughness * l.roughness;
     let mut diffuse = [l.ambient * open; 3];
@@ -267,7 +271,7 @@ pub const AO_DIRECTIONS: u32 = 8;
 pub const AO_STEPS: u32 = 6;
 
 /// A random number in 0..1 from a hash state (advances it).
-fn rnd(state: &mut u32) -> f32 {
+pub fn rnd(state: &mut u32) -> f32 {
     *state = super::hash(*state);
     (*state >> 8) as f32 / 16_777_216.0
 }
@@ -425,8 +429,9 @@ impl Field {
             o[2] + d[2] * t - k * self.height_at(x, y)
         };
         // A ray that enters the field below the surface comes in through a side (or from
-        // underneath): the terrain is an open sheet without walls.
-        if above(t0) < 0.0 {
+        // underneath): the terrain is an open sheet without walls. (Entering through the
+        // highest point, on a plateau, is rounding, not a side.)
+        if above(t0) < -1e-3 * (1.0 + zt.abs() + o[2].abs()) {
             return None;
         }
         let mut t = t0;

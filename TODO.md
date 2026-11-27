@@ -18,8 +18,10 @@ that come up along the way.
 - [x] Terrain: orbit (Ctrl-drag) and dolly (Ctrl-wheel) the camera with the mouse.
 - [ ] Terrain: larger than the view (more detail near the camera), optional walls down to a
       base, optional path tracing into OIDN.
-- [ ] 3D object layers: Mandelbulb, quaternion/bicomplex Julia and a few DE formulas,
-      raymarched with the same lights.
+- [x] 3D object layers: Mandelbulb, quaternion Julia, Mandelbox, Menger sponge, sphere traced
+      with the same lights (shadows, occlusion, reflections).
+- [ ] 3D objects: bicomplex Julia and more DE formulas, formulas from the formula language
+      (3D programs), depth for compositing with terrains.
 - [ ] Exit: lit 2.5D renders, fly-over of a Mandelbrot landscape (camera path).
 
 ## Stage 5 – More fractal types (layer kinds)

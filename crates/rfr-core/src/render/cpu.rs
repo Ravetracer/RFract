@@ -163,6 +163,8 @@ enum Kernel {
     Plain(LayerK<f64>),
     Dual(LayerK<Dual>),
     Density(Box<DensityK>),
+    /// A 3D object layer (its plan holds everything).
+    Object,
 }
 
 /// A density layer: its formula, the counts of its orbits and its strokes (L-systems).
@@ -181,6 +183,9 @@ enum KernelF {
 
 impl Kernel {
     fn new(lp: &LayerPlan, plan: &Plan) -> Kernel {
+        if lp.object.is_some() {
+            return Kernel::Object;
+        }
         if let Some(d) = &lp.density {
             let channels = density::channels(d);
             return Kernel::Density(Box::new(DensityK {
@@ -213,7 +218,7 @@ impl Kernel {
         match self {
             Kernel::Plain(k) => KernelF::Plain(Box::new(k.frames())),
             Kernel::Dual(k) => KernelF::Dual(Box::new(k.frames())),
-            Kernel::Density(_) => KernelF::None,
+            Kernel::Density(_) | Kernel::Object => KernelF::None,
         }
     }
     /// The layer's color at plane point `p` and its height (lit layers); `turn` is the
@@ -223,6 +228,13 @@ impl Kernel {
         let (p, d) = at;
         if let Kernel::Density(k) = self {
             return (lp.density.as_ref().map_or([0.0; 4], |dn| density::color(lp, dn, &k.hist, pix.0, pix.1)), 0.0);
+        }
+        if let (Kernel::Object, Some(o)) = (self, &lp.object) {
+            // The camera ray through the sample position (the same as the plane point's).
+            let (u, v, _) = sample_offset(pix.0, pix.1, pix.2);
+            let (x, y) = (pix.0 as f32 + u as f32, pix.1 as f32 + v as f32);
+            let rng = super::hash(pix.0 ^ super::hash(pix.1 ^ super::hash(pix.2 ^ 0x3C6E_F372)));
+            return (o.shade(plan.frame.width, plan.frame.height, x, y, |t| lp.outside.color(t), rng), 0.0);
         }
         match (self, f) {
             (Kernel::Plain(k), KernelF::Plain(f)) => k.eval(f, lp, plan, p, d, pix),

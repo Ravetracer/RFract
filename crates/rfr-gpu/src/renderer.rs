@@ -94,6 +94,14 @@ struct Uni {
     lsky0: [f32; 4],
     lsky1: [f32; 4],
     lcam: [f32; 4],
+    obj: [f32; 4],
+    obji: [u32; 4],
+    objc: [f32; 4],
+}
+
+/// The lighting a layer's shaders use: a lit layer's or a 3D object's.
+fn light_of(lp: &LayerPlan) -> Option<&rfr_core::render::light::LightPlan> {
+    lp.light.as_ref().or(lp.object.as_ref().map(|o| &o.light))
 }
 
 /// Compositing uniforms (composite.wgsl `Op`).
@@ -120,6 +128,10 @@ fn source_index(s: MaskSource) -> u32 {
 /// while that is precise enough, else double-float (distance estimation then falls back to the
 /// smooth iteration count).
 pub fn layer_mode(plan: &Plan, lp: &LayerPlan) -> Mode {
+    // 3D objects do not depend on the plane's precision.
+    if lp.object.is_some() {
+        return Mode::Plain;
+    }
     match plan.precision() {
         Precision::Single if lp.needs_derivative() => Mode::Dual,
         Precision::Single => Mode::Plain,
@@ -167,31 +179,38 @@ fn layer_uni(plan: &Plan, lp: &LayerPlan) -> Uni {
         densn: [0; 4],
         densx: [0; 4],
         densb: [0.0; 4],
-        light: lp.light.as_ref().map_or([0.0; 4], |l| [l.ambient, l.slope_scale(f.height), l.specular, l.roughness]),
-        lighti: lp.light.as_ref().map_or([0; 4], |l| {
+        light: light_of(lp).map_or([0.0; 4], |l| [l.ambient, l.slope_scale(f.height), l.specular, l.roughness]),
+        lighti: light_of(lp).map_or([0; 4], |l| {
             [l.source.index(), l.lights.len() as u32, (l.model == rfr_core::doc::SpecularModel::Ggx) as u32, l.camera.is_some() as u32]
         }),
         ldir: light_rows(lp, |(d, _)| *d),
         lrad: light_rows(lp, |(_, r)| *r),
-        lshadow: lp.light.as_ref().map_or([0.0; 4], |l| {
-            let h = f.height as f32;
+        // Lit layers: lengths in pixels; 3D objects: shares of the bounding radius.
+        lshadow: light_of(lp).map_or([0.0; 4], |l| {
+            let h = if lp.object.is_some() { 1.0 } else { f.height as f32 };
             [l.shadow * h, l.softness, l.occlusion, l.occlusion_radius * h]
         }),
         // The environment image follows the layer's image parameters.
-        lenv: lp.light.as_ref().map_or([0.0; 4], |l| {
+        lenv: light_of(lp).map_or([0.0; 4], |l| {
             let slot = if l.environment.is_some() { codegen::layer_images(lp).len() as f32 } else { -1.0 };
             [l.reflection, slot, 0.0, 0.0]
         }),
-        lsky0: lp.light.as_ref().map_or([0.0; 4], |l| [l.horizon[0], l.horizon[1], l.horizon[2], 0.0]),
-        lsky1: lp.light.as_ref().map_or([0.0; 4], |l| [l.zenith[0], l.zenith[1], l.zenith[2], 0.0]),
-        lcam: lp.light.as_ref().and_then(|l| l.camera).unwrap_or([0.0; 4]),
+        lsky0: light_of(lp).map_or([0.0; 4], |l| [l.horizon[0], l.horizon[1], l.horizon[2], 0.0]),
+        lsky1: light_of(lp).map_or([0.0; 4], |l| [l.zenith[0], l.zenith[1], l.zenith[2], 0.0]),
+        lcam: match &lp.object {
+            Some(o) => o.camera,
+            None => lp.light.as_ref().and_then(|l| l.camera).unwrap_or([0.0; 4]),
+        },
+        obj: lp.object.as_ref().map_or([0.0; 4], |o| [o.power, o.scale, o.detail, o.bound()]),
+        obji: lp.object.as_ref().map_or([0; 4], |o| [o.shape.index(), o.iterations, o.julia as u32, 0]),
+        objc: lp.object.as_ref().map_or([0.0; 4], |o| o.seed),
     }
 }
 
 /// Per light one row of the lit layer's uniforms (direction or color).
 fn light_rows(lp: &LayerPlan, f: impl Fn(&([f32; 3], [f32; 3])) -> [f32; 3]) -> [[f32; 4]; 4] {
     let mut out = [[0.0; 4]; 4];
-    if let Some(l) = &lp.light {
+    if let Some(l) = light_of(lp) {
         for (row, li) in out.iter_mut().zip(&l.lights) {
             let v = f(li);
             *row = [v[0], v[1], v[2], 0.0];
@@ -621,7 +640,7 @@ impl GpuRenderer {
                 })
                 .collect();
             // A lit layer's environment image takes the slot after them.
-            if let Some(env) = lp.light.as_ref().and_then(|l| l.environment.clone()) {
+            if let Some(env) = light_of(lp).and_then(|l| l.environment.clone()) {
                 image_src.push(Some(env));
             }
             let same = |a: &[Option<Arc<rfr_core::images::ImageData>>]| {

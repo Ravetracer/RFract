@@ -395,7 +395,108 @@ fn transforms_ui(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
     .on_hover_text("Bend, mirror or repeat the plane before the fractal is computed");
 }
 
+/// A 3D object layer: shape, parameters, camera, colors and lighting.
+fn object_sections(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
+    use rfr_core::doc::{Object3D, ObjectShape};
+    let sec = widgets::section(ui, "3D object", true);
+    if sec.reset {
+        l.object = Object3D::default();
+    }
+    if sec.open {
+        let o = &mut l.object;
+        let before = o.shape;
+        widgets::segmented(
+            ui,
+            &mut o.shape,
+            &[
+                (ObjectShape::Mandelbulb, "Mandelbulb", "z → zⁿ + c in spherical coordinates: the 3D Mandelbrot analogue"),
+                (ObjectShape::Quaternion, "Quaternion", "The Julia set of q² + c over quaternions, cut at w = 0"),
+                (ObjectShape::Mandelbox, "Mandelbox", "Box and sphere folds, scaled: cubes full of folded detail"),
+                (ObjectShape::Menger, "Menger", "The Menger sponge: a cube with its middle thirds removed again and again"),
+            ],
+        );
+        if o.shape != before {
+            // Each shape has its own size: move the camera to see it whole.
+            o.camera.distance = match o.shape {
+                ObjectShape::Mandelbulb => 2.8,
+                ObjectShape::Quaternion => 3.0,
+                ObjectShape::Mandelbox => (2.0 * (o.scale.abs() + 1.0) / (o.scale.abs() - 1.0).max(0.05)).min(16.0) * 3.5,
+                ObjectShape::Menger => 4.5,
+            };
+            o.iterations = if o.shape == ObjectShape::Menger { 5 } else { 10 };
+        }
+        let d = Object3D::default();
+        widgets::grid(ui, "object-grid", |ui| {
+            match o.shape {
+                ObjectShape::Mandelbulb => {
+                    widgets::slider(ui, "Power", "The exponent n of z → zⁿ + c (8: the classic bulb)", &mut o.power, 2.0..=16.0, d.power);
+                }
+                ObjectShape::Mandelbox => {
+                    widgets::slider(
+                        ui,
+                        "Scale",
+                        "The scale after the folds (2: the classic box; negative values give other shapes)",
+                        &mut o.scale,
+                        -3.0..=3.0,
+                        d.scale,
+                    );
+                }
+                _ => {}
+            }
+            widgets::slider_u32(ui, "Iterations", "Steps of the formula per point: more give finer detail", &mut o.iterations, 1..=40, d.iterations);
+            if o.shape != ObjectShape::Menger {
+                if o.shape != ObjectShape::Quaternion {
+                    widgets::checkbox(ui, "Julia mode", "Use the seed below as the constant instead of the point itself", &mut o.julia);
+                }
+                if o.julia || o.shape == ObjectShape::Quaternion {
+                    widgets::label(ui, "Seed", "The constant c (x, y, z; w for quaternions)");
+                    ui.horizontal(|ui| {
+                        let n = if o.shape == ObjectShape::Quaternion { 4 } else { 3 };
+                        for (k, v) in o.seed.iter_mut().take(n).enumerate() {
+                            ui.add(egui::DragValue::new(v).speed(0.002).max_decimals(4)).on_hover_text(["x", "y", "z", "w"][k]);
+                        }
+                    });
+                    ui.end_row();
+                }
+            }
+            widgets::slider_log(
+                ui,
+                "Detail",
+                "How close the rays get to the surface, in pixels (smaller: finer, slower)",
+                &mut o.detail,
+                0.1..=10.0,
+                d.detail,
+            );
+            let c = d.camera.clone();
+            let cam = &mut o.camera;
+            widgets::slider(
+                ui,
+                "Camera direction",
+                "Where the camera looks from, in degrees around the vertical axis",
+                &mut cam.yaw,
+                -180.0..=180.0,
+                c.yaw,
+            );
+            widgets::slider(ui, "Camera height", "The camera's angle above the horizontal plane in degrees", &mut cam.pitch, -89.0..=89.0, c.pitch);
+            widgets::slider_log(ui, "Camera distance", "Distance of the camera from the origin", &mut cam.distance, 0.1..=100.0, c.distance);
+            widgets::slider(ui, "Field of view", "Vertical opening angle of the camera in degrees", &mut cam.fov, 5.0..=120.0, c.fov);
+        });
+    }
+    let sec = widgets::section(ui, "Colors", true);
+    if sec.reset {
+        l.outside = Layer::default().outside;
+    }
+    if sec.open {
+        widgets::grid(ui, "object-colors", |ui| coloring(ui, "outside", &mut l.outside, false, actions));
+    }
+    lighting_section(ui, l);
+}
+
 fn fractal_sections(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
+    if l.kind == LayerKind::Object {
+        object_sections(ui, l, actions);
+        return;
+    }
     // IFS and Kleinian density layers do not use their formula.
     if l.kind == LayerKind::Density
         && matches!(l.density.mode, rfr_core::doc::DensityMode::Ifs | rfr_core::doc::DensityMode::Kleinian | rfr_core::doc::DensityMode::LSystem)
@@ -566,26 +667,34 @@ fn lighting_section(ui: &mut Ui, l: &mut Layer) {
     if !sec.open {
         return;
     }
+    // 3D objects are always lit and have no relief.
+    let object = l.kind == LayerKind::Object;
     let li = &mut l.light;
     let def = Lighting::default();
-    widgets::grid(ui, "light-grid", |ui| {
-        widgets::checkbox(ui, "Lit", "Shade the layer as a relief: its values become heights, lit by the lights below", &mut li.enabled);
-    });
-    if !li.enabled {
-        return;
+    if !object {
+        widgets::grid(ui, "light-grid", |ui| {
+            widgets::checkbox(ui, "Lit", "Shade the layer as a relief: its values become heights, lit by the lights below", &mut li.enabled);
+        });
+        if !li.enabled {
+            return;
+        }
     }
-    widgets::segmented(
-        ui,
-        &mut li.height,
-        &[
-            (HeightSource::Smooth, "Iterations", "Heights from the smooth iteration count (logarithmic); the set is a plateau"),
-            (HeightSource::Value, "Coloring", "Heights from the coloring value (the gradient position): the relief follows the color bands"),
-            (HeightSource::Luminance, "Brightness", "Heights from the layer's brightness: bump maps from images and colorings"),
-            (HeightSource::Distance, "Distance", "Heights from the estimated distance to the set (logarithmic): smooth slopes rising to the set"),
-        ],
-    );
+    if !object {
+        widgets::segmented(
+            ui,
+            &mut li.height,
+            &[
+                (HeightSource::Smooth, "Iterations", "Heights from the smooth iteration count (logarithmic); the set is a plateau"),
+                (HeightSource::Value, "Coloring", "Heights from the coloring value (the gradient position): the relief follows the color bands"),
+                (HeightSource::Luminance, "Brightness", "Heights from the layer's brightness: bump maps from images and colorings"),
+                (HeightSource::Distance, "Distance", "Heights from the estimated distance to the set (logarithmic): smooth slopes rising to the set"),
+            ],
+        );
+    }
     widgets::grid(ui, "light-grid2", |ui| {
-        widgets::slider(ui, "Relief", "Steepness of the relief (negative values turn it inside out)", &mut li.relief, -10.0..=10.0, def.relief);
+        if !object {
+            widgets::slider(ui, "Relief", "Steepness of the relief (negative values turn it inside out)", &mut li.relief, -10.0..=10.0, def.relief);
+        }
         widgets::slider(ui, "Ambient", "Light from all directions: brightens the shadowed sides", &mut li.ambient, 0.0..=2.0, def.ambient);
         widgets::slider(ui, "Highlights", "Strength of the highlights", &mut li.specular, 0.0..=3.0, def.specular);
         widgets::slider(ui, "Roughness", "Small: sharp, glossy highlights; large: wide, dull ones", &mut li.roughness, 0.02..=1.0, def.roughness);
@@ -632,8 +741,10 @@ fn lighting_section(ui: &mut Ui, l: &mut Layer) {
                 def.occlusion_radius,
             );
         }
-        widgets::checkbox(ui, "3D terrain", "Show the relief as a landscape seen by a camera instead of from straight above", &mut li.terrain);
-        if li.terrain {
+        if !object {
+            widgets::checkbox(ui, "3D terrain", "Show the relief as a landscape seen by a camera instead of from straight above", &mut li.terrain);
+        }
+        if li.terrain && !object {
             use rfr_core::doc::Camera;
             let c = Camera::default();
             let cam = &mut li.camera;
@@ -1128,7 +1239,7 @@ pub fn show(ui: &mut Ui, doc: &mut Document, sel: &Selection) -> Vec<Action> {
             layer_settings(ui, l, sel, &mut actions);
         }
         if let Some(l) = target_mut(doc, sel)
-            && matches!(l.kind, LayerKind::Fractal | LayerKind::Density)
+            && matches!(l.kind, LayerKind::Fractal | LayerKind::Density | LayerKind::Object)
         {
             fractal_sections(ui, l, &mut actions);
         }

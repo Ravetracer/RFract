@@ -6,6 +6,10 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
 
 ### Added
 
+- 3D object layers: Mandelbulb, quaternion Julia sets, Mandelbox and Menger sponge, sphere
+  traced by their distance estimates from an orbiting camera (drag to orbit), lit with the
+  lighting of lit layers (shadows, occlusion, reflections) and colored by an orbit trap; on
+  the GPU and the CPU.
 - Lit layers: any layer except density layers can be shaded as a relief (heights from the
   smooth iteration count, the coloring value or the brightness) with ambient light, diffuse
   light and highlights (GGX or Blinn-Phong) from up to four colored lights; on the GPU and

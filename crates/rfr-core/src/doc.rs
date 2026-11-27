@@ -220,6 +220,63 @@ pub enum LayerKind {
     Group,
     /// Where the orbits of the layer's formula go: Buddhabrot, attractors (see [`Density`]).
     Density,
+    /// A raymarched 3D fractal (see [`Object3D`]), lit like a lit layer.
+    Object,
+}
+
+/// The shape of a 3D object layer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ObjectShape {
+    /// The Mandelbulb (power n, spherical coordinates).
+    #[default]
+    Mandelbulb,
+    /// The quaternion Julia set of q² + c (a 3D slice at w = 0).
+    Quaternion,
+    /// The Mandelbox (box and sphere folds, scale).
+    Mandelbox,
+    /// The Menger sponge.
+    Menger,
+}
+
+impl ObjectShape {
+    pub const ALL: [ObjectShape; 4] = [ObjectShape::Mandelbulb, ObjectShape::Quaternion, ObjectShape::Mandelbox, ObjectShape::Menger];
+
+    pub fn index(self) -> u32 {
+        ObjectShape::ALL.iter().position(|s| *s == self).unwrap_or(0) as u32
+    }
+}
+
+/// A 3D object layer: the shape, its parameters (`power` for the Mandelbulb, `scale` for the
+/// Mandelbox), the iterations, Julia mode with its seed (x, y, z, w; the quaternion Julia set
+/// always uses it), the camera orbiting the origin (distance in object units) and the detail
+/// (smaller: finer surfaces, slower).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Object3D {
+    pub shape: ObjectShape,
+    pub power: f64,
+    pub scale: f64,
+    pub iterations: u32,
+    pub julia: bool,
+    pub seed: [f64; 4],
+    pub camera: Camera,
+    pub detail: f64,
+}
+
+impl Default for Object3D {
+    fn default() -> Self {
+        Object3D {
+            shape: ObjectShape::Mandelbulb,
+            power: 8.0,
+            scale: 2.0,
+            iterations: 10,
+            julia: false,
+            seed: [-0.291, -0.399, 0.339, 0.437],
+            camera: Camera { yaw: 30.0, pitch: 25.0, distance: 3.0, fov: 40.0 },
+            detail: 1.0,
+        }
+    }
 }
 
 /// Which orbits a density layer draws.
@@ -741,8 +798,11 @@ pub struct Layer {
     pub inside: Coloring,
     /// Density layers: which orbits and how they are tone-mapped.
     pub density: Density,
-    /// Lighting of the layer as a height field (not for density layers).
+    /// Lighting of the layer as a height field (not for density layers); 3D object layers
+    /// use its lights, highlights, shadows, occlusion and reflections.
     pub light: Lighting,
+    /// 3D object layers: the shape and its camera.
+    pub object: Object3D,
 }
 
 impl Default for Layer {
@@ -767,6 +827,7 @@ impl Default for Layer {
             inside: Coloring { density: 1.0, transfer: Transfer::Linear, ..Coloring::default() },
             density: Density::default(),
             light: Lighting::default(),
+            object: Object3D::default(),
         }
     }
 }
@@ -941,7 +1002,7 @@ impl Document {
     pub fn active_layer(&self) -> Option<&Layer> {
         fn find(list: &[Layer]) -> Option<&Layer> {
             list.iter().rev().filter(|l| l.visible).find_map(|l| match l.kind {
-                LayerKind::Fractal | LayerKind::Density => Some(l),
+                LayerKind::Fractal | LayerKind::Density | LayerKind::Object => Some(l),
                 LayerKind::Group => find(&l.children),
             })
         }

@@ -31,6 +31,8 @@ const SCALAR_DUAL: &str = include_str!("wgsl/scalar_dual.wgsl");
 const PERTURB: &str = include_str!("wgsl/perturb.wgsl");
 const DENSITY: &str = include_str!("wgsl/density.wgsl");
 const LIGHTING: &str = include_str!("wgsl/lighting.wgsl");
+const SHADE: &str = include_str!("wgsl/shade.wgsl");
+const OBJECT: &str = include_str!("wgsl/object.wgsl");
 const SCALAR_DF64: &str = include_str!("wgsl/scalar_df64.wgsl");
 const CSTD: &str = include_str!("wgsl/cstd.wgsl");
 const KERNEL: &str = include_str!("wgsl/kernel.wgsl");
@@ -653,8 +655,18 @@ pub fn density_kernel(lp: &LayerPlan) -> String {
     format!("{SCALAR_F32}\n{CSTD}\n{BLEND}\n{prelude}\n{dens}")
 }
 
+/// The shader of a 3D object layer: kernel.wgsl before its main, shade.wgsl and object.wgsl
+/// (no formula code: the shape and its parameters are uniforms).
+pub fn object_kernel() -> String {
+    let prelude = KERNEL.split("@compute").next().unwrap_or_default().replace("//@RNG_DECL", "");
+    format!("{SCALAR_F32}\n{CSTD}\n{BLEND}\n{prelude}\n{SHADE}\n{OBJECT}")
+}
+
 /// The complete kernel shader of a layer.
 pub fn kernel(lp: &LayerPlan, mode: Mode) -> String {
+    if lp.object.is_some() {
+        return object_kernel();
+    }
     if lp.density.is_some() {
         return density_kernel(lp);
     }
@@ -812,10 +824,10 @@ pub fn kernel(lp: &LayerPlan, mode: Mode) -> String {
                 "        return;\n",
                 "    }",
             ),
-            LIGHTING,
+            format!("{SHADE}\n{LIGHTING}"),
         )
     } else {
-        ("", "", "")
+        ("", "", String::new())
     };
     let kernel = kernel.replace("//@HEIGHT", height).replace("//@FIELD", field);
     let scalar = match mode {
@@ -848,6 +860,7 @@ pub fn signature(lp: &LayerPlan, mode: Mode) -> u64 {
     lp.transforms.len().hash(&mut h);
     lp.density.is_some().hash(&mut h);
     lp.light.is_some().hash(&mut h);
+    lp.object.is_some().hash(&mut h);
     mode.hash(&mut h);
     // Perturbation code has the parameter values folded in.
     if mode == Mode::Pert {

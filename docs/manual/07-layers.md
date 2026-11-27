@@ -111,6 +111,30 @@ The image gets sharper with every pass. While the counts fill up, the accumulate
 over each time the passes double, so early passes do not stay in it. New density layers merge
 with *Screen*, so their light adds to the layers below.
 
+## 3D objects
+
+A **3D object** layer (the cube button above the layer list) shows a three-dimensional
+fractal, traced along camera rays to its surface and lit like a lit layer (see *Coloring ›
+Lighting*: lights, highlights, shadows, occlusion and reflections). Shapes:
+
+| Shape | What it is |
+|-------|------------|
+| Mandelbulb | z → zⁿ + c in spherical coordinates; *Power* 8 gives the classic bulb |
+| Quaternion | The Julia set of q² + c over quaternions (four components), cut at w = 0; *Seed* is c |
+| Mandelbox | Box and sphere folds with a *Scale* (2: a cube full of folded detail) |
+| Menger | The Menger sponge |
+
+*Iterations* sets the detail of the formula, *Julia mode* (Mandelbulb, Mandelbox) uses the
+*Seed* as the constant. *Detail* is how close the rays get to the surface, in pixels:
+smaller values show finer structure and take longer. The camera circles the origin:
+*Camera direction*, *Camera height*, *Camera distance* and *Field of view*; in the view,
+**dragging** orbits the camera and the **wheel** moves it closer or farther. Switching the
+shape moves the camera so the whole shape is in view.
+
+The surface is colored with the layer's gradient by an orbit trap (how close the orbit came
+to the origin); *Colors* holds the gradient, transfer, density and offset. Where the rays
+miss, the layer is transparent: a gradient fill layer below makes a sky.
+
 ## Background
 
 *Image › Background* is the color below all layers. With its opacity at 0, exported PNGs keep

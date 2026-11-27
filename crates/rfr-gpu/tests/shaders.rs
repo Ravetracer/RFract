@@ -201,6 +201,19 @@ fn gpu_matches_the_cpu_renderer() {
         l.shadows = true;
         l.camera.yaw = 30.0;
         cases.push(("lit terrain".into(), ter));
+        // 3D objects: every shape, with shadows and occlusion.
+        use rfr_core::doc::{LayerKind, ObjectShape};
+        for (shape, dist) in
+            [(ObjectShape::Mandelbulb, 2.8), (ObjectShape::Quaternion, 3.0), (ObjectShape::Mandelbox, 24.0), (ObjectShape::Menger, 4.5)]
+        {
+            let mut o = Document::for_formula("rfract:Mandelbrot");
+            o.layers[0].kind = LayerKind::Object;
+            o.layers[0].object.shape = shape;
+            o.layers[0].object.camera.distance = dist;
+            o.layers[0].light.shadows = true;
+            o.layers[0].light.occlusion = 1.0;
+            cases.push((format!("object {shape:?}"), o));
+        }
     }
     let mut julia = Document::for_formula("rfract:Mandelbrot");
     julia.layers[0].julia = true;

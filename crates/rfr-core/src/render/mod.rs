@@ -9,6 +9,7 @@ pub mod composite;
 pub mod cpu;
 pub mod density;
 pub mod light;
+pub mod object;
 pub mod oidn;
 
 use std::collections::BTreeMap;
@@ -201,6 +202,8 @@ pub struct LayerPlan {
     pub density: Option<crate::doc::Density>,
     /// Lit layers: their colors are shaded as a height field (see [`light`]).
     pub light: Option<light::LightPlan>,
+    /// 3D object layers: the raymarched shape with its own lighting (see [`object`]).
+    pub object: Option<object::ObjectPlan>,
 }
 
 impl LayerPlan {
@@ -227,7 +230,8 @@ impl LayerPlan {
             outside: ColorPlan::outside(l.outside_method, &l.outside).map_err(|e| format!("{}: {e}", l.name))?,
             inside: ColorPlan::inside(l.inside_method, &l.inside).map_err(|e| format!("{}: {e}", l.name))?,
             density: (l.kind == LayerKind::Density).then(|| l.density.clone()),
-            light: (l.light.enabled && l.kind != LayerKind::Density).then(|| light::LightPlan::new(&l.light)),
+            light: (l.light.enabled && l.kind == LayerKind::Fractal).then(|| light::LightPlan::new(&l.light)),
+            object: (l.kind == LayerKind::Object).then(|| object::ObjectPlan::new(&l.object, &l.light)),
             fractal,
         })
     }
@@ -283,7 +287,9 @@ fn nodes(list: &[Layer]) -> Result<Vec<Node>, String> {
     for l in list.iter().filter(|l| l.visible && l.opacity > 0.0) {
         let blend = Blend { mode: l.merge, opacity: l.opacity.clamp(0.0, 1.0) as f32 };
         match l.kind {
-            LayerKind::Fractal | LayerKind::Density => out.push(Node::Layer { layer: Box::new(LayerPlan::new(l)?), blend, mask: mask_plan(l)? }),
+            LayerKind::Fractal | LayerKind::Density | LayerKind::Object => {
+                out.push(Node::Layer { layer: Box::new(LayerPlan::new(l)?), blend, mask: mask_plan(l)? })
+            }
             LayerKind::Group => {
                 let children = nodes(&l.children)?;
                 if !children.is_empty() {
