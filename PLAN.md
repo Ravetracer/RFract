@@ -339,7 +339,8 @@ GitHub release. The first public release is **1.0.0**, after all stages. Sizes a
 - 3D object layers composited into the stack: quaternion/bicomplex Julia, Mandelbulb and a
   few DE formulas, raymarched with lighting (small subset of RMandelBulb3D ideas, not a port).
   Optional later: render an RMandelBulb3D `.rmb` scene into a layer.
-- **Exit**: lit 2.5D renders and a fly-over animation of a Mandelbrot landscape.
+- **Exit**: lit 2.5D renders, 3D terrains and 3D objects in preview and export (the fly-over
+  animation moved to stage 8, which brings camera paths).
 
 ### Stage 7 – Effects and textures (M)
 
@@ -356,7 +357,7 @@ GitHub release. The first public release is **1.0.0**, after all stages. Sizes a
 ### Stage 8 – Animation (L)
 
 - Keyframe timeline (from RMandelbulb3D): every parameter animatable, including layer
-  opacity, gradient stops, transforms, lights; interpolation modes (linear, Catmull-Rom, TCB,
+  opacity, gradient stops, transforms, lights, terrain and object cameras (camera paths); interpolation modes (linear, Catmull-Rom, TCB,
   ease); zoom interpolated in log space at constant perceived speed; rotation unwrapping.
 - Cameraman smoothing, flight recording → keyframes, palette rotation over time, drivers and
   expressions, audio-reactive values (bass/mid/treble).
@@ -366,7 +367,7 @@ GitHub release. The first public release is **1.0.0**, after all stages. Sizes a
 - Deep-zoom sequence mode: render one EXR per 2× zoom step and compose the frames by scaling
   (orders of magnitude faster for long zoom videos).
 - **Exit**: a 1-minute 1080p deep zoom with palette rotation and motion blur exported from the
-  app and the CLI.
+  app and the CLI, and a fly-over of a lit Mandelbrot landscape (3D terrain camera path).
 
 ### Stage 9 – Explore, scale, polish (M)
 

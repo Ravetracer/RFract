@@ -22,7 +22,7 @@ that come up along the way.
       with the same lights (shadows, occlusion, reflections).
 - [ ] 3D objects: bicomplex Julia and more DE formulas, formulas from the formula language
       (3D programs), depth for compositing with terrains.
-- [ ] Exit: lit 2.5D renders, fly-over of a Mandelbrot landscape (camera path).
+- [x] Exit: lit 2.5D renders, 3D terrains and objects (the fly-over moved to stage 8).
 
 ## Stage 5 – More fractal types (layer kinds)
 
