@@ -102,6 +102,14 @@ pub fn section(ui: &mut Ui, doc: &mut Document) {
             0.0..=2.0,
             d.height,
         );
+        widgets::slider(
+            ui,
+            "Reach",
+            "Lit layers and 3D: the distance at which the light has fallen to half, as a share of the image height (0: it does not fall off)",
+            &mut l.reach,
+            0.0..=2.0,
+            d.reach,
+        );
         widgets::color(ui, "Color", "Color of the light (its glow, its flare and the light it casts)", &mut l.color);
         widgets::slider(ui, "Intensity", "Brightness of the glow and the flare together", &mut l.intensity, 0.0..=5.0, d.intensity);
         widgets::checkbox(ui, "Visible", "The light itself shows as a glow", &mut l.visible);
@@ -193,28 +201,43 @@ fn flare_ui(ui: &mut Ui, f: &mut LensFlare) {
         }
     });
     sub(ui, "Ghosts and ring");
+    let listed = !f.ghost_list.is_empty();
     widgets::grid(ui, "flare-ghosts", |ui| {
-        widgets::slider_u32(
-            ui,
-            "Ghosts",
-            "Reflections of the aperture on the line from the light through the image center (0: none)",
-            &mut f.ghosts,
-            0..=32,
-            d.ghosts,
-        );
-        if f.ghosts > 0 || !f.ghost_list.is_empty() {
+        if !listed {
+            widgets::slider_u32(
+                ui,
+                "Ghosts",
+                "Reflections of the aperture on the line from the light through the image center (0: none)",
+                &mut f.ghosts,
+                0..=32,
+                d.ghosts,
+            );
+        }
+        if f.ghosts > 0 || listed {
             widgets::slider(ui, "Ghost strength", "Brightness of the ghosts", &mut f.ghost_intensity, 0.0..=1.5, d.ghost_intensity);
-            widgets::slider(ui, "Ghost size", "Typical radius as a share of the image height", &mut f.ghost_size, 0.01..=0.4, d.ghost_size);
-            widgets::slider(ui, "Ghost spread", "How far the ghosts spread along their line", &mut f.ghost_spread, 0.1..=3.0, d.ghost_spread);
+            if !listed {
+                widgets::slider(ui, "Ghost size", "Typical radius as a share of the image height", &mut f.ghost_size, 0.01..=0.4, d.ghost_size);
+                widgets::slider(ui, "Ghost spread", "How far the ghosts spread along their line", &mut f.ghost_spread, 0.1..=3.0, d.ghost_spread);
+                widgets::slider(ui, "Hollow ghosts", "Share of ghosts that are rings", &mut f.ghost_rings, 0.0..=1.0, d.ghost_rings);
+            }
             widgets::slider_u32(ui, "Aperture blades", "Corners of the ghosts (0: round)", &mut f.ghost_blades, 0..=12, d.ghost_blades);
             widgets::slider(ui, "Ghost softness", "Soft (1) or sharp (0) ghost edges", &mut f.ghost_softness, 0.0..=1.0, d.ghost_softness);
-            widgets::slider(ui, "Hollow ghosts", "Share of ghosts that are rings", &mut f.ghost_rings, 0.0..=1.0, d.ghost_rings);
-            widgets::slider(ui, "Ghost colors", "0: the light's color, 1: varied lens coating tints", &mut f.ghost_colors, 0.0..=1.0, d.ghost_colors);
+            widgets::slider(
+                ui,
+                "Ghost colors",
+                "0: the light's color, 1: each ghost's lens coating tint",
+                &mut f.ghost_colors,
+                0.0..=1.0,
+                d.ghost_colors,
+            );
             widgets::label(ui, "Bokeh image", "An image that shapes every ghost by its brightness (empty: the aperture blades)");
             ui.add(egui::TextEdit::singleline(&mut f.ghost_image).desired_width(160.0).hint_text("image file"))
                 .on_hover_text("Path of an image (PNG, JPEG) that shapes the ghosts; empty: the aperture blades");
             ui.end_row();
         }
+    });
+    ghost_list(ui, f);
+    widgets::grid(ui, "flare-ring", |ui| {
         widgets::slider(ui, "Chromatic", "Colored fringes of the ghosts and the ring", &mut f.chromatic, 0.0..=2.0, d.chromatic);
         widgets::slider(ui, "Ring", "Halo ring around the light (0: none)", &mut f.ring, 0.0..=1.0, d.ring);
         if f.ring > 0.0 {
@@ -237,5 +260,58 @@ fn flare_ui(ui: &mut Ui, f: &mut LensFlare) {
             }
         });
         ui.end_row();
+    });
+}
+
+/// The ghosts one by one: a list made from the generated ones that replaces them, with each
+/// ghost's place, size, brightness, tint, ring and softness.
+fn ghost_list(ui: &mut Ui, f: &mut LensFlare) {
+    if f.ghost_list.is_empty() {
+        if f.ghosts > 0
+            && ui
+                .button("Edit the ghosts one by one")
+                .on_hover_text("Turn the generated ghosts into a list you can change, extend and shorten")
+                .clicked()
+        {
+            f.ghost_list = f.generated_ghosts();
+        }
+        return;
+    }
+    let mut remove = None;
+    for (i, g) in f.ghost_list.iter_mut().enumerate() {
+        egui::Frame::new().fill(theme::BG).corner_radius(6).inner_margin(6).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("Ghost {}", i + 1)).color(theme::TEXT_MUTED));
+                ui.checkbox(&mut g.ring, "Ring").on_hover_text("A hollow ring instead of a disc");
+                widgets::color_button(ui, &mut g.tint).on_hover_text("Lens coating tint (mixed with the light's color by Ghost colors)");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if widgets::icon_button(ui, icons::TRASH, "Remove this ghost").clicked() {
+                        remove = Some(i);
+                    }
+                });
+            });
+            widgets::grid(ui, &format!("ghost-{i}"), |ui| {
+                let d = rfr_core::flare::GhostDef::default();
+                widgets::slider(ui, "Place", "On the line from the light (0) through the image center (1) and beyond", &mut g.pos, -1.0..=3.0, d.pos);
+                widgets::slider(ui, "Size", "Radius as a share of the image height", &mut g.size, 0.005..=0.5, d.size);
+                widgets::slider(ui, "Brightness", "Times the ghost strength", &mut g.brightness, 0.0..=3.0, d.brightness);
+                widgets::slider(ui, "Softness", "Times the ghost softness", &mut g.softness, 0.0..=3.0, d.softness);
+            });
+        });
+    }
+    if let Some(i) = remove {
+        f.ghost_list.remove(i);
+        // The last one gone: no ghosts (an empty list would bring the generated ones back).
+        if f.ghost_list.is_empty() {
+            f.ghosts = 0;
+        }
+    }
+    ui.horizontal(|ui| {
+        if ui.button(format!("{}  Add a ghost", icons::PLUS)).on_hover_text("A new ghost beyond the image center").clicked() {
+            f.ghost_list.push(rfr_core::flare::GhostDef::default());
+        }
+        if ui.button("Back to generated").on_hover_text("Drop the list: the ghosts come from the count, size, spread and variation again").clicked() {
+            f.ghost_list.clear();
+        }
     });
 }

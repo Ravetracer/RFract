@@ -439,6 +439,10 @@ impl Plan {
                     if let Some(l) = lp.light.as_mut() {
                         l.set_points(doc, w, h);
                     }
+                    if let Some(o) = lp.object.as_mut() {
+                        let b = o.bound();
+                        o.light.set_object_points(doc, w, h, b);
+                    }
                 }
             }
         }

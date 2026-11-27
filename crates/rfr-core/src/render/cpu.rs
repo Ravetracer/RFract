@@ -656,14 +656,18 @@ fn guess_tile(cells: &mut [Cell], w: usize, h: usize, mut sample: impl FnMut(usi
 /// The height value (the lit field's, before scaling) of the plan's first layer at the view
 /// center, as a 3D terrain's camera aims at it; none for layers without lighting.
 pub fn center_height(plan: &Plan) -> Option<f32> {
+    let (x, y) = (plan.frame.width as f64 * 0.5, plan.frame.height as f64 * 0.5);
+    heights_at(plan, &[(x, y)]).first().copied()
+}
+
+/// The height values of the plan's first (lit) layer at image positions `pts` (pixels, y
+/// down); empty for layers without lighting.
+pub fn heights_at(plan: &Plan, pts: &[(f64, f64)]) -> Vec<f32> {
     let layers = plan.layers();
-    let lp = layers.first()?;
-    lp.light.as_ref()?;
+    let Some(lp) = layers.first().filter(|lp| lp.light.is_some()) else { return Vec::new() };
     let k = Kernel::new(lp, plan);
     let mut f = k.frames();
-    let (x, y) = (plan.frame.width as f64 * 0.5, plan.frame.height as f64 * 0.5);
-    let (_, [h, _], _) = k.eval(&mut f, lp, plan, (plan.frame.plane(x, y), plan.frame.offset_fx(x, y)), 0.0, (0, 0, 0));
-    Some(h)
+    pts.iter().map(|&(x, y)| k.eval(&mut f, lp, plan, (plan.frame.plane(x, y), plan.frame.offset_fx(x, y)), 0.0, (0, 0, 0)).1[0]).collect()
 }
 
 /// Iteration counts of the plan's first layer at the pixel centers, row-major: the iterations
@@ -863,6 +867,16 @@ mod tests {
         doc.layers[0].light.scene_lights = true;
         let on = mean(&doc);
         assert!(off < 1.0 && on > 5.0, "off {off}, on {on}");
+        // A 3D object: the light in front of it, between the camera and the bulb.
+        let mut obj = doc.clone();
+        obj.layers[0].kind = crate::doc::LayerKind::Object;
+        obj.layers[0].object.camera.distance = 2.8;
+        obj.lights[0].position = ["-0.5".into(), "-0.6".into()];
+        obj.lights[0].height = 0.8;
+        let on = mean(&obj);
+        obj.layers[0].light.scene_lights = false;
+        let off = mean(&obj);
+        assert!(off < 1.0 && on > 5.0, "object: off {off}, on {on}");
     }
 
     #[test]

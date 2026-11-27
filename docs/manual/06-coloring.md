@@ -132,7 +132,8 @@ shine on it from above. Switch on **Lit** and choose where the heights come from
 - **Document lights** lets the light sources of the *Lights* section (see *Effects*) light
   the layer too, as points: each lights the relief from its position in the plane and its
   *Height*, so slopes facing it brighten and shadows fall away from it (no farther than the
-  light). Up to four light sources count; they do not get dimmer with distance.
+  light). Up to four light sources count; their *Reach* makes them dimmer with distance. 3D
+  objects have the same switch (the view's plane is the ground through the object).
 
 ### 3D terrain
 

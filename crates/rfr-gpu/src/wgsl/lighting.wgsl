@@ -412,6 +412,11 @@ fn lit(@builtin(global_invocation_id) gid: vec3<u32>) {
             if U.lshadow.x > 0.0 {
                 sn = l_shadow(dir, px, py, z0, k, min(U.lshadow.x, length(d.xy)), U.lshadow.y, l_rnd(&rng));
             }
+            // light::falloff
+            let reach = U.lpos[i].w;
+            if reach > 0.0 {
+                sn = sn / (1.0 + dot(d, d) / (reach * reach));
+            }
             pts[i] = vec4<f32>(dir, sn);
         }
         var open = 1.0;

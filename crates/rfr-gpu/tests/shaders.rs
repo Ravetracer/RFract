@@ -213,7 +213,7 @@ fn gpu_matches_the_cpu_renderer() {
         pl.layers[0].light.scene_lights = true;
         pl.layers[0].light.ambient = 0.1;
         pl.lights.push(light("-1.3", "0.5", 0.3, [1.0, 0.6, 0.3]));
-        pl.lights.push(light("0.4", "-0.4", 0.1, [0.3, 0.6, 1.0]));
+        pl.lights.push(rfr_core::doc::LightSource { reach: 0.3, ..light("0.4", "-0.4", 0.1, [0.3, 0.6, 1.0]) });
         cases.push(("lit point lights".into(), pl.clone()));
         let mut pt = ter.clone();
         pt.layers[0].light.scene_lights = true;
@@ -256,6 +256,33 @@ fn gpu_matches_the_cpu_renderer() {
             o.layers[0].light.occlusion = 1.0;
             cases.push((format!("object {shape:?}"), o));
         }
+        // A 3D object lit by the document's lights (point lights in its world).
+        let mut ol = Document::for_formula("rfract:Mandelbrot");
+        ol.layers[0].kind = LayerKind::Object;
+        ol.layers[0].object.camera.distance = 2.8;
+        ol.layers[0].light.shadows = true;
+        ol.layers[0].light.scene_lights = true;
+        let c = ol.view.center.clone();
+        let near = |dx: f64, dy: f64| {
+            let r = ol.view.radius.to_f64();
+            [format!("{}", c[0].parse::<f64>().unwrap() + dx * r), format!("{}", c[1].parse::<f64>().unwrap() + dy * r)]
+        };
+        ol.lights.push(rfr_core::doc::LightSource {
+            position: near(-0.8, -0.6),
+            height: 0.5,
+            color: [1.0, 0.5, 0.2],
+            visible: false,
+            ..Default::default()
+        });
+        ol.lights.push(rfr_core::doc::LightSource {
+            position: near(0.7, 0.2),
+            height: 0.2,
+            reach: 0.5,
+            color: [0.2, 0.5, 1.0],
+            visible: false,
+            ..Default::default()
+        });
+        cases.push(("object point lights".into(), ol));
     }
     let mut julia = Document::for_formula("rfract:Mandelbrot");
     julia.layers[0].julia = true;

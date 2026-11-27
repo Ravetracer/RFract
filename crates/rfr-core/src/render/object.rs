@@ -245,9 +245,9 @@ impl ObjectPlan {
 
     /// The share of the light from direction `l` reaching `p` (sphere traced toward it; soft
     /// edges by the softness, hard when it is 0).
-    fn shadow(&self, p: [f32; 3], l: [f32; 3], eps: f32, jitter: f32) -> f32 {
+    fn shadow(&self, p: [f32; 3], l: [f32; 3], eps: f32, jitter: f32, max_t: f32) -> f32 {
         let soft = self.light.softness;
-        let reach = self.light.shadow * 2.0 * self.bound();
+        let reach = (self.light.shadow * 2.0 * self.bound()).min(max_t);
         let mut t = eps * (4.0 + jitter);
         let mut seen = 1.0f32;
         for _ in 0..SHADOW_STEPS {
@@ -301,12 +301,24 @@ impl ObjectPlan {
         let mut seen = [1.0f32; crate::doc::MAX_LIGHTS];
         if l.shadow > 0.0 {
             for (i, (dir, _)) in l.lights.iter().enumerate() {
-                seen[i] = if dot(n, *dir) > 0.0 { self.shadow(q, *dir, eps, rnd(&mut rng)) } else { 0.0 };
+                seen[i] = if dot(n, *dir) > 0.0 { self.shadow(q, *dir, eps, rnd(&mut rng), f32::INFINITY) } else { 0.0 };
             }
+        }
+        // Point lights (world positions): shadows reach no farther than the light.
+        let mut points = [([0.0f32; 3], 1.0f32); crate::doc::MAX_LIGHTS];
+        for (i, (pos, _)) in l.points.iter().enumerate() {
+            let v = [pos[0] - q[0], pos[1] - q[1], pos[2] - q[2]];
+            let dist = len(v);
+            let dir = normalize(v);
+            let mut sn = 1.0;
+            if l.shadow > 0.0 {
+                sn = if dot(n, dir) > 0.0 { self.shadow(q, dir, eps, rnd(&mut rng), dist) } else { 0.0 };
+            }
+            points[i] = (dir, sn * super::light::falloff(dot(v, v), l.reach[i]));
         }
         let open = if l.occlusion > 0.0 && l.occlusion_radius > 0.0 { self.occlusion(q, n, rnd(&mut rng)) } else { 1.0 };
         let color = gradient(trap as f64 * 4.0);
-        shade_normal(l, color, n, &seen, open, [-d[0], -d[1], -d[2]], &[])
+        shade_normal(l, color, n, &seen, open, [-d[0], -d[1], -d[2]], &points[..l.points.len()])
     }
 }
 

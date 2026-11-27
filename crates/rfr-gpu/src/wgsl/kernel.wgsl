@@ -80,8 +80,8 @@ struct Uni {
     fx2: vec4<f32>,
     // colors of the shadow, the outer and inner glow and the neon
     fxc: array<vec4<f32>, 4>,
-    // point lights (the document's light sources): position in pixels (x, y down, z up), unused;
-    // color times intensity
+    // point lights (the document's light sources): position in pixels (x, y down, z up), the
+    // distance where they fall to half (0: no falloff); color times intensity
     lpos: array<vec4<f32>, 4>,
     lprad: array<vec4<f32>, 4>,
 }

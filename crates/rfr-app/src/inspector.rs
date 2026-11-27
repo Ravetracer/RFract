@@ -790,14 +790,12 @@ fn lighting_section(ui: &mut Ui, l: &mut Layer) {
             ui.radio_value(&mut li.model, SpecularModel::BlinnPhong, "Blinn-Phong").on_hover_text("Classic highlights with a tighter falloff");
         });
         ui.end_row();
-        if !object {
-            widgets::checkbox(
-                ui,
-                "Document lights",
-                "The light sources of the Lights section also light this layer, as points at their position and height (up to four)",
-                &mut li.scene_lights,
-            );
-        }
+        widgets::checkbox(
+            ui,
+            "Document lights",
+            "The light sources of the Lights section also light this layer, as points at their position and height (up to four); for 3D objects the view's plane is the ground through the object's center",
+            &mut li.scene_lights,
+        );
         widgets::checkbox(ui, "Shadows", "Higher parts of the relief cast shadows away from each light", &mut li.shadows);
         if li.shadows {
             widgets::slider(

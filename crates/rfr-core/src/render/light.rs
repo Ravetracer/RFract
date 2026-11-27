@@ -35,8 +35,10 @@ pub struct LightPlan {
     /// Lit by the document's light sources (see [`LightPlan::set_points`]).
     pub scene_lights: bool,
     /// Point lights (the document's light sources): position in pixels (x right, y down, z
-    /// up) and color times intensity.
+    /// up) and color times intensity; per light the distance in pixels at which it has fallen
+    /// to half (0: no falloff).
     pub points: Vec<([f32; 3], [f32; 3])>,
+    pub reach: Vec<f32>,
     /// Shadow length as a share of the image height (0: no shadows) and the light's apparent
     /// size (0: hard shadows).
     pub shadow: f32,
@@ -132,6 +134,7 @@ impl LightPlan {
             lights,
             scene_lights: l.scene_lights,
             points: Vec::new(),
+            reach: Vec::new(),
             shadow: if l.shadows { l.shadow_length.max(0.0) as f32 } else { 0.0 },
             softness: l.softness.max(0.0) as f32,
             occlusion: l.occlusion.max(0.0) as f32,
@@ -188,20 +191,36 @@ impl LightPlan {
     /// The point lights of the document's light sources for an image of `doc`'s view at
     /// `w` × `h` (at most [`crate::doc::MAX_LIGHTS`], the enabled ones).
     pub fn set_points(&mut self, doc: &crate::doc::Document, w: u32, h: u32) {
-        self.points = if self.scene_lights {
+        let lights: Vec<_> = if self.scene_lights {
             doc.lights
                 .iter()
                 .filter(|s| s.enabled && s.intensity > 0.0)
                 .filter_map(|s| {
                     let (x, y) = crate::flare::pixel_of(doc, &s.position, w, h)?;
                     let k = s.intensity as f32;
-                    Some(([x as f32, y as f32, (s.height * h as f64) as f32], s.color.map(|c| c * k)))
+                    // Field cells: pixel centers (x + ½).
+                    let pos = [(x - 0.5) as f32, (y - 0.5) as f32, (s.height * h as f64) as f32];
+                    Some(((pos, s.color.map(|c| c * k)), (s.reach.max(0.0) * h as f64) as f32))
                 })
                 .take(crate::doc::MAX_LIGHTS)
                 .collect()
         } else {
             Vec::new()
         };
+        (self.points, self.reach) = lights.into_iter().unzip();
+    }
+
+    /// [`LightPlan::set_points`] for a 3D object of bounding radius `bound`: the image plane
+    /// is the ground through the object's center, one image height the object's diameter;
+    /// positions and reaches in world units (x right, y away, z up).
+    pub fn set_object_points(&mut self, doc: &crate::doc::Document, w: u32, h: u32, bound: f32) {
+        self.set_points(doc, w, h);
+        let unit = 2.0 * bound / h as f32;
+        for (p, r) in self.points.iter_mut().zip(self.reach.iter_mut()) {
+            let (x, y) = (p.0[0] + 0.5, p.0[1] + 0.5);
+            p.0 = [(x - w as f32 * 0.5) * unit, (h as f32 * 0.5 - y) * unit, p.0[2] * unit];
+            *r *= unit;
+        }
     }
 
     /// The size of the height values of the source for a terrain: smooth iterations up to
@@ -287,10 +306,16 @@ pub fn shade(
 }
 
 /// The direction from the surface point (`px`, `py`, pixels, y down; `z0` up) toward a point
-/// light at `pos` (x right, y up, z up) and the horizontal distance to it in pixels.
-pub fn point_dir(pos: [f32; 3], px: f32, py: f32, z0: f32) -> ([f32; 3], f32) {
+/// light at `pos` (x right, y up, z up), the horizontal distance to it in pixels and the
+/// share of the light left at that distance (`reach`: half at that distance, 0: no falloff).
+pub fn point_dir(pos: [f32; 3], px: f32, py: f32, z0: f32, reach: f32) -> ([f32; 3], f32, f32) {
     let d = [pos[0] - px, py - pos[1], pos[2] - z0];
-    (normalize(d), (d[0] * d[0] + d[1] * d[1]).sqrt())
+    (normalize(d), (d[0] * d[0] + d[1] * d[1]).sqrt(), falloff(dot(d, d), reach))
+}
+
+/// The share of a point light left at squared distance `d2` (half at `reach`; 0: no falloff).
+pub fn falloff(d2: f32, reach: f32) -> f32 {
+    if reach > 0.0 { 1.0 / (1.0 + d2 / (reach * reach)) } else { 1.0 }
 }
 
 /// [`shade`] with the surface normal `n` (unit length; x right, y up, z toward the sky).
@@ -522,11 +547,12 @@ impl Field {
         // Point lights: the direction from here; shadows reach no farther than the light.
         let mut points = [([0.0f32; 3], 1.0f32); crate::doc::MAX_LIGHTS];
         for (i, (pos, _)) in l.points.iter().enumerate() {
-            let (dir, dist) = point_dir(*pos, px, py, z0);
+            let (dir, dist, fall) = point_dir(*pos, px, py, z0, l.reach[i]);
             points[i].0 = dir;
             if len > 0.0 {
                 points[i].1 = self.shadow(&dir, px, py, z0, k, len.min(dist), l.softness, rnd(rng));
             }
+            points[i].1 *= fall;
         }
         let radius = l.occlusion_radius * self.height as f32;
         let open = if l.occlusion > 0.0 && radius > 0.0 { self.occlusion(px, py, z0, k, radius, l.occlusion, rnd(rng), rnd(rng)) } else { 1.0 };

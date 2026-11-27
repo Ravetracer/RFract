@@ -642,22 +642,41 @@ pub fn pixel_of(doc: &Document, pos: &[String; 2], w: u32, h: u32) -> Option<(f6
 
 /// A 3D terrain view of the document: the camera of its top terrain layer, the pixels per
 /// height unit and the height the camera aims at (field units: pixels, y down, z up).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct Terrain {
     cam: [f32; 4],
     zc: f32,
+    /// Pixels per height unit.
+    k: f32,
+    /// The terrain layer alone (heights along a line of sight).
+    alone: Document,
 }
 
-/// The document's 3D terrain (the top visible lit layer shown as a terrain) at `w` × `h`.
-fn terrain(doc: &Document, w: u32, h: u32) -> Option<Terrain> {
+/// The 3D view of a document: its top visible 3D terrain or 3D object layer.
+enum View3d {
+    Terrain(Box<Terrain>),
+    Object(Box<crate::render::object::ObjectPlan>),
+}
+
+fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+/// The document's 3D view at `w` × `h` (none: flat).
+fn view3d(doc: &Document, w: u32, h: u32) -> Option<View3d> {
+    use crate::doc::LayerKind;
     fn find(list: &[crate::doc::Layer]) -> Option<&crate::doc::Layer> {
         list.iter().rev().filter(|l| l.visible).find_map(|l| match l.kind {
-            crate::doc::LayerKind::Group => find(&l.children),
-            crate::doc::LayerKind::Fractal if l.light.enabled && l.light.terrain => Some(l),
+            LayerKind::Group => find(&l.children),
+            LayerKind::Fractal if l.light.enabled && l.light.terrain => Some(l),
+            LayerKind::Object => Some(l),
             _ => None,
         })
     }
     let layer = find(&doc.layers)?;
+    if layer.kind == LayerKind::Object {
+        return Some(View3d::Object(Box::new(crate::render::object::ObjectPlan::new(&layer.object, &layer.light))));
+    }
     let mut lp = crate::render::light::LightPlan::new(&layer.light);
     lp.set_height_range(layer.max_iter);
     let cam = lp.camera?;
@@ -666,58 +685,101 @@ fn terrain(doc: &Document, w: u32, h: u32) -> Option<Terrain> {
     static CACHE: std::sync::Mutex<Option<(String, f32)>> = std::sync::Mutex::new(None);
     let key = format!("{:?}|{:?}|{w}x{h}", layer, doc.view);
     let cached = CACHE.lock().ok().and_then(|c| c.as_ref().filter(|(k, _)| *k == key).map(|(_, v)| *v));
+    let mut alone = doc.clone();
+    alone.layers = vec![crate::doc::Layer { mask: None, effects: Default::default(), ..layer.clone() }];
+    alone.lights.clear();
+    alone.animation = None;
     let h0 = match cached {
         Some(v) => v,
         None => {
-            let mut one = doc.clone();
-            one.layers = vec![crate::doc::Layer { mask: None, effects: Default::default(), ..layer.clone() }];
-            let v = crate::render::Plan::sized(&one, w, h).ok().and_then(|p| crate::render::cpu::center_height(&p)).unwrap_or(0.0);
+            let v = crate::render::Plan::sized(&alone, w, h).ok().and_then(|p| crate::render::cpu::center_height(&p)).unwrap_or(0.0);
             if let Ok(mut c) = CACHE.lock() {
                 *c = Some((key, v));
             }
             v
         }
     };
-    Some(Terrain { cam, zc: k * h0 })
+    Some(View3d::Terrain(Box::new(Terrain { cam, zc: k * h0, k, alone })))
 }
 
-/// Camera basis of a terrain view (as [`crate::render::light::camera_ray`]): origin,
-/// forward, right, up.
-fn terrain_basis(t: &Terrain, w: u32, h: u32) -> [[f32; 3]; 4] {
-    let (o, f) = crate::render::light::camera_ray(t.cam, w, h, t.zc, w as f32 * 0.5, h as f32 * 0.5);
-    let r = crate::render::light::normalize([-f[1], f[0], 0.0]);
-    let u = [f[1] * r[2] - f[2] * r[1], f[2] * r[0] - f[0] * r[2], f[0] * r[1] - f[1] * r[0]];
-    [o, f, r, u]
+impl View3d {
+    /// The light's point in this view's space: terrain field units (cells, y down, z up) or
+    /// object world units (the image plane is the ground through the object's center, one
+    /// image height the object's diameter; x right, y away, z up).
+    fn point(&self, l: &crate::doc::LightSource, x: f64, y: f64, w: u32, h: u32) -> [f32; 3] {
+        let z = (l.height * h as f64) as f32;
+        match self {
+            // Field cells are pixel centers (x + ½).
+            View3d::Terrain(_) => [x as f32 - 0.5, y as f32 - 0.5, z],
+            View3d::Object(o) => {
+                let unit = 2.0 * o.bound() / h as f32;
+                [(x as f32 - w as f32 * 0.5) * unit, (h as f32 * 0.5 - y as f32) * unit, z * unit]
+            }
+        }
+    }
+
+    /// The image position (pixels) of a point of the view's space on the ground at height `z`.
+    fn image_of(&self, p: [f32; 3], w: u32, h: u32) -> (f64, f64) {
+        match self {
+            View3d::Terrain(_) => (p[0] as f64 + 0.5, p[1] as f64 + 0.5),
+            View3d::Object(o) => {
+                let unit = 2.0 * o.bound() / h as f32;
+                ((p[0] / unit + w as f32 * 0.5) as f64, (h as f32 * 0.5 - p[1] / unit) as f64)
+            }
+        }
+    }
+
+    /// The camera ray through image point (x, y).
+    fn ray(&self, x: f32, y: f32, w: u32, h: u32) -> ([f32; 3], [f32; 3]) {
+        match self {
+            View3d::Terrain(t) => crate::render::light::camera_ray(t.cam, w, h, t.zc, x, y),
+            View3d::Object(o) => o.ray(w, h, x, y),
+        }
+    }
+
+    /// Camera origin, forward, right, up and tan(field of view / 2).
+    fn basis(&self, w: u32, h: u32) -> ([[f32; 3]; 4], f32) {
+        let (o, f) = self.ray(w as f32 * 0.5, h as f32 * 0.5, w, h);
+        let (r, tan) = match self {
+            View3d::Terrain(t) => (crate::render::light::normalize([-f[1], f[0], 0.0]), t.cam[3]),
+            View3d::Object(ob) => (crate::render::light::normalize([f[1], -f[0], 0.0]), ob.camera[3]),
+        };
+        // Up: as the renderers build it from forward and right.
+        let u = match self {
+            View3d::Terrain(_) => [f[1] * r[2] - f[2] * r[1], f[2] * r[0] - f[0] * r[2], f[0] * r[1] - f[1] * r[0]],
+            View3d::Object(_) => [r[1] * f[2] - r[2] * f[1], r[2] * f[0] - r[0] * f[2], r[0] * f[1] - r[1] * f[0]],
+        };
+        ([o, f, r, u], tan)
+    }
 }
 
 /// Where light `l` shows in the image (pixels, y down) at `w` × `h`: its plane position, or in
-/// a 3D terrain view its point above the terrain seen through the camera (none behind it).
+/// a 3D terrain or object view its point at its height seen through the camera (none behind
+/// it).
 pub fn screen_pos(doc: &Document, l: &crate::doc::LightSource, w: u32, h: u32) -> Option<(f64, f64)> {
     let (x, y) = pixel_of(doc, &l.position, w, h)?;
-    let Some(t) = terrain(doc, w, h) else { return Some((x, y)) };
-    let [o, f, r, u] = terrain_basis(&t, w, h);
-    let p = [x as f32, y as f32, (l.height * h as f64) as f32];
+    let Some(v) = view3d(doc, w, h) else { return Some((x, y)) };
+    let ([o, f, r, u], tan) = v.basis(w, h);
+    let p = v.point(l, x, y, w, h);
     let d = [p[0] - o[0], p[1] - o[1], p[2] - o[2]];
-    let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-    let z = dot(d, f);
+    let z = dot3(d, f);
     if z <= 1e-6 {
         return None;
     }
     let (wf, hf) = (w as f32, h as f32);
-    let tan = t.cam[3];
-    let (sx, sy) = (dot(d, r) / z, dot(d, u) / z);
+    let (sx, sy) = (dot3(d, r) / z, dot3(d, u) / z);
     Some(((((sx / (tan * wf / hf)) + 1.0) * 0.5 * wf) as f64, ((1.0 - sy / tan) * 0.5 * hf) as f64))
 }
 
 /// The plane position (decimal strings) that puts light `l` at image point (`x`, `y`) of a
-/// `w` × `h` image: the point itself, or in a 3D terrain view the point at the light's height
-/// on the camera ray (none when the ray does not reach that height).
+/// `w` × `h` image: the point itself, or in a 3D view the point at the light's height on the
+/// camera ray (none when the ray does not reach that height).
 pub fn position_at(doc: &Document, l: &crate::doc::LightSource, x: f64, y: f64, w: u32, h: u32) -> Option<[String; 2]> {
-    let (fx, fy) = match terrain(doc, w, h) {
+    let (fx, fy) = match view3d(doc, w, h) {
         None => (x, y),
-        Some(t) => {
-            let (o, d) = crate::render::light::camera_ray(t.cam, w, h, t.zc, x as f32, y as f32);
-            let zl = (l.height * h as f64) as f32;
+        Some(v) => {
+            let (o, d) = v.ray(x as f32, y as f32, w, h);
+            let zl = v.point(l, 0.0, 0.0, w, h)[2];
             if d[2].abs() < 1e-6 {
                 return None;
             }
@@ -725,13 +787,71 @@ pub fn position_at(doc: &Document, l: &crate::doc::LightSource, x: f64, y: f64, 
             if s <= 0.0 {
                 return None;
             }
-            ((o[0] + d[0] * s) as f64, (o[1] + d[1] * s) as f64)
+            v.image_of([o[0] + d[0] * s, o[1] + d[1] * s, zl], w, h)
         }
     };
     let frame = crate::render::ViewFrame::of(doc, w, h);
     let off = frame.offset_fx(fx, fy);
     let scale = frame.pixel_size_fx() * 1e-3;
     Some([crate::math::big::add(&doc.view.center[0], off.re_fx(), scale), crate::math::big::add(&doc.view.center[1], off.im_fx(), scale)])
+}
+
+/// Steps along a line of sight for [`visibility`].
+const SIGHT_STEPS: usize = 48;
+
+/// How much of light `l` the camera sees past the 3D terrain or object (1 when flat): the
+/// line from the camera to the light, over the terrain's heights or sphere traced past the
+/// object; the light fades out as the line passes below or close to the surface (over a small
+/// part of the distance).
+pub fn visibility(doc: &Document, l: &crate::doc::LightSource, w: u32, h: u32) -> f64 {
+    let Some(v) = view3d(doc, w, h) else { return 1.0 };
+    let Some((x, y)) = pixel_of(doc, &l.position, w, h) else { return 1.0 };
+    let ([o, ..], _) = v.basis(w, h);
+    let p = v.point(l, x, y, w, h);
+    let to = [p[0] - o[0], p[1] - o[1], p[2] - o[2]];
+    let dist = dot3(to, to).sqrt();
+    if dist <= 0.0 {
+        return 1.0;
+    }
+    let soft = 0.01 * dist;
+    match &v {
+        View3d::Object(ob) => {
+            let d = crate::render::light::normalize(to);
+            let mut t = 0.0f32;
+            let mut seen = 1.0f32;
+            for _ in 0..crate::render::object::MARCH_STEPS {
+                if t >= dist {
+                    break;
+                }
+                let q = [o[0] + d[0] * t, o[1] + d[1] * t, o[2] + d[2] * t];
+                let (de, _) = ob.de(q);
+                seen = seen.min((de / (soft * (t / dist).max(0.05))).clamp(0.0, 1.0));
+                if seen <= 0.0 {
+                    return 0.0;
+                }
+                t += de.max(1e-4 * dist);
+            }
+            seen as f64
+        }
+        View3d::Terrain(t) => {
+            // Points of the line over the field (cells; image positions are cells + ½).
+            let mut along = Vec::new();
+            for i in 1..SIGHT_STEPS {
+                let s = i as f32 / SIGHT_STEPS as f32;
+                let q = [o[0] + to[0] * s, o[1] + to[1] * s, o[2] + to[2] * s];
+                if q[0] >= 0.0 && q[1] >= 0.0 && q[0] <= (w - 1) as f32 && q[1] <= (h - 1) as f32 {
+                    along.push((s, q));
+                }
+            }
+            if along.is_empty() {
+                return 1.0;
+            }
+            let Ok(plan) = crate::render::Plan::sized(&t.alone, w, h) else { return 1.0 };
+            let pts: Vec<(f64, f64)> = along.iter().map(|(_, q)| (q[0] as f64 + 0.5, q[1] as f64 + 0.5)).collect();
+            let heights = crate::render::cpu::heights_at(&plan, &pts);
+            along.iter().zip(&heights).map(|((s, q), hv)| (((q[2] - t.k * hv) / (soft * s.max(0.05))) as f64).clamp(0.0, 1.0)).fold(1.0, f64::min)
+        }
+    }
 }
 
 /// The light of the document's light sources at `width` × `height` (linear RGB per pixel, top
@@ -751,8 +871,13 @@ pub fn image(doc: &Document, width: u32, height: u32) -> Option<Vec<[f32; 3]>> {
         if edge <= 0.0 {
             continue;
         }
+        // Hidden behind a 3D terrain: no glow and no flare.
+        let seen = visibility(doc, l, width, height);
+        if seen <= 0.0 {
+            continue;
+        }
         let peak = l.color.iter().cloned().fold(1e-6, f32::max) as f64;
-        let base = [0, 1, 2].map(|i| l.color[i] as f64 / peak * l.intensity);
+        let base = [0, 1, 2].map(|i| l.color[i] as f64 / peak * l.intensity * seen);
         if l.visible && l.glow_intensity > 0.0 && l.glow_size > 0.0 {
             glows.push((lx, ly, (l.glow_size * h).max(0.5), l.glow_shape, base.map(|c| c * l.glow_intensity)));
         }
@@ -846,6 +971,19 @@ mod tests {
         let p = position_at(&d, &l, x, y, w, h).unwrap();
         let back: Vec<f64> = p.iter().map(|s| s.parse().unwrap()).collect();
         assert!((back[0] + 0.7).abs() < 1e-3 && (back[1] - 0.2).abs() < 1e-3, "{p:?}");
+        // A light seen over the terrain shows; one sunk below it does not.
+        assert!(visibility(&d, &l, w, h) > 0.5);
+        let sunk = LightSource { height: -0.5, ..l.clone() };
+        assert_eq!(visibility(&d, &sunk, w, h), 0.0);
+        // A 3D object: projection and dragging agree; a light inside the bulb is hidden.
+        let mut o = d.clone();
+        o.layers[0].kind = crate::doc::LayerKind::Object;
+        let (x, y) = screen_pos(&o, &l, w, h).expect("in front of the camera");
+        let p = position_at(&o, &l, x, y, w, h).unwrap();
+        let back: Vec<f64> = p.iter().map(|s| s.parse().unwrap()).collect();
+        assert!((back[0] + 0.7).abs() < 1e-3 && (back[1] - 0.2).abs() < 1e-3, "{p:?}");
+        let inside = LightSource { position: o.view.center.clone(), height: 0.0, ..l.clone() };
+        assert_eq!(visibility(&o, &inside, w, h), 0.0);
         // Flat: the plane position.
         d.layers[0].light.terrain = false;
         assert_eq!(screen_pos(&d, &l, w, h), pixel_of(&d, &l.position, w, h));

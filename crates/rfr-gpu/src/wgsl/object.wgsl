@@ -181,9 +181,9 @@ fn o_normal(p: vec3<f32>, e: f32) -> vec3<f32> {
 }
 
 // ObjectPlan::shadow
-fn o_shadow(p: vec3<f32>, l: vec3<f32>, eps: f32, jitter: f32) -> f32 {
+fn o_shadow(p: vec3<f32>, l: vec3<f32>, eps: f32, jitter: f32, max_t: f32) -> f32 {
     let soft = U.lshadow.y;
-    let reach = U.lshadow.x * 2.0 * U.obj.w;
+    let reach = min(U.lshadow.x * 2.0 * U.obj.w, max_t);
     var t = eps * (4.0 + jitter);
     var seen = 1.0;
     for (var i = 0u; i < 64u; i = i + 1u) {
@@ -253,16 +253,35 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         for (var i = 0u; i < U.lighti.y; i = i + 1u) {
             let dir = U.ldir[i].xyz;
             if dot(n, dir) > 0.0 {
-                seen[i] = o_shadow(q, dir, eps, l_rnd(&rng));
+                seen[i] = o_shadow(q, dir, eps, l_rnd(&rng), 3.0e38);
             } else {
                 seen[i] = 0.0;
             }
         }
+    }
+    // Point lights (world positions, ObjectPlan::shade).
+    var pts = array<vec4<f32>, 4>();
+    for (var i = 0u; i < u32(U.lenv.w); i = i + 1u) {
+        let v = U.lpos[i].xyz - q;
+        let dir = normalize(v);
+        var sn = 1.0;
+        if U.lshadow.x > 0.0 {
+            if dot(n, dir) > 0.0 {
+                sn = o_shadow(q, dir, eps, l_rnd(&rng), length(v));
+            } else {
+                sn = 0.0;
+            }
+        }
+        let reach = U.lpos[i].w;
+        if reach > 0.0 {
+            sn = sn / (1.0 + dot(v, v) / (reach * reach));
+        }
+        pts[i] = vec4<f32>(dir, sn);
     }
     var open = 1.0;
     if U.lshadow.z > 0.0 && U.lshadow.w > 0.0 {
         open = o_occlusion(q, n, l_rnd(&rng));
     }
     let color = region_color(false, hit.y * 4.0);
-    l_blend(gid, x, l_shade_n(color, n, seen, open, -d, array<vec4<f32>, 4>()));
+    l_blend(gid, x, l_shade_n(color, n, seen, open, -d, pts));
 }

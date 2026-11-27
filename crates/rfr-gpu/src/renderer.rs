@@ -310,7 +310,13 @@ fn layer_uni(plan: &Plan, lp: &LayerPlan) -> Uni {
             let slot = if l.environment.is_some() { codegen::layer_images(lp).len() as f32 } else { -1.0 };
             [l.reflection, slot, l.normal_output as u32 as f32, l.points.len() as f32]
         }),
-        lpos: point_rows(lp, |(p, _)| *p),
+        lpos: {
+            let mut rows = point_rows(lp, |(p, _)| *p);
+            for (row, r) in rows.iter_mut().zip(light_of(lp).map_or(&[][..], |l| &l.reach[..])) {
+                row[3] = *r;
+            }
+            rows
+        },
         lprad: point_rows(lp, |(_, r)| *r),
         lsky0: light_of(lp).map_or([0.0; 4], |l| [l.horizon[0], l.horizon[1], l.horizon[2], 0.0]),
         lsky1: light_of(lp).map_or([0.0; 4], |l| [l.zenith[0], l.zenith[1], l.zenith[2], 0.0]),
@@ -344,7 +350,7 @@ fn layer_uni(plan: &Plan, lp: &LayerPlan) -> Uni {
 /// Per light one row of the lit layer's uniforms (direction or color).
 fn point_rows(lp: &LayerPlan, f: impl Fn(&([f32; 3], [f32; 3])) -> [f32; 3]) -> [[f32; 4]; 4] {
     let mut out = [[0.0; 4]; 4];
-    if let Some(l) = &lp.light {
+    if let Some(l) = light_of(lp) {
         for (row, li) in out.iter_mut().zip(&l.points) {
             let v = f(li);
             *row = [v[0], v[1], v[2], 0.0];

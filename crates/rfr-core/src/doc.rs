@@ -1243,6 +1243,9 @@ pub struct LightSource {
     pub position: [String; 2],
     /// Height above the plane as a share of the view's height.
     pub height: f64,
+    /// Lighting of lit layers and 3D objects: the distance (share of the image height) at
+    /// which the light has fallen to half (0: no falloff).
+    pub reach: f64,
     /// Linear RGB.
     pub color: [f32; 3],
     pub intensity: f64,
@@ -1262,6 +1265,7 @@ impl Default for LightSource {
             name: "Light 1".into(),
             position: ["0".into(), "0".into()],
             height: 0.5,
+            reach: 0.0,
             color: [1.0, 0.95, 0.85],
             intensity: 1.0,
             visible: true,

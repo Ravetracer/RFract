@@ -48,7 +48,12 @@ The position fields hold the exact coordinates, so a light stays in place at any
 - **Height** is how high the light hangs above the plane, as a share of the image height. It
   matters for lit layers with *Document lights* (see *Lighting*) and in 3D terrain views,
   where the light hangs above the landscape at that height and its glow and flare show where
-  the camera sees it; dragging its circle there moves it at its height.
+  the camera sees it; dragging its circle there moves it at its height. With a 3D object the
+  view's plane is the ground through the object's center (one image height is the object's
+  diameter) and the light hangs above it the same way. A light behind the terrain or the
+  object fades out with its glow and flare.
+- **Reach** makes the light it casts fall off with distance: at that distance (a share of the
+  image height) half of it is left; 0 keeps it constant.
 - **Color** and **Intensity** apply to the glow, the flare and the light it casts.
 - **Visible** shows the light itself as a glow: *Soft* (a bright core with a long falloff),
   *Sharp* (a small spot), *Ball* (a glowing disc with a bright rim) or *Halo*, with its size
@@ -62,7 +67,10 @@ The position fields hold the exact coordinates, so a light stays in place at any
   - *Streak*: a long thin anamorphic line, with *Sparkles* along it;
   - *Ghosts*: reflections of the aperture on the line from the light through the image
     center, round or with *Aperture blades*, some hollow, in the light's color or in lens
-    coating tints, with colored fringes (*Chromatic*); a *Bokeh image* can shape them;
+    coating tints, with colored fringes (*Chromatic*); a *Bokeh image* can shape them.
+    **Edit the ghosts one by one** turns them into a list: each ghost's place on the line
+    (0 at the light, 1 at the image center), size, brightness, softness, tint and whether it
+    is a ring; add and remove ghosts, or go *Back to generated*;
   - *Ring*: a halo around the light, optionally in rainbow colors;
   - *Dirt*: soft specks on the lens that light up near the light;
   - *Variation* picks another random layout of spikes, ghosts, sparkles and dirt.
