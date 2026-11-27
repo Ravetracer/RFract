@@ -93,6 +93,7 @@ struct Uni {
     lenv: [f32; 4],
     lsky0: [f32; 4],
     lsky1: [f32; 4],
+    lcam: [f32; 4],
 }
 
 /// Compositing uniforms (composite.wgsl `Op`).
@@ -167,10 +168,9 @@ fn layer_uni(plan: &Plan, lp: &LayerPlan) -> Uni {
         densx: [0; 4],
         densb: [0.0; 4],
         light: lp.light.as_ref().map_or([0.0; 4], |l| [l.ambient, l.slope_scale(f.height), l.specular, l.roughness]),
-        lighti: lp
-            .light
-            .as_ref()
-            .map_or([0; 4], |l| [l.source.index(), l.lights.len() as u32, (l.model == rfr_core::doc::SpecularModel::Ggx) as u32, 0]),
+        lighti: lp.light.as_ref().map_or([0; 4], |l| {
+            [l.source.index(), l.lights.len() as u32, (l.model == rfr_core::doc::SpecularModel::Ggx) as u32, l.camera.is_some() as u32]
+        }),
         ldir: light_rows(lp, |(d, _)| *d),
         lrad: light_rows(lp, |(_, r)| *r),
         lshadow: lp.light.as_ref().map_or([0.0; 4], |l| {
@@ -184,6 +184,7 @@ fn layer_uni(plan: &Plan, lp: &LayerPlan) -> Uni {
         }),
         lsky0: lp.light.as_ref().map_or([0.0; 4], |l| [l.horizon[0], l.horizon[1], l.horizon[2], 0.0]),
         lsky1: lp.light.as_ref().map_or([0.0; 4], |l| [l.zenith[0], l.zenith[1], l.zenith[2], 0.0]),
+        lcam: lp.light.as_ref().and_then(|l| l.camera).unwrap_or([0.0; 4]),
     }
 }
 
@@ -330,9 +331,12 @@ fn scatter_key(sig: u64) -> u64 {
 fn dmax_key(sig: u64) -> u64 {
     sig ^ 0xD3A5_0000_0000_0002
 }
-/// Cache key of a lit layer's `lit` pipeline.
+/// Cache keys of a lit layer's `lit` and `lmip` pipelines.
 fn lit_key(sig: u64) -> u64 {
     sig ^ 0x7117_0000_0000_0003
+}
+fn lmip_key(sig: u64) -> u64 {
+    sig ^ 0x3A1B_0000_0000_0004
 }
 
 /// A reference orbit on the GPU and where it was computed.
@@ -749,7 +753,19 @@ impl GpuRenderer {
                 None if lp.light.is_some() => (
                     device.create_buffer(&wgpu::BufferDescriptor {
                         label: Some("light field"),
-                        size: (plan.frame.width as u64 * plan.frame.height as u64 * 16).max(16),
+                        // 3D terrain: the height maxima after the field, four per 16 bytes.
+                        size: (plan.frame.width as u64 * plan.frame.height as u64 * 16
+                            + if lp.light.as_ref().is_some_and(|l| l.camera.is_some()) {
+                                rfr_core::render::light::mip_sizes(plan.frame.width, plan.frame.height)
+                                    .iter()
+                                    .map(|(w, h)| *w as u64 * *h as u64)
+                                    .sum::<u64>()
+                                    .next_multiple_of(4)
+                                    * 4
+                            } else {
+                                0
+                            })
+                        .max(16),
                         usage: wgpu::BufferUsages::STORAGE,
                         mapped_at_creation: false,
                     }),
@@ -986,6 +1002,24 @@ impl GpuRenderer {
                 self.ctx.queue.submit(Some(enc.finish()));
                 row += rows;
             }
+            // 3D terrain: the height maxima, level by level.
+            if l.uni.lighti[3] != 0
+                && let Some(Ok(lmip)) = self.pipeline(lmip_key(l.signature))
+            {
+                for (level, (w, h)) in rfr_core::render::light::mip_sizes(width, height).into_iter().enumerate() {
+                    let mut u = l.uni;
+                    u.band = [0, 3, level as u32, NONE];
+                    self.ctx.queue.write_buffer(uniform, 0, bytemuck::bytes_of(&u));
+                    let mut enc = device.create_command_encoder(&Default::default());
+                    {
+                        let mut pass = enc.begin_compute_pass(&Default::default());
+                        pass.set_pipeline(&lmip);
+                        pass.set_bind_group(0, &bind, &[]);
+                        pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
+                    }
+                    self.ctx.queue.submit(Some(enc.finish()));
+                }
+            }
         }
         let _ = device.poll(wgpu::PollType::wait_indefinitely());
     }
@@ -1010,6 +1044,7 @@ impl GpuRenderer {
             }
             if lit {
                 built.push((lit_key(sig), compile(&device, &layout, &source, "lit")));
+                built.push((lmip_key(sig), compile(&device, &layout, &source, "lmip")));
             }
             if let Ok(mut c) = cache.lock() {
                 for (k, r) in built {
@@ -1035,7 +1070,7 @@ impl GpuRenderer {
                 keys.extend([scatter_key(l.signature), dmax_key(l.signature)]);
             }
             if l.light.is_some() {
-                keys.push(lit_key(l.signature));
+                keys.extend([lit_key(l.signature), lmip_key(l.signature)]);
             }
             for k in keys {
                 match self.pipeline(k) {

@@ -51,7 +51,7 @@ struct Uni {
     densb: vec4<f32>,
     // Lit layers (lighting.wgsl): ambient, slope scale, specular, roughness
     light: vec4<f32>,
-    // height source, number of lights, specular model, unused
+    // height source, number of lights, specular model, 3D terrain
     lighti: vec4<u32>,
     // per light: direction toward it (x, y, z, unused) and color times intensity (r, g, b, unused)
     ldir: array<vec4<f32>, 4>,
@@ -63,6 +63,8 @@ struct Uni {
     // sky at the horizon and at the zenith (linear RGB)
     lsky0: vec4<f32>,
     lsky1: vec4<f32>,
+    // 3D terrain camera: direction and pitch (radians), distance (image heights), tan(fov / 2)
+    lcam: vec4<f32>,
 }
 
 struct Params {

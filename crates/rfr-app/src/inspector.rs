@@ -632,6 +632,44 @@ fn lighting_section(ui: &mut Ui, l: &mut Layer) {
                 def.occlusion_radius,
             );
         }
+        widgets::checkbox(ui, "3D terrain", "Show the relief as a landscape seen by a camera instead of from straight above", &mut li.terrain);
+        if li.terrain {
+            use rfr_core::doc::Camera;
+            let c = Camera::default();
+            let cam = &mut li.camera;
+            widgets::slider(
+                ui,
+                "Camera direction",
+                "Where the camera looks from, in degrees (0: from the bottom edge of the image)",
+                &mut cam.yaw,
+                -180.0..=180.0,
+                c.yaw,
+            );
+            widgets::slider(
+                ui,
+                "Camera height",
+                "The camera's angle above the ground in degrees (90: straight down)",
+                &mut cam.pitch,
+                1.0..=89.0,
+                c.pitch,
+            );
+            widgets::slider_log(
+                ui,
+                "Camera distance",
+                "Distance of the camera from the middle of the terrain, in image heights",
+                &mut cam.distance,
+                0.05..=10.0,
+                c.distance,
+            );
+            widgets::slider(
+                ui,
+                "Field of view",
+                "Vertical opening angle of the camera in degrees (small: telephoto, large: wide angle)",
+                &mut cam.fov,
+                5.0..=120.0,
+                c.fov,
+            );
+        }
         widgets::slider(
             ui,
             "Reflection",

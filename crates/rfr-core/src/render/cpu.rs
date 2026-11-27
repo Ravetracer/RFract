@@ -380,7 +380,7 @@ impl CpuRenderer {
                     }
                 },
             );
-            fields.push(Some(light::Field { width: w, height: h, data }));
+            fields.push(lp.light.as_ref().map(|l| light::Field::new(l, w, h, data)));
         }
         self.fields = fields;
     }

@@ -855,6 +855,27 @@ pub struct Lighting {
     pub environment: String,
     pub horizon: [f32; 3],
     pub zenith: [f32; 3],
+    /// Show the relief as a 3D terrain seen by `camera` instead of from straight above.
+    pub terrain: bool,
+    pub camera: Camera,
+}
+
+/// A camera orbiting the middle of a terrain: the direction it looks from (degrees, 0: from
+/// the bottom edge of the image, counterclockwise), its angle above the ground (degrees), its
+/// distance (image heights) and its vertical field of view (degrees).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Camera {
+    pub yaw: f64,
+    pub pitch: f64,
+    pub distance: f64,
+    pub fov: f64,
+}
+
+impl Default for Camera {
+    fn default() -> Self {
+        Camera { yaw: 0.0, pitch: 35.0, distance: 1.2, fov: 50.0 }
+    }
 }
 
 impl Default for Lighting {
@@ -877,6 +898,8 @@ impl Default for Lighting {
             environment: String::new(),
             horizon: [0.85, 0.8, 0.75],
             zenith: [0.15, 0.3, 0.7],
+            terrain: false,
+            camera: Camera::default(),
         }
     }
 }

@@ -123,6 +123,21 @@ shine on it from above. Switch on **Lit** and choose where the heights come from
   the image), a height above the image (low lights rake across the relief), an intensity and a
   color. *+ Light* adds one from the opposite side.
 
+### 3D terrain
+
+**3D terrain** shows the relief as a landscape: a camera looks at it from the side instead of
+from straight above. The terrain is the part of the plane the 2D view shows, so moving and
+zooming the view moves and scales the landscape under the camera. *Camera direction* turns the
+camera around the middle of the terrain (0: from the bottom edge of the image), *Camera
+height* is its angle above the ground, *Camera distance* its distance in image heights and
+*Field of view* its opening angle. Where no terrain is seen, the layer is transparent: the
+layers below and the background show, for example a gradient fill layer as a sky.
+
+The lights, shadows, occlusion and reflections work on the terrain as on the flat relief. A
+small *Relief* (0.02 to 0.2) gives natural landscapes; heights from *Distance* give smooth
+slopes up to the set, *Iterations* a plateau with steep walls. The terrain has as many
+points as the image has pixels, so close-ups of the ground look soft.
+
 Every render pass computes the layer's heights over the whole image before it shades it, so
 a lit layer costs a little more than an unlit one; shadows and occlusion sample the heights
 around each pixel and get smoother with every pass. Editing the lights and the relief does

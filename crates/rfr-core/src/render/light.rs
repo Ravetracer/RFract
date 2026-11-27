@@ -44,6 +44,9 @@ pub struct LightPlan {
     pub environment: Option<Arc<ImageData>>,
     pub horizon: [f32; 3],
     pub zenith: [f32; 3],
+    /// 3D terrain: the camera's direction and pitch (radians), distance (image heights) and
+    /// tan(vertical field of view / 2).
+    pub camera: Option<[f32; 4]>,
 }
 
 impl LightPlan {
@@ -75,6 +78,15 @@ impl LightPlan {
             environment: if l.reflection > 0.0 { crate::images::get(&l.environment) } else { None },
             horizon: l.horizon,
             zenith: l.zenith,
+            camera: l.terrain.then(|| {
+                let c = &l.camera;
+                [
+                    c.yaw.to_radians() as f32,
+                    c.pitch.clamp(-89.0, 89.0).to_radians() as f32,
+                    c.distance.max(0.01) as f32,
+                    (c.fov.clamp(1.0, 170.0).to_radians() * 0.5).tan() as f32,
+                ]
+            }),
         }
     }
 
@@ -145,10 +157,11 @@ fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
 /// Shades `color` (linear RGB, straight alpha) at a point whose heights rise by `gx` per pixel
 /// to the right and `gy` per pixel upward (`k`: [`LightPlan::slope_scale`]); `light_seen` is
 /// the share of each light that reaches the point (shadows), `open` the share of the sky
-/// (ambient occlusion).
-pub fn shade(l: &LightPlan, color: [f32; 4], gx: f32, gy: f32, k: f32, light_seen: &[f32], open: f32) -> [f32; 4] {
+/// (ambient occlusion), `v` the direction toward the viewer ((0, 0, 1) from straight above).
+#[allow(clippy::too_many_arguments)]
+pub fn shade(l: &LightPlan, color: [f32; 4], gx: f32, gy: f32, k: f32, light_seen: &[f32], open: f32, v: [f32; 3]) -> [f32; 4] {
     let n = normalize([-k * gx, -k * gy, 1.0]);
-    let nv = n[2].max(0.05);
+    let nv = dot(n, v).max(0.05);
     let a = l.roughness * l.roughness;
     let mut diffuse = [l.ambient * open; 3];
     let mut spec = [0.0f32; 3];
@@ -161,7 +174,7 @@ pub fn shade(l: &LightPlan, color: [f32; 4], gx: f32, gy: f32, k: f32, light_see
         if nl <= 0.0 {
             continue;
         }
-        let h = normalize([dir[0], dir[1], dir[2] + 1.0]);
+        let h = normalize([dir[0] + v[0], dir[1] + v[1], dir[2] + v[2]]);
         let nh = dot(n, h).max(0.0);
         let s = match l.model {
             SpecularModel::BlinnPhong => {
@@ -185,7 +198,8 @@ pub fn shade(l: &LightPlan, color: [f32; 4], gx: f32, gy: f32, k: f32, light_see
     }
     // Reflection of the environment, stronger at grazing angles.
     if l.reflection > 0.0 {
-        let r = [2.0 * n[2] * n[0], 2.0 * n[2] * n[1], 2.0 * n[2] * n[2] - 1.0];
+        let nd = dot(n, v);
+        let r = [2.0 * nd * n[0] - v[0], 2.0 * nd * n[1] - v[1], 2.0 * nd * n[2] - v[2]];
         let env = l.environment(r);
         let f = l.reflection + (1.0 - l.reflection) * l.reflection * (1.0 - nv).powi(5);
         for c in 0..3 {
@@ -201,6 +215,50 @@ pub struct Field {
     pub width: u32,
     pub height: u32,
     pub data: Vec<[f32; 5]>,
+    /// 3D terrain: the highest surface point (k · height) per cell, level 0 cells spanning
+    /// pixel centers (x, y) to (x + 1, y + 1), each level halving the cells (see [`mip_sizes`]).
+    pub mips: Vec<Vec<f32>>,
+}
+
+/// Limits of the terrain ray: cell visits, search steps in a level-0 cell, bisections.
+pub const TRACE_ITERATIONS: u32 = 1024;
+pub const TRACE_STEPS: u32 = 4;
+pub const TRACE_REFINE: u32 = 8;
+
+/// The cell counts of height maxima level `level`.
+pub fn mip_size(width: u32, height: u32, level: usize) -> (u32, u32) {
+    let (w, h) = (width.max(1), height.max(1));
+    (w.div_ceil(1 << level), h.div_ceil(1 << level))
+}
+
+/// The camera ray through image point (x, y) (pixels) of a terrain field of `width` ×
+/// `height`: origin and unit direction in field units (pixels, y down, z up). The camera
+/// orbits the field's middle at height `zc`.
+pub fn camera_ray(cam: [f32; 4], width: u32, height: u32, zc: f32, x: f32, y: f32) -> ([f32; 3], [f32; 3]) {
+    let (w, h) = (width as f32, height as f32);
+    let [yaw, pitch, dist, tan] = cam;
+    let target = [(w - 1.0) * 0.5, (h - 1.0) * 0.5, zc];
+    let back = [yaw.sin() * pitch.cos(), yaw.cos() * pitch.cos(), pitch.sin()];
+    let o = [target[0] + back[0] * dist * h, target[1] + back[1] * dist * h, target[2] + back[2] * dist * h];
+    let f = [-back[0], -back[1], -back[2]];
+    // Right on the screen (y down: looking north, right is +x), and up (z rising).
+    let r = normalize([-f[1], f[0], 0.0]);
+    let u = [f[1] * r[2] - f[2] * r[1], f[2] * r[0] - f[0] * r[2], f[0] * r[1] - f[1] * r[0]];
+    let sx = (x / w * 2.0 - 1.0) * (w / h) * tan;
+    let sy = (1.0 - y / h * 2.0) * tan;
+    (o, normalize([f[0] + r[0] * sx + u[0] * sy, f[1] + r[1] * sx + u[1] * sy, f[2] + r[2] * sx + u[2] * sy]))
+}
+
+/// The cell counts (width, height) of the height maxima levels, down to one cell.
+pub fn mip_sizes(width: u32, height: u32) -> Vec<(u32, u32)> {
+    let mut out = vec![(width.max(1), height.max(1))];
+    while let Some(&(w, h)) = out.last() {
+        if w == 1 && h == 1 {
+            break;
+        }
+        out.push((w.div_ceil(2), h.div_ceil(2)));
+    }
+    out
 }
 
 /// Steps of a shadow ray and of ambient occlusion (directions × steps).
@@ -215,6 +273,35 @@ fn rnd(state: &mut u32) -> f32 {
 }
 
 impl Field {
+    /// A field; for a 3D terrain with its height maxima.
+    pub fn new(l: &LightPlan, width: u32, height: u32, data: Vec<[f32; 5]>) -> Field {
+        let mut f = Field { width, height, data, mips: Vec::new() };
+        if l.camera.is_some() {
+            let k = l.slope_scale(height);
+            let sizes = mip_sizes(width, height);
+            let mut levels: Vec<Vec<f32>> = Vec::with_capacity(sizes.len());
+            for (lv, &(w, h)) in sizes.iter().enumerate() {
+                let mut m = vec![0.0f32; (w * h) as usize];
+                for y in 0..h as i64 {
+                    for x in 0..w as i64 {
+                        m[(y * w as i64 + x) as usize] = if lv == 0 {
+                            let z = |dx: i64, dy: i64| k * f.at(x + dx, y + dy)[4];
+                            z(0, 0).max(z(1, 0)).max(z(0, 1)).max(z(1, 1))
+                        } else {
+                            let (pw, ph) = sizes[lv - 1];
+                            let prev = &levels[lv - 1];
+                            let p = |dx: i64, dy: i64| prev[((2 * y + dy).min(ph as i64 - 1) * pw as i64 + (2 * x + dx).min(pw as i64 - 1)) as usize];
+                            p(0, 0).max(p(1, 0)).max(p(0, 1)).max(p(1, 1))
+                        };
+                    }
+                }
+                levels.push(m);
+            }
+            f.mips = levels;
+        }
+        f
+    }
+
     fn at(&self, x: i64, y: i64) -> [f32; 5] {
         let (w, h) = (self.width as i64, self.height as i64);
         self.data[(y.clamp(0, h - 1) * w + x.clamp(0, w - 1)) as usize]
@@ -232,28 +319,165 @@ impl Field {
         top + (bottom - top) * fy
     }
 
-    /// The shaded color at pixel (x, y) in pass `s`: central differences of the heights
-    /// (one-sided at the image border), shadows and ambient occlusion.
+    /// The color (bilinear) at a point in pixel units.
+    pub fn color_at(&self, x: f32, y: f32) -> [f32; 4] {
+        let (x0, y0) = (x.floor(), y.floor());
+        let (fx, fy) = (x - x0, y - y0);
+        let (xi, yi) = (x0 as i64, y0 as i64);
+        let (a, b, c, d) = (self.at(xi, yi), self.at(xi + 1, yi), self.at(xi, yi + 1), self.at(xi + 1, yi + 1));
+        std::array::from_fn(|k| {
+            let top = a[k] + (b[k] - a[k]) * fx;
+            let bottom = c[k] + (d[k] - c[k]) * fx;
+            top + (bottom - top) * fy
+        })
+    }
+
+    /// The layer's color at pixel (x, y) in pass `s`: from straight above, or the terrain seen
+    /// by the camera.
     pub fn shade(&self, l: &LightPlan, x: u32, y: u32, s: u32) -> [f32; 4] {
-        let (xi, yi) = (x as i64, y as i64);
-        let c = self.at(xi, yi);
-        let gx = (self.at(xi + 1, yi)[4] - self.at(xi - 1, yi)[4]) * 0.5;
-        let gy = (self.at(xi, yi - 1)[4] - self.at(xi, yi + 1)[4]) * 0.5;
-        let k = l.slope_scale(self.height);
         let mut rng = super::hash(x ^ super::hash(y ^ super::hash(s ^ 0x3C6E_F372)));
-        let (px, py) = (x as f32, y as f32);
-        let z0 = k * c[4];
+        let Some(cam) = l.camera else {
+            let (xi, yi) = (x as i64, y as i64);
+            let c = self.at(xi, yi);
+            let gx = (self.at(xi + 1, yi)[4] - self.at(xi - 1, yi)[4]) * 0.5;
+            let gy = (self.at(xi, yi - 1)[4] - self.at(xi, yi + 1)[4]) * 0.5;
+            return self.shade_point(l, [c[0], c[1], c[2], c[3]], x as f32, y as f32, c[4], gx, gy, [0.0, 0.0, 1.0], &mut rng);
+        };
+        let (u, v, _) = super::sample_offset(x, y, s);
+        let (o, d) = camera_ray(
+            cam,
+            self.width,
+            self.height,
+            l.slope_scale(self.height) * self.height_at((self.width as f32 - 1.0) * 0.5, (self.height as f32 - 1.0) * 0.5),
+            x as f32 + u as f32,
+            y as f32 + v as f32,
+        );
+        let Some((hx, hy)) = self.trace(o, d, l.slope_scale(self.height)) else { return [0.0; 4] };
+        let h = |dx: f32, dy: f32| self.height_at(hx + dx, hy + dy);
+        let gx = (h(1.0, 0.0) - h(-1.0, 0.0)) * 0.5;
+        let gy = (h(0.0, -1.0) - h(0.0, 1.0)) * 0.5;
+        // Toward the viewer, with y up like the lights.
+        let view = [-d[0], d[1], -d[2]];
+        self.shade_point(l, self.color_at(hx, hy), hx, hy, h(0.0, 0.0), gx, gy, view, &mut rng)
+    }
+
+    /// Shades the field's surface at (px, py) with height `h0` and slopes `gx`, `gy`: shadows,
+    /// ambient occlusion, then [`shade`].
+    #[allow(clippy::too_many_arguments)]
+    fn shade_point(&self, l: &LightPlan, color: [f32; 4], px: f32, py: f32, h0: f32, gx: f32, gy: f32, v: [f32; 3], rng: &mut u32) -> [f32; 4] {
+        let k = l.slope_scale(self.height);
+        let z0 = k * h0;
         let mut seen = [1.0f32; crate::doc::MAX_LIGHTS];
         let len = l.shadow * self.height as f32;
         if len > 0.0 {
             for (i, (dir, _)) in l.lights.iter().enumerate() {
-                seen[i] = self.shadow(dir, px, py, z0, k, len, l.softness, rnd(&mut rng));
+                seen[i] = self.shadow(dir, px, py, z0, k, len, l.softness, rnd(rng));
             }
         }
         let radius = l.occlusion_radius * self.height as f32;
-        let open =
-            if l.occlusion > 0.0 && radius > 0.0 { self.occlusion(px, py, z0, k, radius, l.occlusion, rnd(&mut rng), rnd(&mut rng)) } else { 1.0 };
-        shade(l, [c[0], c[1], c[2], c[3]], gx, gy, k, &seen, open)
+        let open = if l.occlusion > 0.0 && radius > 0.0 { self.occlusion(px, py, z0, k, radius, l.occlusion, rnd(rng), rnd(rng)) } else { 1.0 };
+        shade(l, color, gx, gy, k, &seen, open, v)
+    }
+
+    fn mip(&self, level: usize, x: i64, y: i64) -> f32 {
+        let (w, h) = mip_size(self.width, self.height, level);
+        let (w, h) = (w as i64, h as i64);
+        self.mips[level][(y.clamp(0, h - 1) * w + x.clamp(0, w - 1)) as usize]
+    }
+
+    /// Where the ray from `o` in direction `d` (pixel units, y down, z up; z = k · height)
+    /// first meets the surface, in pixel units; `None` when it misses the field. Cells whose
+    /// highest point stays below the ray are skipped level by level; in a level-0 cell the
+    /// bilinear surface is searched in steps and the crossing refined by bisection.
+    pub fn trace(&self, o: [f32; 3], d: [f32; 3], k: f32) -> Option<(f32, f32)> {
+        if self.mips.is_empty() {
+            return None;
+        }
+        let top = self.mips.len() - 1;
+        let (xmax, ymax) = ((self.width as f32 - 1.0).max(0.0), (self.height as f32 - 1.0).max(0.0));
+        // The part of the ray over the field and below its highest point.
+        let mut t0 = 0.0f32;
+        let mut t1 = f32::INFINITY;
+        for (oa, da, hi) in [(o[0], d[0], xmax), (o[1], d[1], ymax)] {
+            if da.abs() < 1e-12 {
+                if oa < 0.0 || oa > hi {
+                    return None;
+                }
+            } else {
+                let (a, b) = (-oa / da, (hi - oa) / da);
+                t0 = t0.max(a.min(b));
+                t1 = t1.min(a.max(b));
+            }
+        }
+        let zt = self.mip(top, 0, 0);
+        if o[2] > zt {
+            if d[2] >= 0.0 {
+                return None;
+            }
+            t0 = t0.max((zt - o[2]) / d[2]);
+        }
+        if t0 > t1 {
+            return None;
+        }
+        let at = |t: f32| (o[0] + d[0] * t, o[1] + d[1] * t);
+        let above = |t: f32| {
+            let (x, y) = at(t);
+            o[2] + d[2] * t - k * self.height_at(x, y)
+        };
+        let mut t = t0;
+        let mut level = top;
+        for _ in 0..TRACE_ITERATIONS {
+            if t > t1 {
+                return None;
+            }
+            let (px, py) = at(t);
+            let size = (1u32 << level) as f32;
+            let (cx, cy) = ((px / size).floor(), (py / size).floor());
+            // Where the ray leaves the cell.
+            let mut te = t1;
+            for (pa, da, c) in [(o[0], d[0], cx), (o[1], d[1], cy)] {
+                if da > 1e-12 {
+                    te = te.min(((c + 1.0) * size - pa) / da);
+                } else if da < -1e-12 {
+                    te = te.min((c * size - pa) / da);
+                }
+            }
+            let te = te.max(t);
+            let zmax = self.mip(level, cx as i64, cy as i64);
+            if (o[2] + d[2] * t).min(o[2] + d[2] * te) > zmax {
+                t = te + 1e-3;
+                level = (level + 1).min(top);
+                continue;
+            }
+            if level > 0 {
+                level -= 1;
+                continue;
+            }
+            // Level 0: search the bilinear surface between t and te, refine the crossing.
+            if above(t) <= 0.0 {
+                return Some(at(t));
+            }
+            let mut a = t;
+            for j in 1..=TRACE_STEPS {
+                let b = t + (te - t) * j as f32 / TRACE_STEPS as f32;
+                if above(b) <= 0.0 {
+                    let (mut lo, mut hi) = (a, b);
+                    for _ in 0..TRACE_REFINE {
+                        let m = 0.5 * (lo + hi);
+                        if above(m) <= 0.0 {
+                            hi = m;
+                        } else {
+                            lo = m;
+                        }
+                    }
+                    return Some(at(hi));
+                }
+                a = b;
+            }
+            t = te + 1e-3;
+            level = 1.min(top);
+        }
+        None
     }
 
     /// The share of a light reaching (px, py) at height `z0` (pixel units): along the ray
@@ -325,15 +549,15 @@ mod tests {
         for model in [SpecularModel::BlinnPhong, SpecularModel::Ggx] {
             let l = plan(model);
             let grey = [0.5, 0.5, 0.5, 1.0];
-            let flat = shade(&l, grey, 0.0, 0.0, 1.0, &[], 1.0);
+            let flat = shade(&l, grey, 0.0, 0.0, 1.0, &[], 1.0, [0.0, 0.0, 1.0]);
             // Heights falling to the right face the light on the right.
-            let facing = shade(&l, grey, -0.5, 0.0, 1.0, &[], 1.0);
-            let away = shade(&l, grey, 0.5, 0.0, 1.0, &[], 1.0);
+            let facing = shade(&l, grey, -0.5, 0.0, 1.0, &[], 1.0, [0.0, 0.0, 1.0]);
+            let away = shade(&l, grey, 0.5, 0.0, 1.0, &[], 1.0, [0.0, 0.0, 1.0]);
             assert!(facing[0] > flat[0] && flat[0] > away[0], "{model:?}: {facing:?} {flat:?} {away:?}");
             assert_eq!(flat[3], 1.0);
             // Without lights only the ambient part remains.
             let dark = LightPlan { lights: Vec::new(), ..l.clone() };
-            assert!((shade(&dark, grey, 0.3, 0.1, 1.0, &[], 1.0)[1] - 0.5 * l.ambient).abs() < 1e-6);
+            assert!((shade(&dark, grey, 0.3, 0.1, 1.0, &[], 1.0, [0.0, 0.0, 1.0])[1] - 0.5 * l.ambient).abs() < 1e-6);
         }
     }
 
@@ -342,10 +566,10 @@ mod tests {
         // Heights rise to the right: the normal leans left, away from a light on the right.
         let (w, h) = (5u32, 4u32);
         let data = (0..w * h).map(|i| [0.5, 0.5, 0.5, 1.0, (i % w) as f32 * 0.01]).collect();
-        let f = Field { width: w, height: h, data };
+        let f = Field { width: w, height: h, data, mips: Vec::new() };
         let l = plan(SpecularModel::Ggx);
         let lit = f.shade(&l, 2, 2, 0);
-        let flat = shade(&l, [0.5, 0.5, 0.5, 1.0], 0.0, 0.0, l.slope_scale(h), &[], 1.0);
+        let flat = shade(&l, [0.5, 0.5, 0.5, 1.0], 0.0, 0.0, l.slope_scale(h), &[], 1.0, [0.0, 0.0, 1.0]);
         assert!(lit[0] < flat[0], "{lit:?} vs {flat:?}");
     }
 
@@ -354,7 +578,7 @@ mod tests {
         // Flat ground with a wall at x = 10..12, light from the left (azimuth 180°), low.
         let (w, h) = (40u32, 20u32);
         let data = (0..w * h).map(|i| [0.5, 0.5, 0.5, 1.0, if (10..12).contains(&(i % w)) { 0.05 } else { 0.0 }]).collect();
-        let f = Field { width: w, height: h, data };
+        let f = Field { width: w, height: h, data, mips: Vec::new() };
         let mut lighting = Lighting { enabled: true, shadows: true, softness: 0.0, ..Lighting::default() };
         lighting.lights = vec![Light { azimuth: 180.0, elevation: 20.0, ..Light::default() }];
         let l = LightPlan::new(&lighting);

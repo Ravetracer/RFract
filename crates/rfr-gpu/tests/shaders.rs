@@ -193,6 +193,14 @@ fn gpu_matches_the_cpu_renderer() {
         im.layers[0].light.reflection = 0.6;
         im.layers[0].light.environment = env.display().to_string();
         cases.push(("lit environment image".into(), im));
+        // A 3D terrain with shadows, seen from the side.
+        let mut ter = de.clone();
+        let l = &mut ter.layers[0].light;
+        l.relief = 0.05;
+        l.terrain = true;
+        l.shadows = true;
+        l.camera.yaw = 30.0;
+        cases.push(("lit terrain".into(), ter));
     }
     let mut julia = Document::for_formula("rfract:Mandelbrot");
     julia.layers[0].julia = true;

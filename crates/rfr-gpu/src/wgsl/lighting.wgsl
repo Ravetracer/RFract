@@ -39,6 +39,203 @@ fn l_rnd(state: ptr<function, u32>) -> f32 {
     return f32(*state >> 8u) / 16777216.0;
 }
 
+// rfr_core::render::light::Field::color_at
+fn l_color_at(x: f32, y: f32) -> vec4<f32> {
+    let x0 = floor(x);
+    let y0 = floor(y);
+    let xi = i32(x0);
+    let yi = i32(y0);
+    let top = mix(l_color(xi, yi), l_color(xi + 1, yi), x - x0);
+    let bottom = mix(l_color(xi, yi + 1), l_color(xi + 1, yi + 1), x - x0);
+    return mix(top, bottom, y - y0);
+}
+
+fn l_color(x: i32, y: i32) -> vec4<f32> {
+    let xx = u32(clamp(x, 0, i32(U.size.x) - 1));
+    let yy = u32(clamp(y, 0, i32(U.size.y) - 1));
+    let c = field[yy * U.size.x + xx];
+    return vec4<f32>(unpack2x16unorm(c.x), unpack2x16unorm(c.y));
+}
+
+// Height maxima (rfr_core::render::light::Field::mips) after the field, one f32 per cell,
+// four per vec4: the cell counts and the first word of each level.
+fn l_mip_size(level: u32) -> vec2<u32> {
+    let s = (1u << level) - 1u;
+    return vec2<u32>((max(U.size.x, 1u) + s) >> level, (max(U.size.y, 1u) + s) >> level);
+}
+
+fn l_mip_base(level: u32) -> u32 {
+    var base = U.size.x * U.size.y * 4u;
+    for (var l = 0u; l < level; l = l + 1u) {
+        let n = l_mip_size(l);
+        base = base + n.x * n.y;
+    }
+    return base;
+}
+
+fn l_mip_levels() -> u32 {
+    var l = 0u;
+    loop {
+        let n = l_mip_size(l);
+        if n.x == 1u && n.y == 1u {
+            break;
+        }
+        l = l + 1u;
+    }
+    return l + 1u;
+}
+
+fn l_mip_get(base: u32, level: u32, x: i32, y: i32) -> f32 {
+    let n = l_mip_size(level);
+    let xx = u32(clamp(x, 0, i32(n.x) - 1));
+    let yy = u32(clamp(y, 0, i32(n.y) - 1));
+    let m = base + yy * n.x + xx;
+    return bitcast<f32>(field[m / 4u][m % 4u]);
+}
+
+// One level of the height maxima (operation 3, level in band.z): level 0 from the four
+// heights around each cell (times the slope scale), higher levels from 2 × 2 cells below.
+@compute @workgroup_size(8, 8)
+fn lmip(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let level = U.band.z;
+    let n = l_mip_size(level);
+    if gid.x >= n.x || gid.y >= n.y {
+        return;
+    }
+    let x = i32(gid.x);
+    let y = i32(gid.y);
+    var v: f32;
+    if level == 0u {
+        let k = U.light.y;
+        v = max(max(k * l_height(x, y), k * l_height(x + 1, y)), max(k * l_height(x, y + 1), k * l_height(x + 1, y + 1)));
+    } else {
+        let pb = l_mip_base(level - 1u);
+        let p = l_mip_size(level - 1u);
+        let x2 = 2 * x;
+        let y2 = 2 * y;
+        let xb = min(x2 + 1, i32(p.x) - 1);
+        let yb = min(y2 + 1, i32(p.y) - 1);
+        v = max(max(l_mip_get(pb, level - 1u, x2, y2), l_mip_get(pb, level - 1u, xb, y2)), max(l_mip_get(pb, level - 1u, x2, yb), l_mip_get(pb, level - 1u, xb, yb)));
+    }
+    let m = l_mip_base(level) + gid.y * n.x + gid.x;
+    field[m / 4u][m % 4u] = bitcast<u32>(v);
+}
+
+// rfr_core::render::light::camera_ray: origin and direction (field pixels, y down, z up).
+fn l_camera_ray(zc: f32, x: f32, y: f32) -> array<vec3<f32>, 2> {
+    let w = f32(U.size.x);
+    let h = f32(U.size.y);
+    let yaw = U.lcam.x;
+    let pitch = U.lcam.y;
+    let dist = U.lcam.z;
+    let tn = U.lcam.w;
+    let target_ = vec3<f32>((w - 1.0) * 0.5, (h - 1.0) * 0.5, zc);
+    let back = vec3<f32>(sin(yaw) * cos(pitch), cos(yaw) * cos(pitch), sin(pitch));
+    let o = target_ + back * dist * h;
+    let f = -back;
+    let r = normalize(vec3<f32>(-f.y, f.x, 0.0));
+    let u = cross(f, r);
+    let sx = (x / w * 2.0 - 1.0) * (w / h) * tn;
+    let sy = (1.0 - y / h * 2.0) * tn;
+    return array<vec3<f32>, 2>(o, normalize(f + r * sx + u * sy));
+}
+
+fn l_above(o: vec3<f32>, d: vec3<f32>, k: f32, t: f32) -> f32 {
+    return o.z + d.z * t - k * l_height_at(o.x + d.x * t, o.y + d.y * t);
+}
+
+// rfr_core::render::light::Field::trace: the hit (x, y, 1), or z = 0 for a miss.
+fn l_trace(o: vec3<f32>, d: vec3<f32>, k: f32) -> vec3<f32> {
+    let levels = l_mip_levels();
+    let top = levels - 1u;
+    var bases: array<u32, 32>;
+    for (var l = 0u; l < levels; l = l + 1u) {
+        bases[l] = l_mip_base(l);
+    }
+    let xmax = max(f32(U.size.x) - 1.0, 0.0);
+    let ymax = max(f32(U.size.y) - 1.0, 0.0);
+    var t0 = 0.0;
+    var t1 = 3.4e38;
+    let oa = vec2<f32>(o.x, o.y);
+    let da = vec2<f32>(d.x, d.y);
+    let hi = vec2<f32>(xmax, ymax);
+    for (var a = 0; a < 2; a = a + 1) {
+        if abs(da[a]) < 1e-12 {
+            if oa[a] < 0.0 || oa[a] > hi[a] {
+                return vec3<f32>(0.0);
+            }
+        } else {
+            let ta = -oa[a] / da[a];
+            let tb = (hi[a] - oa[a]) / da[a];
+            t0 = max(t0, min(ta, tb));
+            t1 = min(t1, max(ta, tb));
+        }
+    }
+    let zt = l_mip_get(bases[top], top, 0, 0);
+    if o.z > zt {
+        if d.z >= 0.0 {
+            return vec3<f32>(0.0);
+        }
+        t0 = max(t0, (zt - o.z) / d.z);
+    }
+    if t0 > t1 {
+        return vec3<f32>(0.0);
+    }
+    var t = t0;
+    var level = top;
+    for (var it = 0u; it < 1024u; it = it + 1u) {
+        if t > t1 {
+            return vec3<f32>(0.0);
+        }
+        let p = oa + da * t;
+        let size = f32(1u << level);
+        let c = floor(p / size);
+        var te = t1;
+        for (var a = 0; a < 2; a = a + 1) {
+            if da[a] > 1e-12 {
+                te = min(te, ((c[a] + 1.0) * size - oa[a]) / da[a]);
+            } else if da[a] < -1e-12 {
+                te = min(te, (c[a] * size - oa[a]) / da[a]);
+            }
+        }
+        te = max(te, t);
+        let zmax = l_mip_get(bases[level], level, i32(c.x), i32(c.y));
+        if min(o.z + d.z * t, o.z + d.z * te) > zmax {
+            t = te + 1e-3;
+            level = min(level + 1u, top);
+            continue;
+        }
+        if level > 0u {
+            level = level - 1u;
+            continue;
+        }
+        if l_above(o, d, k, t) <= 0.0 {
+            return vec3<f32>(p, 1.0);
+        }
+        var a = t;
+        for (var j = 1u; j <= 4u; j = j + 1u) {
+            let b = t + (te - t) * f32(j) / 4.0;
+            if l_above(o, d, k, b) <= 0.0 {
+                var lo = a;
+                var hi2 = b;
+                for (var r = 0u; r < 8u; r = r + 1u) {
+                    let m = 0.5 * (lo + hi2);
+                    if l_above(o, d, k, m) <= 0.0 {
+                        hi2 = m;
+                    } else {
+                        lo = m;
+                    }
+                }
+                return vec3<f32>(oa + da * hi2, 1.0);
+            }
+            a = b;
+        }
+        t = te + 1e-3;
+        level = min(1u, top);
+    }
+    return vec3<f32>(0.0);
+}
+
 // rfr_core::render::light::Field::shadow
 fn l_shadow(dir: vec3<f32>, px: f32, py: f32, z0: f32, k: f32, len: f32, soft: f32, jitter: f32) -> f32 {
     let hl = length(dir.xy);
@@ -101,10 +298,10 @@ fn l_environment(r: vec3<f32>) -> vec3<f32> {
 }
 
 // rfr_core::render::light::shade
-fn l_shade(color: vec4<f32>, gx: f32, gy: f32, seen: array<f32, 4>, open: f32) -> vec4<f32> {
+fn l_shade(color: vec4<f32>, gx: f32, gy: f32, seen: array<f32, 4>, open: f32, v: vec3<f32>) -> vec4<f32> {
     let k = U.light.y;
     let n = normalize(vec3<f32>(-k * gx, -k * gy, 1.0));
-    let nv = max(n.z, 0.05);
+    let nv = max(dot(n, v), 0.05);
     let a = U.light.w * U.light.w;
     var diffuse = vec3<f32>(U.light.x * open);
     var spec = vec3<f32>(0.0);
@@ -117,7 +314,7 @@ fn l_shade(color: vec4<f32>, gx: f32, gy: f32, seen: array<f32, 4>, open: f32) -
         if nl <= 0.0 {
             continue;
         }
-        let h = normalize(dir + vec3<f32>(0.0, 0.0, 1.0));
+        let h = normalize(dir + v);
         let nh = max(dot(n, h), 0.0);
         var s = 0.0;
         if U.lighti.z == 0u {
@@ -136,7 +333,7 @@ fn l_shade(color: vec4<f32>, gx: f32, gy: f32, seen: array<f32, 4>, open: f32) -
     // Reflection of the environment, stronger at grazing angles.
     let refl = U.lenv.x;
     if refl > 0.0 {
-        let r = vec3<f32>(2.0 * n.z * n.x, 2.0 * n.z * n.y, 2.0 * n.z * n.z - 1.0);
+        let r = 2.0 * dot(n, v) * n - v;
         let f = refl + (1.0 - refl) * refl * pow(1.0 - nv, 5.0);
         out = out * (1.0 - f) + l_environment(r) * f;
     }
@@ -150,18 +347,49 @@ fn lit(@builtin(global_invocation_id) gid: vec3<u32>) {
     if x >= U.size.x || gid.y >= U.band.x || y >= U.size.y {
         return;
     }
-    let c = field[y * U.size.x + x];
-    let color = vec4<f32>(unpack2x16unorm(c.x), unpack2x16unorm(c.y));
-    let xi = i32(x);
-    let yi = i32(y);
-    let gx = (l_height(xi + 1, yi) - l_height(xi - 1, yi)) * 0.5;
-    let gy = (l_height(xi, yi - 1) - l_height(xi, yi + 1)) * 0.5;
-    // Shadows and ambient occlusion (the same random numbers as the CPU).
     let k = U.light.y;
-    let z0 = k * bitcast<f32>(c.z);
-    let px = f32(x);
-    let py = f32(y);
     var rng = hash(x ^ hash(y ^ hash(U.size.z ^ 0x3C6EF372u)));
+    var color: vec4<f32>;
+    var px: f32;
+    var py: f32;
+    var h0: f32;
+    var gx: f32;
+    var gy: f32;
+    var view = vec3<f32>(0.0, 0.0, 1.0);
+    if U.lighti.w == 0u {
+        let c = field[y * U.size.x + x];
+        color = vec4<f32>(unpack2x16unorm(c.x), unpack2x16unorm(c.y));
+        let xi = i32(x);
+        let yi = i32(y);
+        gx = (l_height(xi + 1, yi) - l_height(xi - 1, yi)) * 0.5;
+        gy = (l_height(xi, yi - 1) - l_height(xi, yi + 1)) * 0.5;
+        px = f32(x);
+        py = f32(y);
+        h0 = bitcast<f32>(c.z);
+    } else {
+        // 3D terrain: the camera ray through the pixel's sample position (render::sample_offset).
+        let ha = hash(x ^ hash(y + 0x68E31DA4u));
+        let hb = hash(ha);
+        let ju = f32(ha + U.size.z * 0xC13FA9A9u) / 4294967296.0;
+        let jv = f32(hb + U.size.z * 0x91E10DA6u) / 4294967296.0;
+        let zc = k * l_height_at((f32(U.size.x) - 1.0) * 0.5, (f32(U.size.y) - 1.0) * 0.5);
+        let ray = l_camera_ray(zc, f32(x) + ju, f32(y) + jv);
+        let hit = l_trace(ray[0], ray[1], k);
+        if hit.z == 0.0 {
+            l_blend(gid, x, vec4<f32>(0.0));
+            return;
+        }
+        px = hit.x;
+        py = hit.y;
+        color = l_color_at(px, py);
+        h0 = l_height_at(px, py);
+        gx = (l_height_at(px + 1.0, py) - l_height_at(px - 1.0, py)) * 0.5;
+        gy = (l_height_at(px, py - 1.0) - l_height_at(px, py + 1.0)) * 0.5;
+        let d = ray[1];
+        view = vec3<f32>(-d.x, d.y, -d.z);
+    }
+    // Shadows and ambient occlusion (the same random numbers as the CPU).
+    let z0 = k * h0;
     var seen = array<f32, 4>(1.0, 1.0, 1.0, 1.0);
     if U.lshadow.x > 0.0 {
         for (var i = 0u; i < U.lighti.y; i = i + 1u) {
@@ -174,7 +402,11 @@ fn lit(@builtin(global_invocation_id) gid: vec3<u32>) {
         let jitter = l_rnd(&rng);
         open = l_occlusion(px, py, z0, k, U.lshadow.w, U.lshadow.z, turn, jitter);
     }
-    let col = l_shade(color, gx, gy, seen, open);
+    l_blend(gid, x, l_shade(color, gx, gy, seen, open, view));
+}
+
+// Blends a lit layer's color into its scratch slot like kernel `main`.
+fn l_blend(gid: vec3<u32>, x: u32, col: vec4<f32>) {
     let li = gid.y * U.size.x + x;
     let dst = U.band.z * U.blend.y + li;
     if U.band.y == 1u {

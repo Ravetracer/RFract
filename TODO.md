@@ -13,8 +13,10 @@ that come up along the way.
       Open: beyond the image border the heights continue the edge (a high edge casts shadows
       from outside); a field margin of the shadow length would fix that.
 - [x] Environment reflections (gradient sky or image), distance estimation as height source.
-- [ ] 3D height view: the field as a terrain under a perspective camera (height-field
-      raymarching on the GPU), optional path tracing into OIDN.
+- [x] 3D height view: the field as a terrain under a perspective camera (height-field
+      ray tracing over a maximum pyramid, CPU and GPU).
+- [ ] Terrain: orbit and dolly the camera with the mouse; a terrain larger than the view
+      (more detail near the camera); optional path tracing into OIDN.
 - [ ] 3D object layers: Mandelbulb, quaternion/bicomplex Julia and a few DE formulas,
       raymarched with the same lights.
 - [ ] Exit: lit 2.5D renders, fly-over of a Mandelbrot landscape (camera path).

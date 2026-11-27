@@ -11,7 +11,8 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
   light and highlights (GGX or Blinn-Phong) from up to four colored lights; on the GPU and
   the CPU. Brightness heights on image layers give bump maps. Soft shadows over the relief,
   ambient occlusion, reflections of a sky or a panorama image, heights from distance
-  estimation.
+  estimation. *3D terrain* shows the relief as a landscape under an orbiting perspective
+  camera (height-field ray tracing over a maximum pyramid of the heights).
 
 ### Fixed
 
