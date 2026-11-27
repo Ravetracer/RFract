@@ -7,6 +7,7 @@
 pub mod animation;
 pub mod audio;
 pub mod doc;
+pub mod explore;
 pub mod expr;
 pub mod formula;
 pub mod gradient;

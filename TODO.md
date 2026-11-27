@@ -3,6 +3,17 @@
 The stages and their scope are in PLAN.md. This file holds the next concrete steps and wishes
 that come up along the way.
 
+## Stage 9 – Explore, scale, polish
+
+- [x] Explore lane: presets (the manual's examples), random documents framed by zooming into
+      the busiest part of a neutral preview, mutations (parameters, colors, view, formula),
+      quality filter (noise and contrast of the thumbnail), snapshots.
+- [ ] Tiled poster renders (20k+ px, tile-wise denoising).
+- [ ] Render queue polish (job settings: size, samples, frames; tiled posters as jobs).
+- [ ] Performance: adaptive AA, CPU guessing/boundary tracing, shader cache on disk.
+- [ ] Complete manual with how-tos and example documents.
+- [ ] Optional: network rendering (`rfr-net`), Lua scripting, shared crate extraction.
+
 ## Stage 8 – Animation
 
 - [x] Core: keyframes as documents, JSON blend (monotone cubic, log fields, unwrapped angles),

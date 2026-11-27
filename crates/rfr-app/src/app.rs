@@ -60,6 +60,7 @@ pub struct App {
     timeline: crate::timeline::Timeline,
     anim_export: crate::anim_export::AnimExport,
     queue: crate::queue_window::QueueWindow,
+    explorer: crate::explorer::Explorer,
     /// Gradient editor window: outside (false) or inside (true) coloring.
     gradient_window: Option<bool>,
     title: String,
@@ -131,6 +132,7 @@ impl App {
             timeline: Default::default(),
             anim_export: Default::default(),
             queue: crate::queue_window::QueueWindow::new(),
+            explorer: Default::default(),
             show_explore: false,
             doc: Doc::new(Document::for_formula("rfract:Mandelbrot")),
             selection: Selection::layer(vec![0]),
@@ -646,7 +648,8 @@ impl App {
                 ui.separator();
                 ui.checkbox(&mut self.show_timeline, "Timeline")
                     .on_hover_text("Show the animation timeline below the view: keyframes, playback, timing, export");
-                ui.checkbox(&mut self.show_explore, "Explore lane").on_hover_text("Show the explore lane below the view (later stage)");
+                ui.checkbox(&mut self.show_explore, "Explore lane")
+                    .on_hover_text("Show the explore lane below the view: presets, random fractals, mutations of the document and snapshots");
             });
             ui.menu_button("Help", |ui| {
                 ui.set_min_width(220.0);
@@ -1026,13 +1029,20 @@ impl eframe::App for App {
             }
         }
         if self.show_explore {
+            let mut picked = None;
             egui::Panel::bottom("explore")
                 .resizable(false)
-                .exact_size(120.0)
+                .exact_size(self.explorer.lane_height())
                 .frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(12, 8)))
                 .show(ui, |ui| {
-                    ui.label(RichText::new("Explore lane: presets, random documents and mutations (later stage)").color(theme::TEXT_MUTED));
+                    picked = self.explorer.show(ui, &self.doc.doc, self.viewport.gpu_context());
                 });
+            if let Some((name, doc)) = picked {
+                self.timeline.stop_preview();
+                self.doc.replace(doc);
+                self.selection = Selection::layer(vec![0]);
+                self.notify(format!("Took {name} (Ctrl+Z goes back)"));
+            }
         }
         let mut timeline_action = None;
         if self.show_timeline {

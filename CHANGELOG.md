@@ -4,6 +4,12 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
 
 ## [Unreleased]
 
+### Added
+
+- Explore lane (*View › Explore lane*): presets, batches of random fractals (escape time,
+  Julia sets, root finding, lit reliefs) framed at their edge, mutations of the current
+  document (parameters, colors, view, formula), a quality filter and snapshots.
+
 ## [0.9.0] - 2026-11-27
 
 ### Added
