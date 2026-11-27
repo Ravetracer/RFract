@@ -5,6 +5,8 @@ the view, the layers with their formulas, colors, lights and effects. Between ke
 number blends smoothly; texts and choices (a formula, a coloring method) change at the
 keyframe. The *Timeline* (View › Timeline) shows the animation below the view.
 
+![The timeline below the view: transport and time bar, keyframes, timing and sound; the explore lane at the bottom](images/timeline-explore.png)
+
 ## Keyframes
 
 Set up the view and the layers as the animation should start and press **Add** in the

@@ -107,6 +107,8 @@ rfr-cli --formula-dir ~/formulas render "user:fractint.frm:Daisy" -o daisy.png
 
 ## Render queue
 
+![The render queue with the settings of a poster job](images/render-queue.png)
+
 *File › Render queue…* renders images and animations one after the other, for example
 overnight. **Add this image…** and **Add this animation…** queue a copy of the current
 document as it is now (you can keep editing it), with the file to write; **Add document
