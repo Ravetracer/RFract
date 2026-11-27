@@ -1257,6 +1257,25 @@ impl GpuRenderer {
     }
 
     /// Waits until the shaders of the current plan are compiled.
+    /// Waits for the reference orbits computed in the background (deep zooms) and takes them:
+    /// a finished render (an export, an animation frame) must not use the old orbit of a
+    /// nearby view.
+    pub fn wait_for_orbits(&mut self) {
+        let mut any = false;
+        for l in &mut self.layers {
+            if let Some(j) = l.orbit_job.as_mut()
+                && j.done.is_none()
+                && let Ok(o) = j.rx.recv()
+            {
+                j.done = Some(o);
+                any = true;
+            }
+        }
+        if any && let Some(p) = self.last_plan.clone() {
+            self.set_plan(&p);
+        }
+    }
+
     pub fn wait_for_pipeline(&mut self) -> Result<(), String> {
         for (_, rx) in std::mem::take(&mut self.pending) {
             let _ = rx.recv();

@@ -23,6 +23,9 @@ pub struct Document {
     pub layers: Vec<Layer>,
     /// Effects on the finished image (`render::post`).
     pub post: Post,
+    /// The animation (keyframes are whole documents).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub animation: Option<Box<crate::animation::Animation>>,
 }
 
 /// The tone curve that changes nothing.
@@ -1216,7 +1219,14 @@ impl Default for View {
 
 impl Default for Document {
     fn default() -> Self {
-        Document { version: DOC_VERSION, image: Image::default(), view: View::default(), layers: vec![Layer::default()], post: Post::default() }
+        Document {
+            version: DOC_VERSION,
+            image: Image::default(),
+            view: View::default(),
+            layers: vec![Layer::default()],
+            post: Post::default(),
+            animation: None,
+        }
     }
 }
 

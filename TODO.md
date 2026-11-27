@@ -3,6 +3,21 @@
 The stages and their scope are in PLAN.md. This file holds the next concrete steps and wishes
 that come up along the way.
 
+## Stage 8 – Animation
+
+- [x] Core: keyframes as documents, JSON blend (monotone cubic, log fields, unwrapped angles),
+      view path (log zoom, target in place, exact centers), timing per keyframe or steady,
+      palette rotation, motion blur (sub-frames over the shutter).
+- [x] Frame rendering (one renderer for all frames, reference orbits waited for), video
+      through ffmpeg (H.264, H.265, AV1, ProRes, VP9, GIF) or PNG frames, `rfr-cli animate`.
+- [ ] Timeline in the app: keyframes from the current document, scrubbing, preview playback,
+      animation export with progress.
+- [ ] Deep-zoom sequence mode: one image per 2× zoom step, frames composed by scaling.
+- [ ] Flight recording → keyframes, cameraman smoothing.
+- [ ] Drivers and expressions, audio-reactive values, render queue.
+- [ ] Exit: 1-minute 1080p deep zoom with palette rotation and motion blur (app and CLI);
+      fly-over of a lit Mandelbrot landscape.
+
 ## Stage 7 – Effects and textures
 
 - [x] Global post: exposure, tone mapping (Reinhard, ACES, filmic, AgX), contrast,

@@ -4,6 +4,7 @@
 //! formula language and library, gradients, the CPU reference renderer, the denoiser glue and
 //! the platform folders.
 
+pub mod animation;
 pub mod doc;
 pub mod formula;
 pub mod gradient;
@@ -14,6 +15,7 @@ pub mod math;
 pub mod palette;
 pub mod paths;
 pub mod render;
+pub mod video;
 
 /// The program version (one version for all crates).
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

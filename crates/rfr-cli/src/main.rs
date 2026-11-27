@@ -21,6 +21,15 @@ Commands:
       -s, --samples <n>      Samples per pixel (default: the document's)
       --cpu                  Render on the CPU (the reference renderer)
       --entry <name>         The image of a parameter file (.upr, .par; default: the first)
+  animate <input.rfr> [options]
+                             Render the document's animation: a movie through ffmpeg (.mp4,
+                             .mov, .webm, .gif) or numbered PNG files in a folder
+      -o, --output <path>    Movie file or folder (default: <input name>.mp4)
+      -W, -H, -s             Size and samples per pixel (default: the document's)
+      --format <name>        mp4, hevc, av1, prores, webm, gif or png (default: by extension)
+      --from <n>, --to <n>   First and last frame (default: all)
+      --cpu                  Render on the CPU
+      --ffmpeg <program>     The ffmpeg program (default: found on the search path)
   formulas                   List the built-in formulas with their ids
   formulas --check <path>…   Compile formula files (.ufm, .ucl, .uxf, .frm) or folders and report
   params --check <path>… [--thumbs <dir>] [--notes]
@@ -56,6 +65,89 @@ fn value<'a>(args: &'a [String], i: &mut usize, name: &str) -> Result<&'a str, S
 
 fn number<T: std::str::FromStr>(s: &str, name: &str) -> Result<T, String> {
     s.parse().map_err(|_| format!("{name}: '{s}' is not a valid number"))
+}
+
+fn animate(args: &[String]) -> Result<(), String> {
+    use rfr_core::video::{VideoFormat, VideoSink};
+    let (mut input, mut output, mut format, mut ffmpeg) = (None, None, None, None);
+    let (mut width, mut height, mut samples, mut from, mut to) = (None, None, None, None, None);
+    let mut cpu = false;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-o" | "--output" => output = Some(PathBuf::from(value(args, &mut i, "--output")?)),
+            "-W" | "--width" => width = Some(number::<u32>(value(args, &mut i, "--width")?, "--width")?),
+            "-H" | "--height" => height = Some(number::<u32>(value(args, &mut i, "--height")?, "--height")?),
+            "-s" | "--samples" => samples = Some(number::<u32>(value(args, &mut i, "--samples")?, "--samples")?),
+            "--from" => from = Some(number::<usize>(value(args, &mut i, "--from")?, "--from")?),
+            "--to" => to = Some(number::<usize>(value(args, &mut i, "--to")?, "--to")?),
+            "--ffmpeg" => ffmpeg = Some(PathBuf::from(value(args, &mut i, "--ffmpeg")?)),
+            "--format" => {
+                let f = value(args, &mut i, "--format")?.to_lowercase();
+                format = Some(match f.as_str() {
+                    "mp4" | "h264" => VideoFormat::Mp4,
+                    "hevc" | "h265" => VideoFormat::Hevc,
+                    "av1" => VideoFormat::Av1,
+                    "prores" | "mov" => VideoFormat::ProRes,
+                    "webm" | "vp9" => VideoFormat::WebM,
+                    "gif" => VideoFormat::Gif,
+                    "png" => VideoFormat::PngSequence,
+                    other => return Err(format!("unknown format '{other}'")),
+                });
+            }
+            "--cpu" => cpu = true,
+            a if a.starts_with('-') => return Err(format!("unknown option '{a}'")),
+            a => input = Some(PathBuf::from(a)),
+        }
+        i += 1;
+    }
+    let input = input.ok_or("animate needs a document with an animation")?;
+    let doc = rfr_core::io::open(&input)?;
+    let anim = doc.animation.as_deref().ok_or_else(|| format!("{} has no animation", input.display()))?;
+    let plan = rfr_core::animation::AnimationPlan::new(anim)?;
+    let output = output.unwrap_or_else(|| input.with_extension("mp4"));
+    let format = format.unwrap_or_else(|| VideoFormat::from_path(&output));
+    let ffmpeg = rfr_core::video::ffmpeg_program(ffmpeg.as_deref());
+    if format.needs_ffmpeg() && !rfr_core::video::ffmpeg_available(&ffmpeg) {
+        return Err(format!("{} needs ffmpeg, which was not found ({}); use --format png or --ffmpeg <program>", format.label(), ffmpeg.display()));
+    }
+    let w = width.unwrap_or(doc.image.width).max(1);
+    let h = height.unwrap_or(doc.image.height).max(1);
+    let s = samples.unwrap_or(doc.image.samples).max(1);
+    let last = plan.frame_count().saturating_sub(1);
+    let (first, last) = (from.unwrap_or(0).min(last), to.unwrap_or(last).min(last));
+    let ctx = if cpu {
+        None
+    } else {
+        match rfr_gpu::GpuContext::new_headless() {
+            Ok(c) => Some(c),
+            Err(e) => {
+                eprintln!("{e}; rendering on the CPU");
+                None
+            }
+        }
+    };
+    let how = ctx.as_ref().map_or("the CPU".to_string(), |c| c.adapter_name.clone());
+    let mut renderer = rfr_gpu::animation::FrameRenderer::new(ctx);
+    let mut sink = VideoSink::new(&output, format, w, h, plan.fps(), &ffmpeg, None)?;
+    let t = Instant::now();
+    let count = last + 1 - first;
+    for (k, f) in (first..=last).enumerate() {
+        let (rgba, note) = renderer.finished(&plan, f, w, h, s)?;
+        sink.write_frame(k, &rgba)?;
+        let done = k + 1;
+        let left = t.elapsed().as_secs_f64() / done as f64 * (count - done) as f64;
+        eprint!("\rframe {f} ({done} of {count}){} · {left:.0} s left   ", note.map(|n| format!(", {n}")).unwrap_or_default());
+    }
+    eprintln!();
+    sink.finish()?;
+    println!(
+        "rendered {count} frames of {w} × {h}, {s} samples per pixel{} on {how} in {:.1} s → {}",
+        if plan.shutter() > 0.0 { format!(", motion blur {:.0}°", plan.shutter() * 360.0) } else { String::new() },
+        t.elapsed().as_secs_f64(),
+        output.display()
+    );
+    Ok(())
 }
 
 fn render(args: &[String]) -> Result<(), String> {
@@ -552,6 +644,7 @@ fn main() -> ExitCode {
             Ok(())
         }
         Some("render") => render(rest),
+        Some("animate") => animate(rest),
         Some("params" | "upr") if rest.first().map(String::as_str) == Some("--check") => check_upr(&rest[1..]),
         Some("formulas") if rest.first().map(String::as_str) == Some("--check") => check_formulas(&rest[1..]),
         Some("formulas") => {

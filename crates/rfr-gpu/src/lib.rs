@@ -3,6 +3,7 @@
 //! RFract GPU renderer: WGSL generated per formula (`codegen.rs`) and a progressive compute
 //! renderer (`renderer.rs`) that mirrors the CPU reference renderer of rfr-core.
 
+pub mod animation;
 pub mod codegen;
 pub mod renderer;
 

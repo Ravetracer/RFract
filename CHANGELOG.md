@@ -4,6 +4,15 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
 
 ## [Unreleased]
 
+### Added
+
+- Animation (core and command line): keyframes are whole documents, every number blends
+  between them (monotone cubic, distances on a log scale, angles the short way); the view
+  zooms at an even pace in log space with the target staying put, exact at any depth;
+  timing per keyframe (frames, easing) or steady (length, ease in and out); palette rotation;
+  motion blur (shutter); `rfr-cli animate` writes MP4 (H.264, H.265, AV1), MOV (ProRes),
+  WebM, GIF through ffmpeg, or PNG frames.
+
 ## [0.8.0] - 2026-11-27
 
 ### Changed
