@@ -90,3 +90,34 @@ Click a gradient in the inspector to edit it.
 The play button in the top bar (or *View › Cycle colors*) turns all gradients in the view;
 the speed and direction are in the View menu. The document keeps its colors: cycling is only
 for looking (and animations will use it later).
+
+## Lighting
+
+The *Lighting* section turns a layer into a relief: its values become heights, and lights
+shine on it from above. Switch on **Lit** and choose where the heights come from:
+
+| Height | From |
+|--------|------|
+| Iterations | The smooth iteration count (logarithmic). Points near the set lie higher; the set itself is a plateau. |
+| Coloring | The coloring value, the position in the gradient: the relief follows the color bands. |
+| Brightness | The brightness of the layer's color. On an image layer this gives a bump map of the image. |
+
+- **Relief** sets how steep the slopes are; negative values turn the relief inside out. The
+  relief keeps its look when you render the same view at another size.
+- **Ambient** is light from all directions; it keeps the sides turned away from the lights
+  from going black.
+- **Highlights** and **Roughness** shape the shine: low roughness gives small, glossy
+  highlights, high roughness wide and dull ones. *GGX* highlights have soft tails,
+  *Blinn-Phong* ones a tighter falloff.
+- Up to four **lights**, each with a direction (degrees counterclockwise from the right edge of
+  the image), a height above the image (low lights rake across the relief), an intensity and a
+  color. *+ Light* adds one from the opposite side.
+
+Every render pass computes the layer's heights over the whole image before it shades it, so
+a lit layer costs a little more than an unlit one. Editing the lights and the relief does
+not recompile anything.
+
+!!! tip
+    For a classic "slope" look, color the outside by *Smooth*, light it with *Iterations* and
+    one low light (height 20° to 30°); a second, weak, colored light from the other side
+    fills the shadows.

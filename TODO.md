@@ -3,6 +3,20 @@
 The stages and their scope are in PLAN.md. This file holds the next concrete steps and wishes
 that come up along the way.
 
+## Stage 6 – 3D looks: lighting, 2.5D, 3D objects
+
+- [x] Lit layers: a height field per pass (smooth iterations, coloring value, luminance),
+      normals from neighboring heights, ambient + diffuse + specular (Blinn-Phong, GGX), up to
+      four colored lights; CPU and GPU (field pre-pass like density layers). Luminance on image
+      layers gives bump maps.
+- [ ] Shadows marched over the height field, ambient occlusion.
+- [ ] Environment reflections (gradient sky or image), distance estimation as height source.
+- [ ] 3D height view: the field as a terrain under a perspective camera (height-field
+      raymarching on the GPU), optional path tracing into OIDN.
+- [ ] 3D object layers: Mandelbulb, quaternion/bicomplex Julia and a few DE formulas,
+      raymarched with the same lights.
+- [ ] Exit: lit 2.5D renders, fly-over of a Mandelbrot landscape (camera path).
+
 ## Stage 5 – More fractal types (layer kinds)
 
 - [x] Density layers (CPU and GPU): Buddhabrot, anti-Buddhabrot, Nebulabrot, strange

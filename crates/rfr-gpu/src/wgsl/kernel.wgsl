@@ -47,8 +47,15 @@ struct Uni {
     densn: vec4<u32>,
     // channels, iteration limit, Nebulabrot, unused
     densx: vec4<u32>,
-    // brightness, gamma, unused…
+    // brightness, gamma, stroke width, Metropolis
     densb: vec4<f32>,
+    // Lit layers (lighting.wgsl): ambient, slope scale, specular, roughness
+    light: vec4<f32>,
+    // height source, number of lights, specular model, unused
+    lighti: vec4<u32>,
+    // per light: direction toward it (x, y, z, unused) and color times intensity (r, g, b, unused)
+    ldir: array<vec4<f32>, 4>,
+    lrad: array<vec4<f32>, 4>,
 }
 
 struct Params {
@@ -71,6 +78,8 @@ struct Params {
 @group(0) @binding(6) var<storage, read> bla: array<vec4<f32>>;
 
 const LUT_SIZE: u32 = 1024u;
+// The last region color's gradient position before the offset (lit layers' heights).
+var<private> g_value: f32;
 //@RNG_DECL
 const TAU: f32 = 6.283185307179586;
 
@@ -268,9 +277,11 @@ fn finite4(c: vec4<f32>) -> vec4<f32> {
 
 fn region_color(inside: bool, v: f32) -> vec4<f32> {
     if inside {
-        return finite4(lut_sample(LUT_SIZE, transfer(u32(U.inc.x), v) * U.inc.y + U.inc.z));
+        g_value = transfer(u32(U.inc.x), v) * U.inc.y;
+        return finite4(lut_sample(LUT_SIZE, g_value + U.inc.z));
     }
-    return finite4(lut_sample(0u, transfer(u32(U.outc.x), v) * U.outc.y + U.outc.z));
+    g_value = transfer(u32(U.outc.x), v) * U.outc.y;
+    return finite4(lut_sample(0u, g_value + U.outc.z));
 }
 
 // Native coloring methods: 0 iterations, 1 smooth, 2 distance, 3 solid, 4 magnitude, 5 angle.
@@ -325,8 +336,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let s = U.size.z;
     let rng_base = hash(x ^ hash(y ^ hash(s + 0x9E3779B9u)));
 //@MODE_INIT
-    // Sample position inside the pixel (R2 sequence in 32-bit fixed point) and derivative direction.
-    let ha = hash(x ^ hash(y + 0x68E31DA4u));
+    // Sample position inside the pixel (R2 sequence in 32-bit fixed point) and derivative direction;
+    // a lit layer's field takes pixel (0, 0)'s for all pixels (a regular grid).
+    var jx = x;
+    var jy = y;
+    if U.band.y == 2u {
+        jx = 0u;
+        jy = 0u;
+    }
+    let ha = hash(jx ^ hash(jy + 0x68E31DA4u));
     let hb = hash(ha);
     let hc = hash(hb);
     let ju = f32(ha + s * 0xC13FA9A9u) / 4294967296.0;
@@ -346,6 +364,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var tsolid = false;
 //@TRANSFORMS
     var col = vec4<f32>(0.0);
+    var hgt = 0.0;
     if !tsolid {
         var cval = pixel;
         if !ismand {
@@ -381,6 +400,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let zpv = vec2<f32>(s_v(zprev.re), s_v(zprev.im));
         let zp2v = vec2<f32>(s_v(zprev2.re), s_v(zprev2.im));
         let dzv = sqrt(s_d(l0.re) * s_d(l0.re) + s_d(l0.im) * s_d(l0.im));
+        g_value = 0.0;
         if escaped {
             if U.iter.z == 6u {
 //@OUT_FINAL
@@ -394,7 +414,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 col = shade_native(true, zv, zpv, zp2v, iter, dzv);
             }
         }
+//@HEIGHT
     }
+//@FIELD
     let li = gid.y * U.size.x + x;
     let dst = U.band.z * U.blend.y + li;
     if U.band.y == 1u {

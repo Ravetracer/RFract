@@ -8,6 +8,7 @@
 pub mod composite;
 pub mod cpu;
 pub mod density;
+pub mod light;
 pub mod oidn;
 
 use std::collections::BTreeMap;
@@ -108,6 +109,11 @@ impl ColorPlan {
         Ok(ColorPlan::new(method, c))
     }
 
+    /// The gradient position of a coloring value before the offset (lit layers' heights).
+    pub fn position(&self, v: f64) -> f64 {
+        self.transfer.apply(v) * self.density
+    }
+
     /// Gradient color (linear RGB, alpha) for a coloring value.
     pub fn color(&self, v: f64) -> [f32; 4] {
         crate::gradient::lut_sample(&self.lut, self.transfer.apply(v) * self.density + self.offset)
@@ -193,6 +199,8 @@ pub struct LayerPlan {
     pub inside: ColorPlan,
     /// Density layers: the orbits are counted per pixel instead of colored per pixel.
     pub density: Option<crate::doc::Density>,
+    /// Lit layers: their colors are shaded as a height field (see [`light`]).
+    pub light: Option<light::LightPlan>,
 }
 
 impl LayerPlan {
@@ -219,6 +227,7 @@ impl LayerPlan {
             outside: ColorPlan::outside(l.outside_method, &l.outside).map_err(|e| format!("{}: {e}", l.name))?,
             inside: ColorPlan::inside(l.inside_method, &l.inside).map_err(|e| format!("{}: {e}", l.name))?,
             density: (l.kind == LayerKind::Density).then(|| l.density.clone()),
+            light: (l.light.enabled && l.kind != LayerKind::Density).then(|| light::LightPlan::new(&l.light)),
             fractal,
         })
     }
@@ -518,17 +527,24 @@ pub fn inside_value(method: InsideMethod, o: &OrbitResult) -> f64 {
     }
 }
 
-/// Color (linear RGB, straight alpha) of one region by its native method (not Formula).
-pub fn shade_native(c: &ColorPlan, o: &OrbitResult, pixel_size: f64) -> [f32; 4] {
-    let v = match &c.method {
-        ColorMethod::Solid | ColorMethod::Formula(_) => return c.solid,
+/// The coloring value of a region by its native method (`None` for solid and formula colors).
+pub fn native_value(c: &ColorPlan, o: &OrbitResult, pixel_size: f64) -> Option<f64> {
+    Some(match &c.method {
+        ColorMethod::Solid | ColorMethod::Formula(_) => return None,
         ColorMethod::Smooth => smooth_iter(o),
         ColorMethod::Iterations => o.iter as f64,
         ColorMethod::Distance => outside_value(OutsideMethod::Distance, o, pixel_size),
         ColorMethod::Magnitude => inside_value(InsideMethod::Magnitude, o),
         ColorMethod::Angle => inside_value(InsideMethod::Angle, o),
-    };
-    finite(c.color(v))
+    })
+}
+
+/// Color (linear RGB, straight alpha) of one region by its native method (not Formula).
+pub fn shade_native(c: &ColorPlan, o: &OrbitResult, pixel_size: f64) -> [f32; 4] {
+    match native_value(c, o, pixel_size) {
+        Some(v) => finite(c.color(v)),
+        None => c.solid,
+    }
 }
 
 /// Color of a region colored by a formula's `#index` / `#solid`, or by its `#color`

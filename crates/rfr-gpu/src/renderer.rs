@@ -85,6 +85,10 @@ struct Uni {
     densn: [u32; 4],
     densx: [u32; 4],
     densb: [f32; 4],
+    light: [f32; 4],
+    lighti: [u32; 4],
+    ldir: [[f32; 4]; 4],
+    lrad: [[f32; 4]; 4],
 }
 
 /// Compositing uniforms (composite.wgsl `Op`).
@@ -158,7 +162,26 @@ fn layer_uni(plan: &Plan, lp: &LayerPlan) -> Uni {
         densn: [0; 4],
         densx: [0; 4],
         densb: [0.0; 4],
+        light: lp.light.as_ref().map_or([0.0; 4], |l| [l.ambient, l.slope_scale(f.height), l.specular, l.roughness]),
+        lighti: lp
+            .light
+            .as_ref()
+            .map_or([0; 4], |l| [l.source.index(), l.lights.len() as u32, (l.model == rfr_core::doc::SpecularModel::Ggx) as u32, 0]),
+        ldir: light_rows(lp, |(d, _)| *d),
+        lrad: light_rows(lp, |(_, r)| *r),
     }
+}
+
+/// Per light one row of the lit layer's uniforms (direction or color).
+fn light_rows(lp: &LayerPlan, f: impl Fn(&([f32; 3], [f32; 3])) -> [f32; 3]) -> [[f32; 4]; 4] {
+    let mut out = [[0.0; 4]; 4];
+    if let Some(l) = &lp.light {
+        for (row, li) in out.iter_mut().zip(&l.lights) {
+            let v = f(li);
+            *row = [v[0], v[1], v[2], 0.0];
+        }
+    }
+    out
 }
 
 /// One step of a band.
@@ -273,6 +296,8 @@ struct LayerRes {
     /// Density layers: the counts (binding 7) and the uniforms of the scatter passes.
     hist: wgpu::Buffer,
     density: Option<DensityRes>,
+    /// Lit layers: the field (binding 7, in `hist`) is written by `main` with this uniform.
+    light: Option<wgpu::Buffer>,
     uni: Uni,
 }
 
@@ -289,6 +314,10 @@ fn scatter_key(sig: u64) -> u64 {
 }
 fn dmax_key(sig: u64) -> u64 {
     sig ^ 0xD3A5_0000_0000_0002
+}
+/// Cache key of a lit layer's `lit` pipeline.
+fn lit_key(sig: u64) -> u64 {
+    sig ^ 0x7117_0000_0000_0003
 }
 
 /// A reference orbit on the GPU and where it was computed.
@@ -694,8 +723,26 @@ impl GpuRenderer {
                     });
                     (hist, Some(DensityRes { uniform, orbits: d.orbits.max(1), pixels }))
                 }
+                // Lit layers: the field, 16 bytes per pixel.
+                None if lp.light.is_some() => (
+                    device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("light field"),
+                        size: (plan.frame.width as u64 * plan.frame.height as u64 * 16).max(16),
+                        usage: wgpu::BufferUsages::STORAGE,
+                        mapped_at_creation: false,
+                    }),
+                    None,
+                ),
                 None => (self.empty_rw.clone(), None),
             };
+            let light = lp.light.as_ref().map(|_| {
+                device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("light"),
+                    size: std::mem::size_of::<Uni>() as u64,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                })
+            });
             // IFS mode: the maps take binding 6 (density layers have no linear steps).
             let bla = match &lp.density {
                 Some(d) if d.mode == rfr_core::doc::DensityMode::Ifs => device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -741,7 +788,21 @@ impl GpuRenderer {
             l.extend_from_slice(&lp.inside.lut);
             self.ctx.queue.write_buffer(&lut, 0, bytemuck::cast_slice(&l));
             self.request_pipeline(signature, lp, mode);
-            res.push(LayerRes { signature, params, lut, images, image_src, orbit, bla, orbit_state: state, orbit_job: job, hist, density, uni });
+            res.push(LayerRes {
+                signature,
+                params,
+                lut,
+                images,
+                image_src,
+                orbit,
+                bla,
+                orbit_state: state,
+                orbit_job: job,
+                hist,
+                density,
+                light,
+                uni,
+            });
         }
         self.layers = res;
         let (ops, slots) = schedule(plan);
@@ -850,12 +911,58 @@ impl GpuRenderer {
         let _ = device.poll(wgpu::PollType::wait_indefinitely());
     }
 
+    /// Lit layers: their fields for the current sample (kernel `main`, operation 2), in bands
+    /// of at most `max_rows` rows.
+    fn light_pass(&self, scratch: &wgpu::Buffer, max_rows: u32) {
+        let device = &self.ctx.device;
+        let Some(t) = self.target.as_ref() else { return };
+        let (width, height) = (t.width, t.height);
+        for l in &self.layers {
+            let Some(uniform) = &l.light else { continue };
+            let Some(Ok(main)) = self.pipeline(l.signature) else { continue };
+            let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("light field"),
+                layout: &self.layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: l.params.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 2, resource: l.lut.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 3, resource: scratch.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 4, resource: l.images.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 5, resource: l.orbit.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 6, resource: l.bla.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 7, resource: l.hist.as_entire_binding() },
+                ],
+            });
+            let mut row = 0;
+            while row < height {
+                let rows = self.band_rows.max(8).min(max_rows.max(8)).min(height - row);
+                let mut u = l.uni;
+                u.size[2] = self.samples;
+                u.size[3] = row;
+                u.band = [rows, 2, 0, NONE];
+                self.ctx.queue.write_buffer(uniform, 0, bytemuck::bytes_of(&u));
+                let mut enc = device.create_command_encoder(&Default::default());
+                {
+                    let mut pass = enc.begin_compute_pass(&Default::default());
+                    pass.set_pipeline(&main);
+                    pass.set_bind_group(0, &bind, &[]);
+                    pass.dispatch_workgroups(width.div_ceil(8), rows.div_ceil(8), 1);
+                }
+                self.ctx.queue.submit(Some(enc.finish()));
+                row += rows;
+            }
+        }
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+    }
+
     fn request_pipeline(&mut self, sig: u64, lp: &LayerPlan, mode: Mode) {
         if self.cache.lock().ok().is_some_and(|c| c.contains_key(&sig)) || self.pending.iter().any(|(s, _)| *s == sig) {
             return;
         }
         let source = codegen::kernel(lp, mode);
         let density = lp.density.is_some();
+        let lit = lp.light.is_some();
         let device = self.ctx.device.clone();
         let layout = self.pipeline_layout.clone();
         let cache = self.cache.clone();
@@ -866,6 +973,9 @@ impl GpuRenderer {
             if density {
                 built.push((scatter_key(sig), compile(&device, &layout, &source, "scatter")));
                 built.push((dmax_key(sig), compile(&device, &layout, &source, "dmax")));
+            }
+            if lit {
+                built.push((lit_key(sig), compile(&device, &layout, &source, "lit")));
             }
             if let Ok(mut c) = cache.lock() {
                 for (k, r) in built {
@@ -889,6 +999,9 @@ impl GpuRenderer {
             let mut keys = vec![l.signature];
             if l.density.is_some() {
                 keys.extend([scatter_key(l.signature), dmax_key(l.signature)]);
+            }
+            if l.light.is_some() {
+                keys.push(lit_key(l.signature));
             }
             for k in keys {
                 match self.pipeline(k) {
@@ -952,7 +1065,8 @@ impl GpuRenderer {
             match &op.kind {
                 OpKind::Layer { layer, .. } => {
                     let l = &self.layers[*layer];
-                    let Some(Ok(p)) = self.pipeline(l.signature) else { return false };
+                    let key = if l.light.is_some() { lit_key(l.signature) } else { l.signature };
+                    let Some(Ok(p)) = self.pipeline(key) else { return false };
                     let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
                         label: Some("layer"),
                         layout: &self.layout,
@@ -995,6 +1109,9 @@ impl GpuRenderer {
                     self.ctx.queue.submit(Some(enc.finish()));
                     self.samples = 0;
                 }
+            }
+            if self.row == 0 && self.layers.iter().any(|l| l.light.is_some()) {
+                self.light_pass(scratch, max_rows);
             }
             let rows = self.band_rows.min(height - self.row).min(max_rows);
             for op in &self.ops {

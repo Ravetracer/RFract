@@ -157,6 +157,23 @@ fn gpu_matches_the_cpu_renderer() {
         p.insert("b".into(), V::Complex([0.5, 0.0]));
     }
     cases.push(("root function householder".into(), root));
+    // Lit layers: heights from the smooth iteration count, the coloring value and the luminance.
+    let mut lit = Document::for_formula("rfract:Mandelbrot");
+    lit.layers[0].light.enabled = true;
+    cases.push(("lit smooth".into(), lit.clone()));
+    {
+        use rfr_core::doc::{HeightSource, Light, SpecularModel};
+        let mut v = lit.clone();
+        let l = &mut v.layers[0].light;
+        l.height = HeightSource::Value;
+        l.model = SpecularModel::BlinnPhong;
+        l.relief = 0.3;
+        l.lights.push(Light { azimuth: 300.0, elevation: 20.0, color: [1.0, 0.4, 0.2], intensity: 0.8 });
+        cases.push(("lit value".into(), v));
+        let mut m = lit.clone();
+        m.layers[0].light.height = HeightSource::Luminance;
+        cases.push(("lit luminance".into(), m));
+    }
     let mut julia = Document::for_formula("rfract:Mandelbrot");
     julia.layers[0].julia = true;
     julia.view.set_center([0.0, 0.0]);

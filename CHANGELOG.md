@@ -4,6 +4,13 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
 
 ## [Unreleased]
 
+### Added
+
+- Lit layers: any layer except density layers can be shaded as a relief (heights from the
+  smooth iteration count, the coloring value or the brightness) with ambient light, diffuse
+  light and highlights (GGX or Blinn-Phong) from up to four colored lights; on the GPU and
+  the CPU. Brightness heights on image layers give bump maps.
+
 ## [0.6.0] - 2026-11-27
 
 ### Added

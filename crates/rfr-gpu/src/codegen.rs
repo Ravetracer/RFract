@@ -30,6 +30,7 @@ const SCALAR_F32: &str = include_str!("wgsl/scalar_f32.wgsl");
 const SCALAR_DUAL: &str = include_str!("wgsl/scalar_dual.wgsl");
 const PERTURB: &str = include_str!("wgsl/perturb.wgsl");
 const DENSITY: &str = include_str!("wgsl/density.wgsl");
+const LIGHTING: &str = include_str!("wgsl/lighting.wgsl");
 const SCALAR_DF64: &str = include_str!("wgsl/scalar_df64.wgsl");
 const CSTD: &str = include_str!("wgsl/cstd.wgsl");
 const KERNEL: &str = include_str!("wgsl/kernel.wgsl");
@@ -782,13 +783,42 @@ pub fn kernel(lp: &LayerPlan, mode: Mode) -> String {
         .replace("//@FINAL", fin.trim_end())
         .replace("//@OUT_FINAL", out_final.trim_end())
         .replace("//@IN_FINAL", in_final.trim_end());
+    // Lit layers: the height of the sample, and the field write of operation 2.
+    let (height, field, lighting) = if lp.light.is_some() {
+        (
+            concat!(
+                "        if U.lighti.x == 0u {\n",
+                "            if escaped {\n",
+                "                hgt = log(1.0 + max(smooth_iter(zv, zpv, zp2v, iter), 0.0));\n",
+                "            } else {\n",
+                "                hgt = log(1.0 + f32(maxit));\n",
+                "            }\n",
+                "        } else if U.lighti.x == 1u {\n",
+                "            hgt = g_value;\n",
+                "        }",
+            ),
+            concat!(
+                "    if U.lighti.x == 2u {\n",
+                "        hgt = dot(col.xyz, vec3<f32>(0.2126, 0.7152, 0.0722)) * col.w;\n",
+                "    }\n",
+                "    if U.band.y == 2u {\n",
+                "        l_store(x, y, col, hgt);\n",
+                "        return;\n",
+                "    }",
+            ),
+            LIGHTING,
+        )
+    } else {
+        ("", "", "")
+    };
+    let kernel = kernel.replace("//@HEIGHT", height).replace("//@FIELD", field);
     let scalar = match mode {
         Mode::Plain => SCALAR_F32,
         Mode::Pert => &format!("{SCALAR_F32}\n{PERTURB}"),
         Mode::Dual => SCALAR_DUAL,
         Mode::Df64 => SCALAR_DF64,
     };
-    format!("{scalar}\n{CSTD}\n{BLEND}\n{kernel}")
+    format!("{scalar}\n{CSTD}\n{BLEND}\n{kernel}\n{lighting}")
 }
 
 /// The compositing shader (fill, group merge, accumulation).
@@ -811,6 +841,7 @@ pub fn signature(lp: &LayerPlan, mode: Mode) -> u64 {
     lp.inside.formula().is_some().hash(&mut h);
     lp.transforms.len().hash(&mut h);
     lp.density.is_some().hash(&mut h);
+    lp.light.is_some().hash(&mut h);
     mode.hash(&mut h);
     // Perturbation code has the parameter values folded in.
     if mode == Mode::Pert {

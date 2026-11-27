@@ -741,6 +741,8 @@ pub struct Layer {
     pub inside: Coloring,
     /// Density layers: which orbits and how they are tone-mapped.
     pub density: Density,
+    /// Lighting of the layer as a height field (not for density layers).
+    pub light: Lighting,
 }
 
 impl Default for Layer {
@@ -764,6 +766,90 @@ impl Default for Layer {
             inside_method: InsideMethod::Solid,
             inside: Coloring { density: 1.0, transfer: Transfer::Linear, ..Coloring::default() },
             density: Density::default(),
+            light: Lighting::default(),
+        }
+    }
+}
+
+/// Where a lit layer's heights come from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum HeightSource {
+    /// The logarithm of the smooth iteration count (points that stay: the iteration limit).
+    #[default]
+    Smooth,
+    /// The coloring value (the gradient position before the offset).
+    Value,
+    /// The luminance of the layer's color (bump maps from images).
+    Luminance,
+}
+
+impl HeightSource {
+    pub const ALL: [HeightSource; 3] = [HeightSource::Smooth, HeightSource::Value, HeightSource::Luminance];
+
+    pub fn index(self) -> u32 {
+        HeightSource::ALL.iter().position(|v| *v == self).unwrap_or(0) as u32
+    }
+}
+
+/// The highlight model of a lit layer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum SpecularModel {
+    BlinnPhong,
+    #[default]
+    Ggx,
+}
+
+/// A directional light: where it comes from (degrees: azimuth counterclockwise from the
+/// right edge of the image, elevation above the image plane), its color (linear RGB) and
+/// strength.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Light {
+    pub azimuth: f64,
+    pub elevation: f64,
+    pub color: [f32; 3],
+    pub intensity: f64,
+}
+
+impl Default for Light {
+    fn default() -> Self {
+        Light { azimuth: 135.0, elevation: 45.0, color: [1.0, 1.0, 1.0], intensity: 1.0 }
+    }
+}
+
+/// The most lights of a layer.
+pub const MAX_LIGHTS: usize = 4;
+
+/// Lighting of a layer: the layer's values become a height field (`height`, scaled by
+/// `relief`), lit by `lights` from above with `ambient` light and highlights.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Lighting {
+    pub enabled: bool,
+    pub height: HeightSource,
+    /// Steepness of the relief (0: flat).
+    pub relief: f64,
+    pub ambient: f64,
+    pub specular: f64,
+    /// Roughness of the highlights (0.02 glossy … 1 matte).
+    pub roughness: f64,
+    pub model: SpecularModel,
+    pub lights: Vec<Light>,
+}
+
+impl Default for Lighting {
+    fn default() -> Self {
+        Lighting {
+            enabled: false,
+            height: HeightSource::Smooth,
+            relief: 1.0,
+            ambient: 0.3,
+            specular: 0.3,
+            roughness: 0.4,
+            model: SpecularModel::Ggx,
+            lights: vec![Light::default()],
         }
     }
 }

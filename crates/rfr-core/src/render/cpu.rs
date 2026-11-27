@@ -8,7 +8,9 @@
 use rayon::prelude::*;
 
 use super::composite::{composite, mask_value};
-use super::{ColorMethod, LayerPlan, Node, OrbitResult, Plan, Precision, density, sample_offset, shade_formula, shade_native};
+use super::{
+    ColorMethod, LayerPlan, Node, OrbitResult, Plan, Precision, density, light, native_value, sample_offset, shade_formula, shade_native, smooth_iter,
+};
 use crate::formula::cpu::{Compiled, Frame, Hook};
 use crate::formula::perturb::{BlaTable, Deep, Perturbation, RefOrbit};
 use crate::gradient::linear_to_srgb;
@@ -58,8 +60,8 @@ impl<S: Scalar + Send + Sync + 'static> LayerK<S> {
     }
 
     /// Color (linear RGB, straight alpha) of the layer at plane point `p` of pixel `pix`
-    /// (x, y, sample index).
-    fn eval(&self, f: &mut LayerF<S>, lp: &LayerPlan, plan: &Plan, mut p: Cx<S>, d: Cfx, pix: (u32, u32, u32)) -> [f32; 4] {
+    /// (x, y, sample index), and its height when the layer is lit (else 0).
+    fn eval(&self, f: &mut LayerF<S>, lp: &LayerPlan, plan: &Plan, mut p: Cx<S>, d: Cfx, pix: (u32, u32, u32)) -> ([f32; 4], f32) {
         // Screen values and one random stream per program (kernel.wgsl seeds the same way).
         let base = super::hash(pix.0 ^ super::hash(pix.1 ^ super::hash(pix.2.wrapping_add(0x9E37_79B9))));
         let screen = |fr: &mut Frame<S>, tag: u32| {
@@ -83,7 +85,7 @@ impl<S: Scalar + Send + Sync + 'static> LayerK<S> {
         for (t, tf) in self.transforms.iter().zip(f.transforms.iter_mut()) {
             let (q, solid) = t.transform(tf, p);
             if solid {
-                return [0.0; 4];
+                return ([0.0; 4], 0.0);
             }
             p = q;
         }
@@ -125,18 +127,33 @@ impl<S: Scalar + Send + Sync + 'static> LayerK<S> {
             }
         };
         let region = if o.escaped { &lp.outside } else { &lp.inside };
-        if let ColorMethod::Formula(_) = region.method {
-            let (k, fr) = if o.escaped { (self.outside.as_ref(), f.outside.as_mut()) } else { (self.inside.as_ref(), f.inside.as_mut()) };
-            if let (Some(k), Some(fr)) = (k, fr) {
-                fr.zcur = o.z;
-                let (index, solid) = k.color_final(fr, o.iter, o.zprev);
-                return shade_formula(region, index.v(), solid, k.direct_color(fr));
-            }
-            return region.solid;
-        }
         let dz = (o.z.re.d() * o.z.re.d() + o.z.im.d() * o.z.im.d()).sqrt();
         let r = OrbitResult { z: o.z.v(), zprev: o.zprev.v(), zprev2: o.zprev2.v(), iter: o.iter, escaped: o.escaped, dz };
-        shade_native(region, &r, plan.frame.pixel_size())
+        // The color and the gradient position before the offset (lit layers' heights).
+        let (color, value) = match region.method {
+            ColorMethod::Formula(_) => {
+                let (k, fr) = if o.escaped { (self.outside.as_ref(), f.outside.as_mut()) } else { (self.inside.as_ref(), f.inside.as_mut()) };
+                match (k, fr) {
+                    (Some(k), Some(fr)) => {
+                        fr.zcur = o.z;
+                        let (index, solid) = k.color_final(fr, o.iter, o.zprev);
+                        let direct = k.direct_color(fr);
+                        let value = if solid || direct.is_some() { 0.0 } else { region.position(index.v()) };
+                        (shade_formula(region, index.v(), solid, direct), value)
+                    }
+                    _ => (region.solid, 0.0),
+                }
+            }
+            _ => {
+                let value = native_value(region, &r, plan.frame.pixel_size()).map_or(0.0, |v| region.position(v));
+                (shade_native(region, &r, plan.frame.pixel_size()), value)
+            }
+        };
+        let height = lp.light.as_ref().map_or(0.0, |l| {
+            let smooth = if o.escaped { smooth_iter(&r) } else { maxit as f64 };
+            light::height(l.source, smooth, value, color)
+        });
+        (color, height)
     }
 }
 
@@ -198,12 +215,13 @@ impl Kernel {
             Kernel::Density(_) => KernelF::None,
         }
     }
-    /// The layer's color at plane point `p`; `turn` is the derivative's direction (a turn).
-    /// `at`: the sample's plane point and its offset from the view center (deep zooms).
-    fn eval(&self, f: &mut KernelF, lp: &LayerPlan, plan: &Plan, at: (C64, Cfx), turn: f64, pix: (u32, u32, u32)) -> [f32; 4] {
+    /// The layer's color at plane point `p` and its height (lit layers); `turn` is the
+    /// derivative's direction (a turn). `at`: the sample's plane point and its offset from the
+    /// view center (deep zooms).
+    fn eval(&self, f: &mut KernelF, lp: &LayerPlan, plan: &Plan, at: (C64, Cfx), turn: f64, pix: (u32, u32, u32)) -> ([f32; 4], f32) {
         let (p, d) = at;
         if let Kernel::Density(k) = self {
-            return lp.density.as_ref().map_or([0.0; 4], |dn| density::color(lp, dn, &k.hist, pix.0, pix.1));
+            return (lp.density.as_ref().map_or([0.0; 4], |dn| density::color(lp, dn, &k.hist, pix.0, pix.1)), 0.0);
         }
         match (self, f) {
             (Kernel::Plain(k), KernelF::Plain(f)) => k.eval(f, lp, plan, p, d, pix),
@@ -229,11 +247,14 @@ pub struct CpuRenderer {
     density_passes: u32,
     /// Samples the render aims at (density layers restart the image while it fills).
     pub target_samples: u32,
+    /// Lit layers: the field of the current pass (same order as `kernels`).
+    fields: Vec<Option<light::Field>>,
 }
 
 /// One sample's evaluation state: the layers are evaluated in `plan.layers()` order.
 struct Ctx<'a> {
     kernels: &'a [Kernel],
+    fields: &'a [Option<light::Field>],
     frames: &'a mut [KernelF],
     next: usize,
     plan: &'a Plan,
@@ -248,7 +269,10 @@ impl Ctx<'_> {
     fn layer(&mut self, lp: &LayerPlan) -> [f32; 4] {
         let i = self.next;
         self.next += 1;
-        self.kernels[i].eval(&mut self.frames[i], lp, self.plan, (self.p, self.d), self.turn, self.pix)
+        if let (Some(field), Some(l)) = (&self.fields[i], &lp.light) {
+            return field.shade(l, self.pix.0, self.pix.1);
+        }
+        self.kernels[i].eval(&mut self.frames[i], lp, self.plan, (self.p, self.d), self.turn, self.pix).0
     }
 }
 
@@ -274,9 +298,10 @@ fn composite_nodes(nodes: &[Node], below: [f32; 4], ctx: &mut Ctx) -> [f32; 4] {
 
 impl CpuRenderer {
     pub fn new(plan: Plan) -> CpuRenderer {
-        let kernels = plan.layers().iter().map(|l| Kernel::new(l, &plan)).collect();
+        let kernels: Vec<Kernel> = plan.layers().iter().map(|l| Kernel::new(l, &plan)).collect();
         let n = (plan.frame.width * plan.frame.height) as usize;
-        CpuRenderer { plan, kernels, accum: vec![[0.0; 4]; n], samples: 0, density_passes: 0, target_samples: u32::MAX }
+        let fields = kernels.iter().map(|_| None).collect();
+        CpuRenderer { plan, kernels, accum: vec![[0.0; 4]; n], samples: 0, density_passes: 0, target_samples: u32::MAX, fields }
     }
 
     pub fn plan(&self) -> &Plan {
@@ -290,7 +315,7 @@ impl CpuRenderer {
     /// Color (linear RGB, straight alpha) of one sample at image position (x, y).
     fn sample(&self, frames: &mut [KernelF], x: f64, y: f64, turn: f64, pix: (u32, u32, u32)) -> [f32; 4] {
         let (p, d) = (self.plan.frame.plane(x, y), self.plan.frame.offset_fx(x, y));
-        let mut ctx = Ctx { kernels: &self.kernels, frames, next: 0, plan: &self.plan, p, d, turn, pix };
+        let mut ctx = Ctx { kernels: &self.kernels, fields: &self.fields, frames, next: 0, plan: &self.plan, p, d, turn, pix };
         composite_nodes(&self.plan.nodes, self.plan.background, &mut ctx)
     }
 
@@ -325,9 +350,44 @@ impl CpuRenderer {
         }
     }
 
+    /// Lit layers: their fields for this pass, every pixel at the pass's sub-pixel offset of
+    /// pixel (0, 0) (a regular grid for the normals).
+    fn light_pass(&mut self) {
+        let s = self.samples;
+        let (u, v, turn) = sample_offset(0, 0, s);
+        let (w, h) = (self.plan.frame.width, self.plan.frame.height);
+        let layers = self.plan.layers();
+        let mut fields: Vec<Option<light::Field>> = Vec::with_capacity(layers.len());
+        for (k, lp) in self.kernels.iter().zip(&layers) {
+            if lp.light.is_none() || matches!(k, Kernel::Density(_)) {
+                fields.push(None);
+                continue;
+            }
+            let mut data = vec![[0.0f32; 5]; (w * h) as usize];
+            let proto = k.frames();
+            let plan = &self.plan;
+            data.par_chunks_mut(w as usize).enumerate().for_each_init(
+                || proto.clone(),
+                |f, (y, row)| {
+                    for (x, out) in row.iter_mut().enumerate() {
+                        let (px, py) = (x as f64 + u, y as f64 + v);
+                        let at = (plan.frame.plane(px, py), plan.frame.offset_fx(px, py));
+                        let (c, hgt) = k.eval(f, lp, plan, at, turn, (x as u32, y as u32, s));
+                        // Colors from 0 to 1 (the GPU keeps them in 16-bit fixed point).
+                        let k = |v: f32| v.clamp(0.0, 1.0);
+                        *out = [k(c[0]), k(c[1]), k(c[2]), k(c[3]), hgt];
+                    }
+                },
+            );
+            fields.push(Some(light::Field { width: w, height: h, data }));
+        }
+        self.fields = fields;
+    }
+
     /// Adds one sample to every pixel.
     pub fn pass(&mut self) {
         self.density_pass();
+        self.light_pass();
         let w = self.plan.frame.width as usize;
         let s = self.samples;
         let proto: Vec<KernelF> = self.kernels.iter().map(|k| k.frames()).collect();
@@ -367,7 +427,7 @@ impl CpuRenderer {
         let lp = layers.first()?;
         let mut f = self.kernels.first()?.frames();
         let d = Cfx::from_c64(p.re - self.plan.frame.center[0], p.im - self.plan.frame.center[1]);
-        Some(self.kernels[0].eval(&mut f, lp, &self.plan, (p, d), 0.0, (0, 0, 0)))
+        Some(self.kernels[0].eval(&mut f, lp, &self.plan, (p, d), 0.0, (0, 0, 0)).0)
     }
 }
 

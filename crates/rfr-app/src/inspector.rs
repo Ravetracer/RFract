@@ -553,6 +553,86 @@ fn fractal_sections(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
             }
         });
     }
+    lighting_section(ui, l);
+}
+
+/// Lighting of a layer as a height field: height source, relief, lights, highlights.
+fn lighting_section(ui: &mut Ui, l: &mut Layer) {
+    use rfr_core::doc::{HeightSource, Light, Lighting, MAX_LIGHTS, SpecularModel};
+    let sec = widgets::section(ui, "Lighting", true);
+    if sec.reset {
+        l.light = Lighting { enabled: l.light.enabled, ..Lighting::default() };
+    }
+    if !sec.open {
+        return;
+    }
+    let li = &mut l.light;
+    let def = Lighting::default();
+    widgets::grid(ui, "light-grid", |ui| {
+        widgets::checkbox(ui, "Lit", "Shade the layer as a relief: its values become heights, lit by the lights below", &mut li.enabled);
+    });
+    if !li.enabled {
+        return;
+    }
+    widgets::segmented(
+        ui,
+        &mut li.height,
+        &[
+            (HeightSource::Smooth, "Iterations", "Heights from the smooth iteration count (logarithmic); the set is a plateau"),
+            (HeightSource::Value, "Coloring", "Heights from the coloring value (the gradient position): the relief follows the color bands"),
+            (HeightSource::Luminance, "Brightness", "Heights from the layer's brightness: bump maps from images and colorings"),
+        ],
+    );
+    widgets::grid(ui, "light-grid2", |ui| {
+        widgets::slider(ui, "Relief", "Steepness of the relief (negative values turn it inside out)", &mut li.relief, -10.0..=10.0, def.relief);
+        widgets::slider(ui, "Ambient", "Light from all directions: brightens the shadowed sides", &mut li.ambient, 0.0..=2.0, def.ambient);
+        widgets::slider(ui, "Highlights", "Strength of the highlights", &mut li.specular, 0.0..=3.0, def.specular);
+        widgets::slider(ui, "Roughness", "Small: sharp, glossy highlights; large: wide, dull ones", &mut li.roughness, 0.02..=1.0, def.roughness);
+        widgets::label(ui, "Highlight model", "How the highlights fall off");
+        ui.horizontal(|ui| {
+            ui.radio_value(&mut li.model, SpecularModel::Ggx, "GGX").on_hover_text("Physically based highlights with soft tails");
+            ui.radio_value(&mut li.model, SpecularModel::BlinnPhong, "Blinn-Phong").on_hover_text("Classic highlights with a tighter falloff");
+        });
+        ui.end_row();
+    });
+    let mut remove = None;
+    for (k, light) in li.lights.iter_mut().enumerate() {
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label(format!("Light {}", k + 1)).on_hover_text("A light far away (like the sun)");
+            if widgets::icon_button(ui, icons::X, "Remove this light").clicked() {
+                remove = Some(k);
+            }
+        });
+        let d = Light::default();
+        widgets::grid(ui, &format!("light-{k}"), |ui| {
+            widgets::slider(
+                ui,
+                "Direction",
+                "Where the light comes from, in degrees counterclockwise from the right edge",
+                &mut light.azimuth,
+                0.0..=360.0,
+                d.azimuth,
+            );
+            widgets::slider(
+                ui,
+                "Height",
+                "Angle of the light above the image in degrees (low: long, raking light)",
+                &mut light.elevation,
+                1.0..=90.0,
+                d.elevation,
+            );
+            widgets::slider(ui, "Intensity", "Brightness of the light", &mut light.intensity, 0.0..=4.0, d.intensity);
+            widgets::color(ui, "Color", "Color of the light", &mut light.color);
+        });
+    }
+    if let Some(k) = remove {
+        li.lights.remove(k);
+    }
+    if li.lights.len() < MAX_LIGHTS && ui.button(format!("{} Light", icons::PLUS)).on_hover_text("Add a light from the opposite side").clicked() {
+        let az = li.lights.last().map_or(135.0, |l| (l.azimuth + 180.0) % 360.0);
+        li.lights.push(Light { azimuth: az, intensity: 0.5, ..Light::default() });
+    }
 }
 
 /// The maps of an IFS density layer: coefficients, weight, variation; presets and fitting.
