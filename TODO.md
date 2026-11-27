@@ -18,7 +18,7 @@ that come up along the way.
 - [x] Droste (log-polar spiral) as a transformation (the *Droste spiral* of stage 2).
 - [x] Denoiser (OIDN) for exports and the command line (color only).
 - [x] Denoiser: albedo and normal images from lit layers and objects (keeps fine detail).
-- [ ] Exit: effects available in preview and export with identical results.
+- [x] Exit: effects available in preview and export with identical results (tested within 1/255).
 
 ## Stage 6 – 3D looks: lighting, 2.5D, 3D objects
 
