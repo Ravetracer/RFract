@@ -3,6 +3,19 @@
 The stages and their scope are in PLAN.md. This file holds the next concrete steps and wishes
 that come up along the way.
 
+## Stage 7 – Effects and textures
+
+- [x] Global post: exposure, tone mapping (Reinhard, ACES, filmic, AgX), contrast,
+      saturation, white balance, split toning, bloom pyramid, streaks, sharpen, lens
+      distortion, chromatic aberration, vignette, grain; preview and export agree.
+- [ ] More post: lens flares and god rays from light positions, curves and levels, spectral
+      chromatic aberration.
+- [ ] Layer effects: DE-based edge glow (neon), drop shadow, emboss, outer and inner glow.
+- [ ] Texture mapping: image textures through coloring coordinates (orbit traps, iteration ×
+      angle, Droste), procedural patterns (Perlin, Voronoi, value noise), textures as bumps.
+- [ ] Denoiser (OIDN) for exports, with albedo and normal images where layers have them.
+- [ ] Exit: effects available in preview and export with identical results.
+
 ## Stage 6 – 3D looks: lighting, 2.5D, 3D objects
 
 - [x] Lit layers: a height field per pass (smooth iterations, coloring value, luminance),

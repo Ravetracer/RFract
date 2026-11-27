@@ -1107,6 +1107,109 @@ fn density_section(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
     });
 }
 
+/// Effects on the finished image (`rfr_core::render::post`).
+fn effects_section(ui: &mut Ui, p: &mut rfr_core::doc::Post) {
+    use rfr_core::doc::{Post, ToneMap};
+    let sec = widgets::section(ui, "Effects", true);
+    if sec.reset {
+        *p = Post::default();
+    }
+    if !sec.open {
+        return;
+    }
+    let d = Post::default();
+    let sub = |ui: &mut Ui, text: &str| {
+        ui.label(RichText::new(text).color(theme::TEXT_MUTED).size(theme::fs(11.5)));
+    };
+    sub(ui, "Tone");
+    widgets::grid(ui, "fx-tone", |ui| {
+        widgets::slider(ui, "Exposure", "Brightness in stops (each stop doubles the light)", &mut p.exposure, -5.0..=5.0, d.exposure);
+        widgets::label(ui, "Tone mapping", "How light brighter than white is brought into range");
+        egui::ComboBox::from_id_salt("fx-tonemap").selected_text(p.tone_map.label()).show_ui(ui, |ui| {
+            for t in ToneMap::ALL {
+                ui.selectable_value(&mut p.tone_map, t, t.label()).on_hover_text(match t {
+                    ToneMap::None => "Values above white are cut off",
+                    ToneMap::Reinhard => "Soft, keeps colors but flattens bright parts",
+                    ToneMap::Aces => "Film-like curve with rich contrast",
+                    ToneMap::Filmic => "Hable's filmic curve: gentle shoulder, lifted shadows",
+                    ToneMap::Agx => "Smooth highlights that desaturate toward white like film",
+                });
+            }
+        });
+        ui.end_row();
+        widgets::slider(ui, "Contrast", "Contrast around middle gray (1: unchanged)", &mut p.contrast, 0.0..=3.0, d.contrast);
+        widgets::slider(ui, "Saturation", "Color intensity (0: gray, 1: unchanged)", &mut p.saturation, 0.0..=3.0, d.saturation);
+    });
+    sub(ui, "Color");
+    widgets::grid(ui, "fx-color", |ui| {
+        widgets::slider(ui, "Temperature", "White balance: cooler (blue) to warmer (orange)", &mut p.temperature, -1.0..=1.0, d.temperature);
+        widgets::slider(ui, "Tint", "White balance: toward green (left) or magenta (right)", &mut p.tint, -1.0..=1.0, d.tint);
+        widgets::color(ui, "Shadow tone", "Color the dark parts take on (split toning)", &mut p.shadow_color);
+        widgets::slider(ui, "Shadow amount", "How strongly the dark parts take on the shadow tone", &mut p.shadow_amount, 0.0..=1.0, d.shadow_amount);
+        widgets::color(ui, "Highlight tone", "Color the bright parts take on (split toning)", &mut p.highlight_color);
+        widgets::slider(
+            ui,
+            "Highlight amount",
+            "How strongly the bright parts take on the highlight tone",
+            &mut p.highlight_amount,
+            0.0..=1.0,
+            d.highlight_amount,
+        );
+    });
+    sub(ui, "Glow");
+    widgets::grid(ui, "fx-glow", |ui| {
+        widgets::slider(ui, "Bloom", "Soft glow around bright parts (0: off)", &mut p.bloom, 0.0..=3.0, d.bloom);
+        if p.bloom > 0.0 {
+            widgets::slider(
+                ui,
+                "Bloom threshold",
+                "Brightness above which parts glow (after exposure; 1: white)",
+                &mut p.bloom_threshold,
+                0.0..=4.0,
+                d.bloom_threshold,
+            );
+            widgets::slider(ui, "Bloom size", "Small, tight glow (0) to wide haze (1)", &mut p.bloom_size, 0.0..=1.0, d.bloom_size);
+        }
+        widgets::slider(ui, "Streaks", "Lines of light through very bright parts, like a star filter (0: off)", &mut p.streak, 0.0..=3.0, d.streak);
+        if p.streak > 0.0 {
+            widgets::slider(
+                ui,
+                "Streak threshold",
+                "Brightness above which streaks start (after exposure)",
+                &mut p.streak_threshold,
+                0.0..=4.0,
+                d.streak_threshold,
+            );
+            widgets::slider(
+                ui,
+                "Streak length",
+                "Length of the streaks as a share of the image width",
+                &mut p.streak_length,
+                0.01..=1.0,
+                d.streak_length,
+            );
+            widgets::slider(ui, "Streak angle", "Direction of the first streak in degrees", &mut p.streak_angle, 0.0..=180.0, d.streak_angle);
+            widgets::slider_u32(ui, "Streak directions", "1: a line, 2: a cross, 3 and 4: stars", &mut p.streak_count, 1..=4, d.streak_count);
+            widgets::color(ui, "Streak tint", "Color of the streaks", &mut p.streak_tint);
+        }
+    });
+    sub(ui, "Lens and film");
+    widgets::grid(ui, "fx-lens", |ui| {
+        widgets::slider(ui, "Sharpen", "Crisper edges (unsharp mask over 3 × 3 pixels)", &mut p.sharpen, 0.0..=3.0, d.sharpen);
+        widgets::slider(ui, "Distortion", "Barrel (right) or pincushion (left) lens distortion", &mut p.distortion, -0.5..=0.5, d.distortion);
+        widgets::slider(
+            ui,
+            "Chromatic aberration",
+            "Red and blue drift apart toward the edges, like a simple lens",
+            &mut p.chromatic,
+            0.0..=0.05,
+            d.chromatic,
+        );
+        widgets::slider(ui, "Vignette", "Darker corners", &mut p.vignette, 0.0..=2.0, d.vignette);
+        widgets::slider(ui, "Grain", "Film grain (a fixed noise pattern)", &mut p.grain, 0.0..=1.0, d.grain);
+    });
+}
+
 fn view_and_image(ui: &mut Ui, doc: &mut Document, sel: &Selection) {
     let sec = widgets::section(ui, "View", true);
     if sec.reset {
@@ -1244,6 +1347,7 @@ pub fn show(ui: &mut Ui, doc: &mut Document, sel: &Selection) -> Vec<Action> {
             fractal_sections(ui, l, &mut actions);
         }
         view_and_image(ui, doc, sel);
+        effects_section(ui, &mut doc.post);
     });
     actions
 }

@@ -4,6 +4,13 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
 
 ## [Unreleased]
 
+### Added
+
+- Effects on the finished image (inspector section *Effects*): exposure, tone mapping
+  (Reinhard, ACES, filmic, AgX), contrast, saturation, white balance, split toning, bloom,
+  streaks, sharpening, lens distortion, chromatic aberration, vignette and film grain; the
+  preview (GPU) and the export (GPU or CPU, command line) show the same.
+
 ## [0.7.0] - 2026-11-27
 
 ### Added

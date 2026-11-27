@@ -115,6 +115,84 @@ struct OpUni {
     blend: [f32; 4],
 }
 
+/// Display uniforms (display.wgsl `Disp`).
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable, Default)]
+struct DispUni {
+    size: [u32; 4],
+    a: [f32; 4],
+    b: [f32; 4],
+    wb: [f32; 4],
+    shadow: [f32; 4],
+    highlight: [f32; 4],
+    bloom: [f32; 4],
+    lv: [[u32; 4]; 6],
+    lw: [[f32; 4]; 6],
+    streak: [f32; 4],
+    slv: [u32; 4],
+}
+
+/// The display uniforms of `post` for a `w` × `h` image after `samples` samples and `row`
+/// rows of the next.
+fn disp_uni(post: &rfr_core::doc::Post, w: u32, h: u32, samples: u32, row: u32) -> DispUni {
+    let mut u = DispUni { size: [w, h, samples, row], ..Default::default() };
+    if post.is_neutral() {
+        return u;
+    }
+    let wb = rfr_core::render::post::white_balance(post);
+    u.a = [2f32.powf(post.exposure as f32), post.contrast as f32, post.saturation as f32, post.tone_map.index() as f32];
+    u.b = [post.vignette as f32, post.grain as f32, post.sharpen as f32, post.distortion as f32];
+    u.wb = [wb[0], wb[1], wb[2], post.chromatic as f32];
+    u.shadow = [post.shadow_color[0], post.shadow_color[1], post.shadow_color[2], post.shadow_amount as f32];
+    u.highlight = [post.highlight_color[0], post.highlight_color[1], post.highlight_color[2], post.highlight_amount as f32];
+    let (levels, _) = bloom_levels(w, h);
+    u.bloom = [if post.bloom > 0.0 { post.bloom as f32 } else { 0.0 }, levels.len() as f32, 0.0, 1.0];
+    for (d, l) in u.lv.iter_mut().zip(&levels) {
+        *d = *l;
+    }
+    for (d, wt) in u.lw.iter_mut().zip(rfr_core::render::post::level_weights(post.bloom_size, levels.len())) {
+        *d = [wt, 0.0, 0.0, 0.0];
+    }
+    if post.streak > 0.0 {
+        let k = post.streak as f32;
+        u.streak = [post.streak_tint[0] * k, post.streak_tint[1] * k, post.streak_tint[2] * k, 1.0];
+        u.slv = streak_regions(w, h).0[3];
+    }
+    u
+}
+
+/// The bloom pyramid of a `w` × `h` image: per level its first texel, width and height, and
+/// the texels of all levels.
+fn bloom_levels(w: u32, h: u32) -> (Vec<[u32; 4]>, u32) {
+    let mut off = 0;
+    let mut out = Vec::new();
+    for (lw, lh) in rfr_core::render::post::level_sizes(w, h) {
+        out.push([off, lw, lh, 0]);
+        off += lw * lh;
+    }
+    (out, off)
+}
+
+/// Streak regions after the bloom pyramid: source, two scratch levels, the sum (first texel,
+/// width, height each) and the texels of pyramid and regions.
+fn streak_regions(w: u32, h: u32) -> ([[u32; 4]; 4], u32) {
+    let (levels, total) = bloom_levels(w, h);
+    let (lw, lh) = (levels[0][1], levels[0][2]);
+    let n = lw * lh;
+    (std::array::from_fn(|k| [total + k as u32 * n, lw, lh, 0]), total + 4 * n)
+}
+
+/// Uniforms of one bloom pass (bloom.wgsl `BP`).
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct BloomPass {
+    dst: [u32; 4],
+    src: [u32; 4],
+    img: [u32; 4],
+    prm: [f32; 4],
+    prm2: [f32; 4],
+}
+
 const NONE: u32 = 0xffff_ffff;
 
 fn source_index(s: MaskSource) -> u32 {
@@ -473,6 +551,13 @@ pub struct GpuRenderer {
     composite_pipeline: wgpu::ComputePipeline,
     display_pipeline: wgpu::ComputePipeline,
     disp_buf: wgpu::Buffer,
+    /// Effects of the preview (display.wgsl, bloom.wgsl): the settings, the bloom passes
+    /// (bright, down, blur_h, blur_v, streak), the pyramid and its scratch, pass uniforms.
+    post: rfr_core::doc::Post,
+    bloom_pipelines: [wgpu::ComputePipeline; 5],
+    bloom_levels: wgpu::Buffer,
+    bloom_tmp: wgpu::Buffer,
+    bloom_passes: Vec<wgpu::Buffer>,
     cache: PipelineCache,
     pending: Vec<(u64, Receiver<()>)>,
     error: Option<String>,
@@ -539,13 +624,37 @@ impl GpuRenderer {
         };
         let composite_pipeline = pipeline("composite", &module("composite", codegen::composite_shader()));
         let display_pipeline = pipeline("display", &module("display", include_str!("wgsl/display.wgsl").to_string()));
+        let bloom_module = module("bloom", include_str!("wgsl/bloom.wgsl").to_string());
+        let bloom_pipelines = ["bloom_bright", "bloom_down", "bloom_blur_h", "bloom_blur_v", "bloom_streak"].map(|entry| {
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some(entry),
+                layout: None,
+                module: &bloom_module,
+                entry_point: Some(entry),
+                compilation_options: Default::default(),
+                cache: None,
+            })
+        });
+        let storage = |label| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: 16,
+                usage: wgpu::BufferUsages::STORAGE,
+                mapped_at_creation: false,
+            })
+        };
         GpuRenderer {
             disp_buf: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("display"),
-                size: 16,
+                size: std::mem::size_of::<DispUni>() as u64,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }),
+            post: rfr_core::doc::Post::default(),
+            bloom_pipelines,
+            bloom_levels: storage("bloom levels"),
+            bloom_tmp: storage("bloom tmp"),
+            bloom_passes: Vec::new(),
             layout,
             pipeline_layout,
             composite_pipeline,
@@ -1271,7 +1380,12 @@ impl GpuRenderer {
         }
         let Some(t) = self.target.as_ref() else { return };
         self.dirty_display = false;
-        self.ctx.queue.write_buffer(&self.disp_buf, 0, bytemuck::cast_slice(&[t.width, t.height, self.samples, self.row]));
+        let (width, height) = (t.width, t.height);
+        let u = disp_uni(&self.post, width, height, self.samples, self.row);
+        self.ctx.queue.write_buffer(&self.disp_buf, 0, bytemuck::bytes_of(&u));
+        let mut enc = self.ctx.device.create_command_encoder(&Default::default());
+        self.bloom_passes(&mut enc, &u);
+        let Some(t) = self.target.as_ref() else { return };
         let bind = self.ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("display"),
             layout: &self.display_pipeline.get_bind_group_layout(0),
@@ -1279,17 +1393,158 @@ impl GpuRenderer {
                 wgpu::BindGroupEntry { binding: 0, resource: self.disp_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: t.accum.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&t.view) },
+                wgpu::BindGroupEntry { binding: 3, resource: self.bloom_levels.as_entire_binding() },
             ],
         });
-        let mut enc = self.ctx.device.create_command_encoder(&Default::default());
         {
             let mut pass = enc.begin_compute_pass(&Default::default());
             pass.set_pipeline(&self.display_pipeline);
             pass.set_bind_group(0, &bind, &[]);
-            pass.dispatch_workgroups(t.width.div_ceil(8), t.height.div_ceil(8), 1);
+            pass.dispatch_workgroups(width.div_ceil(8), height.div_ceil(8), 1);
         }
         self.ctx.queue.submit(Some(enc.finish()));
         self.generation += 1;
+    }
+
+    /// The effects of the preview (`rfr_core::render::post`); a change only shows the image
+    /// again, it does not render anew.
+    pub fn set_post(&mut self, post: &rfr_core::doc::Post) {
+        if self.post != *post {
+            self.post = post.clone();
+            self.dirty_display = true;
+        }
+    }
+
+    /// Records the bloom pyramid and streak passes (bloom.wgsl) when the effects have them.
+    fn bloom_passes(&mut self, enc: &mut wgpu::CommandEncoder, u: &DispUni) {
+        let (bloom_on, streak_on) = (u.bloom[0] > 0.0 && u.bloom[3] > 0.5, u.streak[3] > 0.5);
+        if !bloom_on && !streak_on {
+            return;
+        }
+        let Some(t) = self.target.as_ref() else { return };
+        let device = &self.ctx.device;
+        let (width, height) = (t.width, t.height);
+        let (levels, _) = bloom_levels(width, height);
+        let (regions, texels) = streak_regions(width, height);
+        let bytes = texels as u64 * 16;
+        if self.bloom_levels.size() < bytes {
+            let make = |label| {
+                device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some(label),
+                    size: bytes.next_power_of_two(),
+                    usage: wgpu::BufferUsages::STORAGE,
+                    mapped_at_creation: false,
+                })
+            };
+            self.bloom_levels = make("bloom levels");
+            self.bloom_tmp = make("bloom tmp");
+        }
+        let post = &self.post;
+        let img = [width, height, self.samples, self.row];
+        let exposure = 2f32.powf(post.exposure as f32);
+        let prm = [exposure, post.bloom_threshold as f32, 0.0, 0.0];
+        let prm2 = [0.0; 4];
+        // Passes: bright into level 0, down into each further level, then blur h + v per level.
+        let mut passes: Vec<(usize, BloomPass)> = Vec::new();
+        if bloom_on {
+            for (k, l) in levels.iter().enumerate() {
+                let src = if k == 0 { [0; 4] } else { levels[k - 1] };
+                passes.push((if k == 0 { 0 } else { 1 }, BloomPass { dst: *l, src, img, prm, prm2 }));
+            }
+            for l in &levels {
+                passes.push((2, BloomPass { dst: *l, src: *l, img, prm, prm2 }));
+                passes.push((3, BloomPass { dst: *l, src: *l, img, prm, prm2 }));
+            }
+        }
+        if streak_on {
+            // Bright part into the source region, then per direction three passes through the
+            // scratch regions into the sum (the first direction writes, the others add).
+            let [src, t1, t2, sum] = regions;
+            passes.push((0, BloomPass { dst: src, src: [0; 4], img, prm: [exposure, post.streak_threshold as f32, 0.0, 0.0], prm2 }));
+            let (step0, a) = rfr_core::render::post::streak_params(post.streak_length, src[1]);
+            for (i, dir) in rfr_core::render::post::streak_dirs(post.streak_angle, post.streak_count).into_iter().enumerate() {
+                for (p, (from, to)) in [(src, t1), (t1, t2), (t2, sum)].into_iter().enumerate() {
+                    let add = p == 2 && i > 0;
+                    let step = step0 * 4f32.powi(p as i32);
+                    passes.push((
+                        4,
+                        BloomPass {
+                            dst: to,
+                            src: from,
+                            img,
+                            prm: [exposure, 0.0, if add { 1.0 } else { 0.0 }, 0.0],
+                            prm2: [dir[0], dir[1], step, a],
+                        },
+                    ));
+                }
+            }
+        }
+        while self.bloom_passes.len() < passes.len() {
+            self.bloom_passes.push(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("bloom pass"),
+                size: std::mem::size_of::<BloomPass>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        }
+        for (i, (kind, bp)) in passes.iter().enumerate() {
+            self.ctx.queue.write_buffer(&self.bloom_passes[i], 0, bytemuck::bytes_of(bp));
+            let pipe = &self.bloom_pipelines[*kind];
+            let mut entries = vec![wgpu::BindGroupEntry { binding: 0, resource: self.bloom_passes[i].as_entire_binding() }];
+            if *kind == 0 {
+                entries.push(wgpu::BindGroupEntry { binding: 1, resource: t.accum.as_entire_binding() });
+            }
+            entries.push(wgpu::BindGroupEntry { binding: 3, resource: self.bloom_levels.as_entire_binding() });
+            if *kind == 2 || *kind == 3 {
+                entries.push(wgpu::BindGroupEntry { binding: 4, resource: self.bloom_tmp.as_entire_binding() });
+            }
+            let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("bloom"),
+                layout: &pipe.get_bind_group_layout(0),
+                entries: &entries,
+            });
+            let mut pass = enc.begin_compute_pass(&Default::default());
+            pass.set_pipeline(pipe);
+            pass.set_bind_group(0, &bind, &[]);
+            pass.dispatch_workgroups(bp.dst[1].div_ceil(8), bp.dst[2].div_ceil(8), 1);
+        }
+    }
+
+    /// The preview as shown (display texture, 8-bit sRGB RGBA, opaque): for tests.
+    pub fn read_display(&self) -> Option<Vec<u8>> {
+        let t = self.target.as_ref()?;
+        let row = (t.width * 4).next_multiple_of(256);
+        let staging = self.ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("display readback"),
+            size: row as u64 * t.height as u64,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut enc = self.ctx.device.create_command_encoder(&Default::default());
+        enc.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo { texture: &t.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &staging,
+                layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(t.height) },
+            },
+            wgpu::Extent3d { width: t.width, height: t.height, depth_or_array_layers: 1 },
+        );
+        self.ctx.queue.submit(Some(enc.finish()));
+        let slice = staging.slice(..);
+        let (tx, rx) = channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        let _ = self.ctx.device.poll(wgpu::PollType::wait_indefinitely());
+        rx.recv().ok()?.ok()?;
+        let data = slice.get_mapped_range().ok()?;
+        let mut out = Vec::with_capacity((t.width * t.height * 4) as usize);
+        for y in 0..t.height as usize {
+            out.extend_from_slice(&data[y * row as usize..y * row as usize + t.width as usize * 4]);
+        }
+        drop(data);
+        staging.unmap();
+        Some(out)
     }
 
     /// Averaged linear RGB with straight alpha per pixel (reads the accumulation back).

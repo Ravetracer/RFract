@@ -53,7 +53,8 @@ impl Export {
                 let (tx, rx) = channel();
                 let d = doc.clone();
                 std::thread::spawn(move || {
-                    let r = rfr_core::render::cpu::render(&d, d.image.width, d.image.height, d.image.samples.max(1)).map(|r| r.rgba8());
+                    let r = rfr_core::render::cpu::render(&d, d.image.width, d.image.height, d.image.samples.max(1))
+                        .map(|r| rfr_core::render::post::finish(&r.linear(), d.image.width, d.image.height, &d.post));
                     let _ = tx.send(r);
                 });
                 Engine::Cpu(rx)
@@ -74,7 +75,12 @@ impl Export {
                 if let Some(e) = r.error() {
                     result = Some(Err(e.to_string()));
                 } else if r.samples() >= job.samples {
-                    result = Some(r.read_rgba8().ok_or_else(|| "could not read the image back from the GPU".to_string()));
+                    let (w, h, post) = (job.doc.image.width, job.doc.image.height, &job.doc.post);
+                    result = Some(
+                        r.read_linear()
+                            .map(|lin| rfr_core::render::post::finish(&lin, w, h, post))
+                            .ok_or_else(|| "could not read the image back from the GPU".to_string()),
+                    );
                 }
                 r.samples() as f32 / job.samples as f32
             }

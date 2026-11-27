@@ -451,3 +451,63 @@ fn oversized_render_reports_an_error() {
     assert!(r.is_err(), "a 60000 × 60000 render cannot fit");
     eprintln!("{}", r.err().unwrap());
 }
+
+/// The preview's effects (display.wgsl, bloom.wgsl) match the export's (rfr_core post) on the
+/// same accumulated image.
+#[test]
+fn preview_effects_match_the_export() {
+    let Ok(ctx) = rfr_gpu::GpuContext::new_headless() else {
+        eprintln!("no GPU: skipped");
+        return;
+    };
+    use rfr_core::doc::{Post, ToneMap};
+    let doc = Document::for_formula("rfract:Mandelbrot");
+    let (w, h) = (160, 90);
+    let plan = Plan::sized(&doc, w, h).unwrap();
+    let mut r = rfr_gpu::GpuRenderer::new(ctx);
+    r.set_plan(&plan);
+    r.wait_for_pipeline().unwrap();
+    while r.samples() < 4 {
+        r.work(std::time::Duration::from_millis(200), 4);
+    }
+    let lin = r.read_linear().unwrap();
+    let base = Post { exposure: 1.5, sharpen: 0.5, bloom: 0.8, bloom_threshold: 0.6, ..Post::default() };
+    let cases = [
+        ("neutral", Post::default()),
+        ("bloom", base.clone()),
+        ("streaks aces", Post { streak: 1.0, streak_threshold: 0.5, streak_count: 3, tone_map: ToneMap::Aces, ..base.clone() }),
+        (
+            "lens and grading",
+            Post {
+                tone_map: ToneMap::Agx,
+                distortion: 0.2,
+                chromatic: 0.02,
+                temperature: 0.5,
+                tint: -0.3,
+                saturation: 1.4,
+                shadow_amount: 0.6,
+                highlight_amount: 0.5,
+                contrast: 1.3,
+                vignette: 0.8,
+                grain: 0.3,
+                ..base.clone()
+            },
+        ),
+        ("filmic reinhard", Post { tone_map: ToneMap::Filmic, ..Post::default() }),
+        ("reinhard", Post { tone_map: ToneMap::Reinhard, exposure: 2.0, ..Post::default() }),
+    ];
+    let plain = rfr_core::render::post::finish(&lin, w, h, &Post::default());
+    for (name, post) in cases {
+        // Every effect case changes the image.
+        let change = mean_diff(&rfr_core::render::post::finish(&lin, w, h, &post), &plain);
+        assert!(name == "neutral" || change > 2.0, "{name}: changes the image by only {change:.2}");
+        r.set_post(&post);
+        r.display();
+        let gpu = r.read_display().unwrap();
+        let cpu = rfr_core::render::post::finish(&lin, w, h, &post);
+        let max = gpu.iter().zip(&cpu).enumerate().filter(|(i, _)| i % 4 != 3).map(|(_, (a, b))| a.abs_diff(*b)).max().unwrap();
+        let d = mean_diff(&gpu, &cpu);
+        eprintln!("{name}: mean {d:.3}, max {max}");
+        assert!(d < 0.5 && max <= 8, "{name}: mean {d:.3}, max {max} of 255");
+    }
+}

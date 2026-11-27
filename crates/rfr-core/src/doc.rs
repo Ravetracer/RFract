@@ -21,6 +21,130 @@ pub struct Document {
     pub image: Image,
     pub view: View,
     pub layers: Vec<Layer>,
+    /// Effects on the finished image (`render::post`).
+    pub post: Post,
+}
+
+/// How bright light is brought into the displayable range.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ToneMap {
+    /// Values above 1 are clipped.
+    #[default]
+    None,
+    Reinhard,
+    Aces,
+    Filmic,
+    Agx,
+}
+
+impl ToneMap {
+    pub const ALL: [ToneMap; 5] = [ToneMap::None, ToneMap::Reinhard, ToneMap::Aces, ToneMap::Filmic, ToneMap::Agx];
+
+    pub fn index(self) -> u32 {
+        ToneMap::ALL.iter().position(|t| *t == self).unwrap_or(0) as u32
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ToneMap::None => "None (clip)",
+            ToneMap::Reinhard => "Reinhard",
+            ToneMap::Aces => "ACES",
+            ToneMap::Filmic => "Filmic",
+            ToneMap::Agx => "AgX",
+        }
+    }
+}
+
+/// Effects on the finished image, in this order: sharpening, bloom and streaks (light above a
+/// threshold spreads), lens distortion and chromatic aberration, exposure (stops) and white
+/// balance (temperature, tint: -1…1), tone mapping, saturation, split toning (dark parts
+/// toward one color, bright parts toward another), contrast, vignette, film grain. The
+/// defaults change nothing.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Post {
+    pub sharpen: f64,
+    pub bloom: f64,
+    pub bloom_threshold: f64,
+    pub bloom_size: f64,
+    pub streak: f64,
+    pub streak_threshold: f64,
+    /// Share of the image width.
+    pub streak_length: f64,
+    /// Degrees, counterclockwise.
+    pub streak_angle: f64,
+    /// Directions: 1 a line, 2 a cross, 3 and 4 stars.
+    pub streak_count: u32,
+    pub streak_tint: [f32; 3],
+    /// Barrel (above 0) or pincushion (below 0) distortion.
+    pub distortion: f64,
+    /// Red drawn outward, blue inward, by this share of the distance from the center.
+    pub chromatic: f64,
+    pub exposure: f64,
+    pub temperature: f64,
+    pub tint: f64,
+    pub tone_map: ToneMap,
+    pub saturation: f64,
+    pub shadow_color: [f32; 3],
+    pub shadow_amount: f64,
+    pub highlight_color: [f32; 3],
+    pub highlight_amount: f64,
+    pub contrast: f64,
+    pub vignette: f64,
+    pub grain: f64,
+}
+
+impl Default for Post {
+    fn default() -> Self {
+        Post {
+            sharpen: 0.0,
+            bloom: 0.0,
+            bloom_threshold: 1.0,
+            bloom_size: 0.6,
+            streak: 0.0,
+            streak_threshold: 1.0,
+            streak_length: 0.3,
+            streak_angle: 0.0,
+            streak_count: 2,
+            streak_tint: [1.0, 1.0, 1.0],
+            distortion: 0.0,
+            chromatic: 0.0,
+            exposure: 0.0,
+            temperature: 0.0,
+            tint: 0.0,
+            tone_map: ToneMap::None,
+            saturation: 1.0,
+            shadow_color: [0.2, 0.4, 1.0],
+            shadow_amount: 0.0,
+            highlight_color: [1.0, 0.7, 0.3],
+            highlight_amount: 0.0,
+            contrast: 1.0,
+            vignette: 0.0,
+            grain: 0.0,
+        }
+    }
+}
+
+impl Post {
+    /// Whether the effects change nothing.
+    pub fn is_neutral(&self) -> bool {
+        self.sharpen == 0.0
+            && self.bloom <= 0.0
+            && self.streak <= 0.0
+            && self.distortion == 0.0
+            && self.chromatic == 0.0
+            && self.exposure == 0.0
+            && self.temperature == 0.0
+            && self.tint == 0.0
+            && self.tone_map == ToneMap::None
+            && self.saturation == 1.0
+            && self.shadow_amount <= 0.0
+            && self.highlight_amount <= 0.0
+            && self.contrast == 1.0
+            && self.vignette == 0.0
+            && self.grain == 0.0
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -979,7 +1103,7 @@ impl Default for View {
 
 impl Default for Document {
     fn default() -> Self {
-        Document { version: DOC_VERSION, image: Image::default(), view: View::default(), layers: vec![Layer::default()] }
+        Document { version: DOC_VERSION, image: Image::default(), view: View::default(), layers: vec![Layer::default()], post: Post::default() }
     }
 }
 

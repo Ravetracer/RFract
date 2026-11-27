@@ -11,6 +11,7 @@ pub mod density;
 pub mod light;
 pub mod object;
 pub mod oidn;
+pub mod post;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

@@ -405,6 +405,7 @@ impl Viewport {
         if !fast && gpu.samples() >= max && self.converged_after.is_none() && max > 0 {
             self.converged_after = Some(self.pass_start.elapsed());
         }
+        gpu.set_post(&doc.post);
         gpu.display();
         let (view, generation) = (gpu.output_view()?.clone(), gpu.generation());
         let rs = frame.wgpu_render_state()?;
