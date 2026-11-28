@@ -519,6 +519,27 @@ fn gpu_perturbation_matches_the_cpu() {
     let diff = block_diff(&cpu, &gpu, w as usize, h as usize);
     assert!(diff < 4.0, "perturbation with distance estimation: block difference {diff:.2} of 255");
 
+    // Linear steps carrying more than z: the pixel kept in a local (an input next to δc), and
+    // Phoenix (z and the previous z change) at the edge of its set.
+    let mut kin = d.clone();
+    kin.layers[0].formula = "fractalpark:34325634-553e-5841-9ae0-bcb17954060c".into();
+    let mut phoenix = Document::for_formula("rfract:Phoenix");
+    phoenix.view.center = ["-0.58993772591048288".into(), "0.81047004991357108".into()];
+    phoenix.view.radius = rfr_core::math::fx::Fx::parse("1e-16").unwrap();
+    phoenix.layers[0].max_iter = 5000;
+    for (name, doc) in [("pixel in a local", &kin), ("phoenix", &phoenix)] {
+        let plan = Plan::sized(doc, w, h).unwrap();
+        assert_eq!(rfr_gpu::renderer::renderer_mode(&plan), Mode::Pert, "{name}");
+        let lp = &plan.layers()[0];
+        let pert = codegen::perturbation(lp).expect("perturbable");
+        assert!(pert.bla_possible(), "{name}: linear steps");
+        let cpu = rfr_core::render::cpu::render(doc, w, h, s).unwrap().rgba8();
+        let gpu = rfr_core::render::cpu::rgba8(&rfr_gpu::render_blocking(ctx.clone(), &plan, s, |_| true).unwrap());
+        assert!(cpu.chunks(4).any(|p| p[0] > 100) && cpu.chunks(4).any(|p| p[0] < 30), "{name}: the view shows structure");
+        let diff = block_diff(&cpu, &gpu, w as usize, h as usize);
+        assert!(diff < 4.0, "{name}: block difference {diff:.2} of 255");
+    }
+
     // Moving the view keeps the reference orbit (the samples add the offset); the image
     // matches a render with a fresh orbit at the new center.
     let mut moved = d.clone();

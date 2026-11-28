@@ -105,7 +105,10 @@ difference to the reference stays small, RFract jumps over hundreds or thousands
 iterations at once with precomputed linear steps (*bilinear approximation*), so a full HD
 image at 10⁻³⁰ with 50 000 iterations takes seconds. Coloring algorithms that look at every
 iteration (orbit traps and the like), post-transformations and distance estimation need all
-of them and render slower at depth.
+of them and render slower at depth. The linear steps also work for formulas that carry
+more than `z` from one iteration to the next: values kept from `init` (such as the pixel
+stored in a variable) and further changing variables (Phoenix and its previous `z`), up to
+four of them. Formulas with quotients in the loop iterate every step.
 
 Distance estimation works at every depth: in double-float views the derivatives ride along
 in 32-bit numbers, in perturbation views they follow the differences to the reference with

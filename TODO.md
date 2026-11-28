@@ -91,8 +91,17 @@ Open points of the earlier stages (their notes below stay for the details).
   - [x] Depth compositing: 3D objects placed into a terrain's scene (`doc::Placement`,
         `light::SceneObject`/`Place`, `Plan::build` attaches the object to the terrain below;
         nearer surface wins, shadows both ways; path-traced bounces do not see the object).
-- [ ] Perturbation: BLA for formulas with more than z, double-float reference values on the
+- [x] Perturbation: BLA for formulas with more than z, double-float reference values on the
       GPU, fallback or hint for formulas that cannot be perturbed.
+  - [x] BLA with several carried locals (`BlaShape`: changing locals up to 4 as the state,
+        locals only read as inputs next to δc; 2 × 2 `Mfx` blocks, σ_min by Jacobi;
+        `codegen::pert_code` and `pack_bla` with the general layout). 146 of 352 perturbable
+        library formulas had no BLA before.
+  - [x] Double-float reference values: not needed. f32 reference values add the same relative
+        error per step as the f32 delta arithmetic; CPU/GPU match at 1e-31 with orbits of tens
+        of thousands of iterations (MAE 1.3 %).
+  - [x] Hint: the status bar names the layers that cannot be perturbed (no bignum fallback:
+        far too slow per pixel).
 - [ ] Exit: full renders of stage 8 (deep zoom from the app, 1080p fly-over).
 
 ## Stage 9 – Explore, scale, polish

@@ -34,6 +34,9 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
 - 3D formulas (`.r3d` files in UFM syntax): 3D object layers run your own formulas on x, y, z;
   the surface comes from distance estimates by automatic derivatives. Bundled: Mandelbulb,
   Burning bulb, Bristorbrot, Mandelbox.
+- Deep zooms: linear steps (bilinear approximation) for formulas that carry more than `z`
+  (values kept from `init`, Phoenix and other formulas with several changing variables), on
+  the CPU and the GPU; such views at 10⁻³⁰ now skip most iterations.
 - 3D objects in a terrain (*Place in terrain*): an object layer stands in the scene of the 3D
   terrain below it, seen through its camera and lit by its lights; the nearer surface hides
   the other and both cast shadows.

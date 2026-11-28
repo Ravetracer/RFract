@@ -678,11 +678,18 @@ fn pack_bla(t: &rfr_core::formula::perturb::BlaTable) -> Vec<[f32; 4]> {
         out[k / 4][k % 4] = f32::from_bits(offset);
         offset += level.len() as u32;
     }
+    // Per step: its blocks, then their exponents, the radius' mantissa and exponent, four
+    // words to a vector (codegen::pert_code reads the same layout).
+    let nb = t.shape.blocks();
     for level in t.levels.iter().take(32) {
-        for b in level {
-            out.push(b.m.a.map(|x| x as f32));
-            out.push(b.n.a.map(|x| x as f32));
-            out.push([f32::from_bits(b.m.e as u32), f32::from_bits(b.n.e as u32), b.r.m as f32, f32::from_bits(b.r.e as u32)]);
+        for (i, r) in level.r.iter().enumerate() {
+            let blocks = &level.blocks[i * nb..(i + 1) * nb];
+            out.extend(blocks.iter().map(|b| b.a.map(|x| x as f32)));
+            let mut words: Vec<f32> = blocks.iter().map(|b| f32::from_bits(b.e as u32)).collect();
+            words.push(r.m as f32);
+            words.push(f32::from_bits(r.e as u32));
+            words.resize(words.len().div_ceil(4) * 4, 0.0);
+            out.extend(words.chunks(4).map(|c| [c[0], c[1], c[2], c[3]]));
         }
     }
     out

@@ -761,32 +761,98 @@ impl Mfx {
     }
 }
 
-/// One linear step over `len` iterations: `δz ↦ M δz + N δc` while `|δz| < r`.
-#[derive(Clone, Copy, Debug)]
-pub struct Bla {
-    pub m: Mfx,
-    pub n: Mfx,
-    pub r: Fx,
+/// Most locals the loop changes that linear steps carry, and most inputs (δc and the locals
+/// the loop only reads).
+pub const BLA_DYNAMIC: usize = 4;
+pub const BLA_INPUTS: usize = 6;
+
+/// The locals linear steps work on: the carried locals the loop changes (`dynamic`, z first)
+/// and the ones it only reads (`inputs`, after δc; their deltas stay as `init` made them).
+#[derive(Clone, Debug, PartialEq)]
+pub struct BlaShape {
+    pub dynamic: Vec<usize>,
+    pub inputs: Vec<usize>,
+}
+
+impl BlaShape {
+    /// Number of inputs including δc.
+    pub fn nin(&self) -> usize {
+        1 + self.inputs.len()
+    }
+
+    /// 2 × 2 blocks of one step: `M` (dynamic × dynamic), then `N` (dynamic × inputs).
+    pub fn blocks(&self) -> usize {
+        let d = self.dynamic.len();
+        d * d + d * self.nin()
+    }
+}
+
+/// Linear steps of one length: step `i` maps the dynamic deltas `x` and the inputs `u` to
+/// `M x + N u` while `|x| < r`. `M` and `N` are row-major grids of 2 × 2 blocks
+/// ([`BlaShape::blocks`] per step, `M` first).
+#[derive(Clone, Debug, Default)]
+pub struct BlaLevel {
+    pub blocks: Vec<Mfx>,
+    pub r: Vec<Fx>,
+}
+
+impl BlaLevel {
+    pub fn len(&self) -> usize {
+        self.r.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.r.is_empty()
+    }
 }
 
 /// Linear steps for every aligned stretch of the reference orbit: level `k` holds the steps
 /// of `2^k` iterations starting at multiples of `2^k`.
 #[derive(Clone, Debug)]
 pub struct BlaTable {
-    pub levels: Vec<Vec<Bla>>,
+    pub shape: BlaShape,
+    pub levels: Vec<BlaLevel>,
 }
 
-/// The linear part of a delta (by δz and by δc), a bound of its second-order part and a
-/// limit of |δz| (sign changes of `abs` arguments).
+/// The linear part of a value: 2 × 2 blocks by the dynamic deltas (`j`) and by the inputs
+/// (`k`), a bound of its second-order part and a limit of |x| (sign changes of `abs`
+/// arguments).
 #[derive(Clone, Copy, Debug)]
 struct Lin {
-    j: [f64; 4],
-    k: [f64; 4],
+    j: [[f64; 4]; BLA_DYNAMIC],
+    k: [[f64; 4]; BLA_INPUTS],
     q: f64,
     lim: f64,
 }
 
-const LIN0: Lin = Lin { j: [0.0; 4], k: [0.0; 4], q: 0.0, lim: f64::INFINITY };
+const LIN0: Lin = Lin { j: [[0.0; 4]; BLA_DYNAMIC], k: [[0.0; 4]; BLA_INPUTS], q: 0.0, lim: f64::INFINITY };
+const ID: [f64; 4] = [1.0, 0.0, 0.0, 1.0];
+
+impl Lin {
+    /// Every block mapped by `f` (the bounds kept).
+    fn map(&self, f: impl Fn(&[f64; 4]) -> [f64; 4]) -> Lin {
+        Lin { j: self.j.map(|b| f(&b)), k: self.k.map(|b| f(&b)), ..*self }
+    }
+
+    /// `self + sign · o`.
+    fn plus(&self, o: &Lin, sign: f64) -> Lin {
+        let mut r = *self;
+        for (a, b) in r.j.iter_mut().zip(&o.j) {
+            *a = madd(a, &b.map(|x| sign * x));
+        }
+        for (a, b) in r.k.iter_mut().zip(&o.k) {
+            *a = madd(a, &b.map(|x| sign * x));
+        }
+        r.q += o.q;
+        r.lim = r.lim.min(o.lim);
+        r
+    }
+
+    /// Frobenius norm of the blocks by the dynamic deltas.
+    fn fro_j(&self) -> f64 {
+        self.j.iter().map(|b| b.iter().map(|v| v * v).sum::<f64>()).sum::<f64>().sqrt()
+    }
+}
 
 fn mat_c(c: C64) -> [f64; 4] {
     [c.re, -c.im, c.im, c.re]
@@ -800,10 +866,6 @@ fn madd(x: &[f64; 4], y: &[f64; 4]) -> [f64; 4] {
     [x[0] + y[0], x[1] + y[1], x[2] + y[2], x[3] + y[3]]
 }
 
-fn fro(x: &[f64; 4]) -> f64 {
-    x.iter().map(|v| v * v).sum::<f64>().sqrt()
-}
-
 /// Smallest singular value of a 2 × 2 matrix.
 fn sigma_min(m: &[f64; 4]) -> f64 {
     let (a, b, c, d) = (m[0], m[1], m[2], m[3]);
@@ -813,9 +875,81 @@ fn sigma_min(m: &[f64; 4]) -> f64 {
     ((s1 - disc) * 0.5).max(0.0).sqrt()
 }
 
+/// Smallest singular value of the real `2d × 2d` matrix made of `d × d` 2 × 2 blocks: the
+/// square root of the smallest eigenvalue of `MᵀM` (Jacobi rotations).
+fn sigma_min_blocks(b: &[[f64; 4]], d: usize) -> f64 {
+    if d == 1 {
+        return sigma_min(&b[0]);
+    }
+    let n = 2 * d;
+    let at = |r: usize, c: usize| b[(r / 2) * d + c / 2][(r % 2) * 2 + c % 2];
+    let mut a = vec![0.0f64; n * n];
+    for i in 0..n {
+        for j in 0..n {
+            a[i * n + j] = (0..n).map(|k| at(k, i) * at(k, j)).sum();
+        }
+    }
+    for _ in 0..30 {
+        let off: f64 = (0..n).flat_map(|i| (0..n).filter(move |&j| j != i).map(move |j| (i, j))).map(|(i, j)| a[i * n + j] * a[i * n + j]).sum();
+        let diag: f64 = (0..n).map(|i| a[i * n + i] * a[i * n + i]).sum();
+        if off <= 1e-30 * diag {
+            break;
+        }
+        for p in 0..n {
+            for q in p + 1..n {
+                let apq = a[p * n + q];
+                if apq == 0.0 {
+                    continue;
+                }
+                let theta = (a[q * n + q] - a[p * n + p]) / (2.0 * apq);
+                let t = theta.signum() / (theta.abs() + (theta * theta + 1.0).sqrt());
+                let t = if theta == 0.0 { 1.0 } else { t };
+                let c = 1.0 / (t * t + 1.0).sqrt();
+                let s = t * c;
+                for k in 0..n {
+                    let (akp, akq) = (a[k * n + p], a[k * n + q]);
+                    a[k * n + p] = c * akp - s * akq;
+                    a[k * n + q] = s * akp + c * akq;
+                }
+                for k in 0..n {
+                    let (apk, aqk) = (a[p * n + k], a[q * n + k]);
+                    a[p * n + k] = c * apk - s * aqk;
+                    a[q * n + k] = s * apk + c * aqk;
+                }
+            }
+        }
+    }
+    (0..n).map(|i| a[i * n + i]).fold(f64::INFINITY, f64::min).max(0.0).sqrt()
+}
+
+/// Frobenius norm of blocks with exponents.
+fn norm_blocks(b: &[Mfx]) -> Fx {
+    let mut s = Fx::ZERO;
+    for m in b {
+        let n = m.norm();
+        s = s + n * n;
+    }
+    s.sqrt()
+}
+
+/// `a · b` for grids of blocks: `a` is `r × k`, `b` is `k × c`.
+fn grid_mul(a: &[Mfx], b: &[Mfx], r: usize, k: usize, c: usize) -> Vec<Mfx> {
+    let mut out = vec![Mfx { a: [0.0; 4], e: 0 }; r * c];
+    for i in 0..r {
+        for j in 0..c {
+            let mut s = Mfx { a: [0.0; 4], e: 0 };
+            for t in 0..k {
+                s = s.add(&a[i * k + t].mul(&b[t * c + j]));
+            }
+            out[i * c + j] = s;
+        }
+    }
+    out
+}
+
 impl Perturbation {
     /// Locals the loop reads before it writes them (carried from iteration to iteration).
-    fn carried(&self) -> Vec<usize> {
+    pub fn carried(&self) -> Vec<usize> {
         fn reads(e: &PE, out: &mut Vec<usize>) {
             match e {
                 PE::Local(i) => out.push(*i),
@@ -842,9 +976,26 @@ impl Perturbation {
         carried
     }
 
-    /// Whether BLA applies: only `z` is carried from iteration to iteration.
+    /// The locals linear steps carry (`None`: too many, or a carried local the orbit does not
+    /// store).
+    pub fn bla_shape(&self) -> Option<BlaShape> {
+        let carried = self.carried();
+        if carried.iter().any(|l| !self.state.contains(l)) {
+            return None;
+        }
+        let written = |l: usize| self.body.iter().any(|(i, _)| *i == l);
+        let mut dynamic: Vec<usize> = carried.iter().copied().filter(|&l| written(l)).collect();
+        if !dynamic.contains(&Z) {
+            dynamic.insert(0, Z);
+        }
+        dynamic.sort_by_key(|&l| (l != Z, l));
+        let inputs: Vec<usize> = carried.iter().copied().filter(|&l| !written(l)).collect();
+        (dynamic.len() <= BLA_DYNAMIC && inputs.len() < BLA_INPUTS).then_some(BlaShape { dynamic, inputs })
+    }
+
+    /// Whether linear steps apply (see [`Perturbation::bla_shape`]).
     pub fn bla_possible(&self) -> bool {
-        self.carried().iter().all(|&l| l == Z)
+        self.bla_shape().is_some()
     }
 
     fn lin(&self, e: &PE, refs: &[C64], ls: &[Lin], center: C64) -> Option<(C64, Lin)> {
@@ -852,14 +1003,14 @@ impl Perturbation {
         Some(match e {
             PE::Const(c) => (*c, LIN0),
             PE::Local(i) => (refs[*i], ls[*i]),
-            PE::Pixel => (center, Lin { j: [0.0; 4], k: [1.0, 0.0, 0.0, 1.0], q: 0.0, lim: f64::INFINITY }),
+            PE::Pixel => {
+                let mut l = LIN0;
+                l.k[0] = ID;
+                (center, l)
+            }
             PE::Add(a, b) | PE::Sub(a, b) => {
                 let ((ra, la), (rb, lb)) = (ev(a)?, ev(b)?);
-                let sign = if matches!(e, PE::Sub(..)) { -1.0 } else { 1.0 };
-                (
-                    if sign > 0.0 { ra + rb } else { ra - rb },
-                    Lin { j: madd(&la.j, &lb.j.map(|x| sign * x)), k: madd(&la.k, &lb.k.map(|x| sign * x)), q: la.q + lb.q, lim: la.lim.min(lb.lim) },
-                )
+                if matches!(e, PE::Sub(..)) { (ra - rb, la.plus(&lb, -1.0)) } else { (ra + rb, la.plus(&lb, 1.0)) }
             }
             PE::Mul(a, b) => {
                 let ((ra, la), (rb, lb)) = (ev(a)?, ev(b)?);
@@ -868,7 +1019,7 @@ impl Perturbation {
             PE::Div(..) => return None,
             PE::Neg(a) => {
                 let (r, l) = ev(a)?;
-                (-r, Lin { j: l.j.map(|x| -x), k: l.k.map(|x| -x), ..l })
+                (-r, l.map(|b| b.map(|x| -x)))
             }
             PE::PowI(a, n) => {
                 let (r, l) = ev(a)?;
@@ -881,121 +1032,183 @@ impl Perturbation {
             PE::Conj(a) => {
                 let (r, l) = ev(a)?;
                 let d = [1.0, 0.0, 0.0, -1.0];
-                (r.conj(), Lin { j: mm(&d, &l.j), k: mm(&d, &l.k), ..l })
+                (r.conj(), l.map(|b| mm(&d, b)))
             }
             PE::Abs(a) => {
                 let (r, l) = ev(a)?;
                 let s = |v: f64| if v >= 0.0 { 1.0 } else { -1.0 };
                 let d = [s(r.re), 0.0, 0.0, s(r.im)];
-                // The parts must keep their signs: |Jδ| below the smaller part.
-                let lim = r.re.abs().min(r.im.abs()) / fro(&l.j).max(1e-300);
-                (C64::new(r.re.abs(), r.im.abs()), Lin { j: mm(&d, &l.j), k: mm(&d, &l.k), q: l.q, lim: l.lim.min(lim) })
+                // The parts must keep their signs: |Jx| below the smaller part.
+                let lim = r.re.abs().min(r.im.abs()) / l.fro_j().max(1e-300);
+                let mut out = l.map(|b| mm(&d, b));
+                out.lim = l.lim.min(lim);
+                (C64::new(r.re.abs(), r.im.abs()), out)
             }
             PE::Re(a) | PE::Im(a) | PE::Flip(a) => {
                 let (r, l) = ev(a)?;
-                let (d, v) = match e {
-                    PE::Re(_) => ([1.0, 0.0, 0.0, 0.0], C64::new(r.re, 0.0)),
-                    PE::Im(_) => ([0.0, 1.0, 0.0, 0.0], C64::new(r.im, 0.0)),
-                    _ => ([0.0, 1.0, 1.0, 0.0], C64::new(r.im, r.re)),
-                };
                 // Re takes row 0, Im row 1 (as row 0), Flip swaps the rows.
+                let v = match e {
+                    PE::Re(_) => C64::new(r.re, 0.0),
+                    PE::Im(_) => C64::new(r.im, 0.0),
+                    _ => C64::new(r.im, r.re),
+                };
                 let pick = |m: &[f64; 4]| match e {
                     PE::Re(_) => [m[0], m[1], 0.0, 0.0],
                     PE::Im(_) => [m[2], m[3], 0.0, 0.0],
                     _ => [m[2], m[3], m[0], m[1]],
                 };
-                let _ = d;
-                (v, Lin { j: pick(&l.j), k: pick(&l.k), ..l })
+                (v, l.map(pick))
             }
             PE::MakeC(a, b) => {
                 let ((ra, la), (rb, lb)) = (ev(a)?, ev(b)?);
-                (
-                    C64::new(ra.re, rb.re),
-                    Lin { j: [la.j[0], la.j[1], lb.j[0], lb.j[1]], k: [la.k[0], la.k[1], lb.k[0], lb.k[1]], q: la.q + lb.q, lim: la.lim.min(lb.lim) },
-                )
+                let mut out = la.plus(&lb, 0.0);
+                out.j = std::array::from_fn(|i| [la.j[i][0], la.j[i][1], lb.j[i][0], lb.j[i][1]]);
+                out.k = std::array::from_fn(|i| [la.k[i][0], la.k[i][1], lb.k[i][0], lb.k[i][1]]);
+                out.q = la.q + lb.q;
+                (C64::new(ra.re, rb.re), out)
             }
         })
     }
 
     fn lin_mul(&self, ra: C64, la: Lin, rb: C64, lb: Lin) -> (C64, Lin) {
         let (ma, mb) = (mat_c(ra), mat_c(rb));
-        (
-            ra * rb,
-            Lin {
-                j: madd(&mm(&ma, &lb.j), &mm(&mb, &la.j)),
-                k: madd(&mm(&ma, &lb.k), &mm(&mb, &la.k)),
-                q: ra.norm().sqrt() * lb.q + rb.norm().sqrt() * la.q + fro(&la.j) * fro(&lb.j),
-                lim: la.lim.min(lb.lim),
-            },
-        )
+        let mut out = la.map(|b| mm(&mb, b)).plus(&lb.map(|b| mm(&ma, b)), 1.0);
+        out.q = ra.norm().sqrt() * lb.q + rb.norm().sqrt() * la.q + la.fro_j() * lb.fro_j();
+        (ra * rb, out)
     }
 
-    /// The single linear step from reference state `n` to `n + 1` (`None`: no linear form).
-    fn bla_step(&self, orbit: &RefOrbit, n: usize, eps: f64) -> Option<Bla> {
+    /// The single linear step from reference state `n` to `n + 1`: its blocks and radius
+    /// (`None`: no linear form).
+    fn bla_step(&self, shape: &BlaShape, orbit: &RefOrbit, n: usize, eps: f64) -> Option<(Vec<Mfx>, Fx)> {
         let mut refs = vec![C64::new(0.0, 0.0); self.nlocals];
         let mut ls = vec![LIN0; self.nlocals];
         for (k, &s) in self.state.iter().enumerate() {
             refs[s] = orbit.state(n)[k];
         }
-        ls[Z] = Lin { j: [1.0, 0.0, 0.0, 1.0], ..LIN0 };
+        for (i, &l) in shape.dynamic.iter().enumerate() {
+            ls[l].j[i] = ID;
+        }
+        for (i, &l) in shape.inputs.iter().enumerate() {
+            ls[l].k[1 + i] = ID;
+        }
         for (i, e) in &self.body {
             let (r, l) = self.lin(e, &refs, &ls, orbit.center)?;
             refs[*i] = r;
             ls[*i] = l;
         }
-        let l = ls[Z];
-        let lin_r = if l.q > 0.0 { eps * sigma_min(&l.j) / l.q } else { f64::INFINITY };
-        let r = lin_r.min(l.lim);
-        Some(Bla { m: Mfx::new(l.j, 0), n: Mfx::new(l.k, 0), r: if r.is_finite() { Fx::from_f64(r) } else { Fx::from_f64(1e300) } })
+        let (d, u) = (shape.dynamic.len(), shape.nin());
+        let rows: Vec<&Lin> = shape.dynamic.iter().map(|&l| &ls[l]).collect();
+        let m: Vec<[f64; 4]> = rows.iter().flat_map(|l| l.j[..d].iter().copied()).collect();
+        let q: f64 = rows.iter().map(|l| l.q).sum();
+        let lim = rows.iter().map(|l| l.lim).fold(f64::INFINITY, f64::min);
+        let lin_r = if q > 0.0 { eps * sigma_min_blocks(&m, d) / q } else { f64::INFINITY };
+        let r = lin_r.min(lim);
+        let mut blocks: Vec<Mfx> = m.iter().map(|b| Mfx::new(*b, 0)).collect();
+        blocks.extend(rows.iter().flat_map(|l| l.k[..u].iter().map(|b| Mfx::new(*b, 0))));
+        Some((blocks, if r.is_finite() { Fx::from_f64(r) } else { Fx::from_f64(1e300) }))
+    }
+
+    /// How much larger than |δc| the inputs can get: `init`'s first-order dependence of the
+    /// constant locals on δc (doubled for safety; `None`: no linear form).
+    fn input_scale(&self, shape: &BlaShape, orbit: &RefOrbit) -> Option<f64> {
+        let mut refs = vec![C64::new(0.0, 0.0); self.nlocals];
+        let mut ls = vec![LIN0; self.nlocals];
+        for (i, e) in &self.init {
+            let (r, l) = self.lin(e, &refs, &ls, orbit.center)?;
+            refs[*i] = r;
+            ls[*i] = l;
+        }
+        let fro = |b: &[f64; 4]| b.iter().map(|v| v * v).sum::<f64>().sqrt();
+        Some(1.0 + shape.inputs.iter().map(|&l| 2.0 * fro(&ls[l].k[0])).sum::<f64>())
     }
 
     /// The table of linear steps for `orbit`; `dc` is the largest |δc| of the image, `eps`
     /// the relative precision they keep.
     pub fn bla_table(&self, orbit: &RefOrbit, dc: Fx, eps: f64) -> Option<BlaTable> {
-        if !self.bla_possible() || orbit.len < 3 {
+        let shape = self.bla_shape()?;
+        if orbit.len < 3 {
             return None;
         }
+        let du = dc * self.input_scale(&shape, orbit)?;
+        let (d, u, nb) = (shape.dynamic.len(), shape.nin(), shape.blocks());
         let steps = orbit.len - 1;
-        let mut level: Vec<Bla> = (0..steps).map(|n| self.bla_step(orbit, n, eps)).collect::<Option<_>>()?;
+        let mut level = BlaLevel { blocks: Vec::with_capacity(steps * nb), r: Vec::with_capacity(steps) };
+        for n in 0..steps {
+            let (b, r) = self.bla_step(&shape, orbit, n, eps)?;
+            level.blocks.extend(b);
+            level.r.push(r);
+        }
         let mut levels = Vec::new();
         while level.len() > 1 {
-            let next: Vec<Bla> = level
-                .chunks(2)
-                .filter(|c| c.len() == 2)
-                .map(|c| {
-                    let (x, y) = (&c[0], &c[1]);
-                    // y after x: M = My·Mx, N = My·Nx + Ny; valid while x is and y's input stays valid.
-                    let reach = (y.r - x.n.norm() * dc) / x.m.norm();
-                    let r = if reach.m > 0.0 && reach < x.r {
-                        reach
-                    } else if reach.m > 0.0 {
-                        x.r
-                    } else {
-                        Fx::ZERO
-                    };
-                    Bla { m: y.m.mul(&x.m), n: y.m.mul(&x.n).add(&y.n), r }
-                })
-                .collect();
+            let mut next = BlaLevel::default();
+            for c in 0..level.len() / 2 {
+                let (x, y) = (2 * c, 2 * c + 1);
+                let (bx, by) = (&level.blocks[x * nb..(x + 1) * nb], &level.blocks[y * nb..(y + 1) * nb]);
+                let (mx, nx) = bx.split_at(d * d);
+                let (my, ny) = by.split_at(d * d);
+                // y after x: M = My·Mx, N = My·Nx + Ny; valid while x is and y's input stays valid.
+                let reach = (level.r[y] - norm_blocks(nx) * du) / norm_blocks(mx);
+                let r = if reach.m > 0.0 && reach < level.r[x] {
+                    reach
+                } else if reach.m > 0.0 {
+                    level.r[x]
+                } else {
+                    Fx::ZERO
+                };
+                next.blocks.extend(grid_mul(my, mx, d, d, d));
+                let n = grid_mul(my, nx, d, d, u);
+                next.blocks.extend(n.iter().zip(ny).map(|(a, b)| a.add(b)));
+                next.r.push(r);
+            }
             levels.push(level);
             level = next;
         }
         levels.push(level);
-        Some(BlaTable { levels })
+        Some(BlaTable { shape, levels })
     }
 
     /// Skips iterations with the longest valid linear step at the sample's position, at most
     /// `left`; returns the iterations skipped (0: none applies).
     pub fn bla_skip(&self, table: &BlaTable, st: &mut DeltaState, dpix: Cfx, left: u32) -> u32 {
-        let dz = st.delta[Z].norm();
+        let sh = &table.shape;
+        let (d, u, nb) = (sh.dynamic.len(), sh.nin(), sh.blocks());
+        let mut dz = Fx::ZERO;
+        for &l in &sh.dynamic {
+            dz = dz + st.delta[l].norm();
+        }
         let tz = if st.m == 0 { table.levels.len() as u32 } else { st.m.trailing_zeros() };
         for k in (1..=tz.min(table.levels.len() as u32 - 1)).rev() {
             let len = 1u32 << k;
             if len > left {
                 continue;
             }
-            let Some(b) = table.levels[k as usize].get(st.m >> k) else { continue };
-            if dz < b.r * b.r {
-                st.delta[Z] = b.m.apply(st.delta[Z]) + b.n.apply(dpix);
+            let level = &table.levels[k as usize];
+            let i = st.m >> k;
+            if i >= level.len() {
+                continue;
+            }
+            let r = level.r[i];
+            if dz < r * r {
+                let b = &level.blocks[i * nb..(i + 1) * nb];
+                let mut x = [Cfx::ZERO; BLA_DYNAMIC];
+                let mut v = [Cfx::ZERO; BLA_INPUTS];
+                for (j, &l) in sh.dynamic.iter().enumerate() {
+                    x[j] = st.delta[l];
+                }
+                v[0] = dpix;
+                for (j, &l) in sh.inputs.iter().enumerate() {
+                    v[1 + j] = st.delta[l];
+                }
+                for (row, &l) in sh.dynamic.iter().enumerate() {
+                    let mut s = Cfx::ZERO;
+                    for j in 0..d {
+                        s = s + b[row * d + j].apply(x[j]);
+                    }
+                    for j in 0..u {
+                        s = s + b[d * d + row * u + j].apply(v[j]);
+                    }
+                    st.delta[l] = s;
+                }
                 st.m += len as usize;
                 return len;
             }
@@ -1166,5 +1379,79 @@ mod tests {
         eprintln!("BLA ran {bla_steps} of {plain_steps} iterations");
         assert!(same * 100 >= total * 95, "{same} of {total} agree");
         assert!(bla_steps * 2 < plain_steps, "BLA ran {bla_steps} of {plain_steps} iterations");
+    }
+
+    /// Perturbed iteration with and without linear steps around `center` (`radius`): how many
+    /// samples agree, and the iterations run without and with them.
+    fn bla_compare(prog: &Program, center: [String; 2], radius: Fx, maxit: u32) -> (u32, u32, u64, u64) {
+        let values: Vec<ParamValue> = prog.params.iter().map(|p| p.default.clone()).collect();
+        let k = Compiled::<f64>::new(prog, &values);
+        let pert = Perturbation::new(prog, &values, true, [0.0, 0.0]).unwrap();
+        let orbit = k.reference_orbit(&pert, &center, big::bits_for(radius) + 64, maxit);
+        let table = pert.bla_table(&orbit, radius * 2.0, BLA_EPS_CPU).expect("linear steps");
+        let (mut same, mut total, mut plain_steps, mut bla_steps) = (0, 0, 0u64, 0u64);
+        for j in 0..8 {
+            for i in 0..8 {
+                let d = Cfx::from_fx(radius * ((i as f64 - 3.5) / 4.0), radius * ((j as f64 - 3.5) / 4.0));
+                let mut f = k.frame();
+                f.ismand = true;
+                let a = k.run_perturbed(&mut f, maxit, Deep { pert: &pert, orbit: &orbit, bla: None }, d, None, |_| {});
+                let mut calls = 0u64;
+                let mut g = k.frame();
+                g.ismand = true;
+                let b = k.run_perturbed(&mut g, maxit, Deep { pert: &pert, orbit: &orbit, bla: Some(&table) }, d, None, |_| calls += 1);
+                plain_steps += a.iter as u64;
+                bla_steps += calls;
+                total += 1;
+                if a.iter.abs_diff(b.iter) <= 1 && a.escaped == b.escaped {
+                    same += 1;
+                } else if std::env::var("RFR_PERT_DEBUG").is_ok() {
+                    eprintln!("{i},{j}: plain {} bla {}", a.iter, b.iter);
+                }
+            }
+        }
+        (same, total, plain_steps, bla_steps)
+    }
+
+    #[test]
+    fn bla_carries_more_than_z() {
+        // A local the loop only reads (the pixel kept in `k`): an input next to δc.
+        let src = "KMand {\ninit:\n  z = 0\n  complex k = #pixel\nloop:\n  z = sqr(z) + k\nbailout:\n  |z| < 1e8\n}";
+        let prog = crate::formula::compile_ufm_file(src).remove(0).1.unwrap();
+        let pert = Perturbation::new(&prog, &[], true, [0.0, 0.0]).unwrap();
+        let shape = pert.bla_shape().unwrap();
+        assert_eq!((shape.dynamic.len(), shape.inputs.len()), (1, 1));
+        let center = ["-0.743643887037158704752191506114774".to_string(), "0.131825904205311970493132056385139".to_string()];
+        let (same, total, plain, bla) = bla_compare(&prog, center, Fx::parse("1e-22").unwrap(), 12000);
+        eprintln!("k input: {same} of {total} agree, BLA ran {bla} of {plain} iterations");
+        assert!(same * 100 >= total * 95 && bla * 2 < plain, "{same} of {total}, {bla} of {plain}");
+
+        // Phoenix: z and the previous z both change (a 4 × 4 linear map).
+        let lib = library();
+        let prog = lib.get("rfract:Phoenix").unwrap().program().unwrap();
+        let values: Vec<ParamValue> = prog.params.iter().map(|p| p.default.clone()).collect();
+        let pert = Perturbation::new(&prog, &values, true, [0.0, 0.0]).unwrap();
+        assert_eq!(pert.bla_shape().unwrap().dynamic.len(), 2);
+        // A boundary point: bisect between an inside and an escaping point on a line.
+        let k = Compiled::<f64>::new(&prog, &values);
+        let escapes = |x: f64, y: f64| {
+            let mut f = k.frame();
+            f.ismand = true;
+            f.pixel = crate::math::complex::Cx::from_f64(x, y);
+            f.c = f.pixel;
+            k.run_with(&mut f, 20000, |_| {}).escaped
+        };
+        let y = 0.35;
+        let xs: Vec<f64> = (0..400).map(|i| -1.5 + i as f64 * 0.0075).collect();
+        let w = xs.windows(2).find(|w| !escapes(w[0], y) && escapes(w[1], y)).expect("a boundary crossing");
+        let (mut lo, mut hi) = (w[0], w[1]);
+        for _ in 0..60 {
+            let mid = 0.5 * (lo + hi);
+            if escapes(mid, y) { hi = mid } else { lo = mid }
+        }
+        let center = [format!("{hi:.17}"), format!("{y}")];
+        let (same, total, plain, bla) = bla_compare(&prog, center, Fx::parse("1e-30").unwrap(), 50000);
+        eprintln!("phoenix: {same} of {total} agree, BLA ran {bla} of {plain} iterations");
+        assert!(same * 100 >= total * 95 && bla * 2 < plain, "{same} of {total}, {bla} of {plain}");
     }
 }

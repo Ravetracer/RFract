@@ -707,25 +707,40 @@ fn pert_code(p: &Perturbation, prog: &Program, use_bla: bool, deriv: bool, init:
     // Linear steps (rfr_core Perturbation::bla_skip): the longest valid one at pm; the loop
     // counts the last of its iterations.
     let mut skip = String::new();
-    if use_bla {
+    let shape = p.bla_shape().filter(|_| use_bla);
+    if let Some(sh) = &shape {
+        // One step: its 2 × 2 blocks (M, then N), then their exponents and the radius
+        // (renderer::pack_bla).
+        let (d, u, nb) = (sh.dynamic.len(), sh.nin(), sh.blocks());
+        let stride = nb + (nb + 2).div_ceil(4);
+        let word = |i: usize| format!("bla[at + {}u][{}]", nb + i / 4, i % 4);
         let _ = writeln!(skip, "            var skipped = 0u;");
         let _ = writeln!(skip, "            if U.perti.w > 0 {{");
-        let _ = writeln!(skip, "                let dz = cf_norm(pd{});", Z);
+        let dz = sh.dynamic.iter().map(|l| format!("cf_norm(pd{l})")).reduce(|a, b| format!("cf_add({a}, {b})")).unwrap_or_default();
+        let _ = writeln!(skip, "                let dz = {dz};");
         let _ = writeln!(skip, "                var top = u32(U.perti.w) - 1u;");
         let _ = writeln!(skip, "                if pm != 0u {{ top = min(top, countTrailingZeros(pm)); }}");
         let _ = writeln!(skip, "                for (var k = top; k >= 1u; k = k - 1u) {{");
         let _ = writeln!(skip, "                    let len = 1u << k;");
         let _ = writeln!(skip, "                    let idx = pm >> k;");
         let _ = writeln!(skip, "                    if len > maxit - iter || idx >= ((plen - 1u) >> k) {{ continue; }}");
-        let _ = writeln!(skip, "                    let at = 8u + 3u * (bitcast<u32>(bla[k / 4u][k % 4u]) + idx);");
-        let _ = writeln!(skip, "                    let w = bla[at + 2u];");
-        let _ = writeln!(skip, "                    let rr = cf_make(w.z, 0.0, bitcast<i32>(w.w));");
+        let _ = writeln!(skip, "                    let at = 8u + {stride}u * (bitcast<u32>(bla[k / 4u][k % 4u]) + idx);");
+        let _ = writeln!(skip, "                    let rr = cf_make({}, 0.0, bitcast<i32>({}));", word(nb), word(nb + 1));
         let _ = writeln!(skip, "                    if cf_lt(dz, cf_mul(rr, rr)) {{");
-        let _ = writeln!(
-            skip,
-            "                        pd{z} = cf_add(cf_mapply(bla[at], bitcast<i32>(w.x), pd{z}), cf_mapply(bla[at + 1u], bitcast<i32>(w.y), dpix));",
-            z = Z
-        );
+        // x ↦ M x + N u (u: δc, then the inputs), all rows from the old values.
+        let block = |b: usize, v: &str| format!("cf_mapply(bla[at + {b}u], bitcast<i32>({}), {v})", word(b));
+        for (row, l) in sh.dynamic.iter().enumerate() {
+            let mut terms: Vec<String> = sh.dynamic.iter().enumerate().map(|(j, x)| block(row * d + j, &format!("pd{x}"))).collect();
+            terms.push(block(d * d + row * u, "dpix"));
+            for (j, x) in sh.inputs.iter().enumerate() {
+                terms.push(block(d * d + row * u + 1 + j, &format!("pd{x}")));
+            }
+            let sum = terms.into_iter().reduce(|a, b| format!("cf_add({a}, {b})")).unwrap_or_default();
+            let _ = writeln!(skip, "                        let bn{l} = {sum};");
+        }
+        for l in &sh.dynamic {
+            let _ = writeln!(skip, "                        pd{l} = bn{l};");
+        }
         let _ = writeln!(skip, "                        pm = pm + len;");
         let _ = writeln!(skip, "                        skipped = len;");
         let _ = writeln!(skip, "                        break;");
@@ -737,6 +752,7 @@ fn pert_code(p: &Perturbation, prog: &Program, use_bla: bool, deriv: bool, init:
         let _ = writeln!(skip, "            }} else {{");
         g.pad = "                ";
     }
+    let use_bla = shape.is_some();
     g.out.push_str(&skip);
     let pad = g.pad;
     for (k, &s) in p.state.iter().enumerate() {
