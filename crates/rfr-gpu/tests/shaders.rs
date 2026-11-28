@@ -235,6 +235,13 @@ fn gpu_matches_the_cpu_renderer() {
         let mut lifted = ter.clone();
         lifted.layers[0].light.camera.target = 0.3;
         cases.push(("terrain lifted camera".into(), lifted));
+        // The ground four views wide (two rings around the view), with walls.
+        let mut ground = ter.clone();
+        let l = &mut ground.layers[0].light;
+        l.ground = 4;
+        l.walls = true;
+        l.camera.pitch = 15.0;
+        cases.push(("terrain ground 4".into(), ground));
         // Point lights from the document's light sources, with shadows, flat and as a terrain.
         let light = |x: &str, y: &str, h: f64, color: [f32; 3]| rfr_core::doc::LightSource {
             position: [x.into(), y.into()],
@@ -825,6 +832,8 @@ fn gpu_windows_are_the_whole_image_there() {
     let (w, h, s) = (160u32, 90u32, 3);
     let mut terrain = lit.clone();
     terrain.layers[0].light.terrain = true;
+    terrain.layers[0].light.ground = 2;
+    terrain.layers[0].light.walls = true;
     terrain.layers[0].effects = Default::default();
     for (name, mut doc) in [("layered", layered()), ("distance", de), ("object", object), ("lit", lit), ("terrain", terrain)] {
         doc.image.adaptive = 0.0;

@@ -155,8 +155,9 @@ shine on it from above. Switch on **Lit** and choose where the heights come from
 ### 3D terrain
 
 **3D terrain** shows the relief as a landscape: a camera looks at it from the side instead of
-from straight above. The terrain is the part of the plane the 2D view shows, so moving and
-zooming the view moves and scales the landscape under the camera. *Camera direction* turns the
+from straight above. The terrain is the part of the plane the 2D view shows (and with *Ground
+size* more around it), so moving and zooming the view moves and scales the landscape under the
+camera. *Camera direction* turns the
 camera around the middle of the terrain (0: from the bottom edge of the image), *Camera
 height* is its angle above the ground, *Camera distance* its distance in image heights,
 *Field of view* its opening angle and *Camera target height* the height of the point it orbits
@@ -173,6 +174,11 @@ the terrain layer is selected:
 
 Where no terrain is seen, the layer is transparent: the layers below and the background
 show, for example a gradient fill layer as a sky.
+
+**Ground size** (×1 to ×16) lets the ground reach beyond the view: around the view it goes on
+in rings, each twice as wide and half as detailed as the one inside, so the landscape near the
+camera keeps its detail while the horizon moves far away. The rings blend into each other
+without seams; each step costs about as much as one more view.
 
 Without walls the terrain is an open sheet. **Walls** close it into a block: its sides go down
 to a base that lies *Wall depth* (a share of the terrain height) below the lowest ground the

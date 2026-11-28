@@ -25,6 +25,8 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
   sides down to a base.
 - 3D terrain camera: *Camera target height* (Shift+Ctrl-drag) moves the camera up and down;
   keyframes and recorded flights include it.
+- Terrain *Ground size* (×1 to ×16): the ground reaches beyond the view in rings that get
+  coarser outward, so the horizon can be far away while the middle keeps its detail.
 
 ### Changed
 

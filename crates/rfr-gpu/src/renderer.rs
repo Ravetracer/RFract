@@ -387,7 +387,16 @@ fn field_uni(plan: &Plan, lp: &LayerPlan) -> Uni {
         None => ([0.0; 4], [0; 4]),
     };
     let lift = lp.light.as_ref().map_or(0.0, |l| l.camera_target * g.far.height as f32);
-    Uni { fnear: near, ffar: row(&g.far), fstep: [g.far.step, margin, near_cells, 0], lwall, lwalli, lcam2: [lift, 0.0, 0.0, 0.0], ..Uni::default() }
+    let rings = (1 + g.rings.len()) as f32;
+    Uni {
+        fnear: near,
+        ffar: row(&g.far),
+        fstep: [g.far.step, margin, near_cells, 0],
+        lwall,
+        lwalli,
+        lcam2: [lift, rings, 0.0, 0.0],
+        ..Uni::default()
+    }
 }
 
 /// Per light one row of the lit layer's uniforms (direction or color).
@@ -553,6 +562,9 @@ fn lit_key(sig: u64) -> u64 {
 }
 fn lmip_key(sig: u64) -> u64 {
     sig ^ 0x3A1B_0000_0000_0004
+}
+fn lblend_key(sig: u64) -> u64 {
+    sig ^ 0xB1E0_0000_0000_0005
 }
 
 /// A reference orbit on the GPU and where it was computed.
@@ -1014,12 +1026,14 @@ impl GpuRenderer {
                     device.create_buffer(&wgpu::BufferDescriptor {
                         label: Some("light field"),
                         // 3D terrain: the height maxima after the field, four per 16 bytes.
-                        size: ((g.near.map_or(0, |n| n.cells()) + g.far.cells()) as u64 * 16
+                        // A terrain: its ring levels after each other, then one block of maxima each.
+                        size: ((g.near.map_or(0, |n| n.cells()) + g.far.cells() * (1 + g.rings.len())) as u64 * 16
                             + if lp.light.as_ref().is_some_and(|l| l.camera.is_some()) {
-                                rfr_core::render::light::mip_sizes(g.far.width, g.far.height)
+                                (rfr_core::render::light::mip_sizes(g.far.width, g.far.height)
                                     .iter()
                                     .map(|(w, h)| *w as u64 * *h as u64)
                                     .sum::<u64>()
+                                    * (1 + g.rings.len()) as u64)
                                     .next_multiple_of(4)
                                     * 4
                             } else {
@@ -1318,8 +1332,10 @@ impl GpuRenderer {
                     wgpu::BindGroupEntry { binding: 8, resource: stats.as_entire_binding() },
                 ],
             });
-            // The near grid (when there is one), then the far grid.
-            for (which, g) in [(0u32, l.uni.fnear), (1, l.uni.ffar)] {
+            // The near grid (when there is one), then the far grid (a terrain: each ring level).
+            let rings = (l.uni.lcam2[1] as u32).max(1);
+            let grids = std::iter::once((0u32, l.uni.fnear)).chain((0..rings).map(|j| (1 + j, l.uni.ffar)));
+            for (which, g) in grids {
                 let (gw, gh) = (g[2] as u32, g[3] as u32);
                 let mut row = 0;
                 while row < gh {
@@ -1340,13 +1356,35 @@ impl GpuRenderer {
                     row += rows;
                 }
             }
-            // 3D terrain: the height maxima, level by level.
+            // 3D terrain larger than the view: each ring level's band blended into the next.
+            if l.uni.lighti[3] != 0
+                && rings > 1
+                && let Some(Ok(lblend)) = self.pipeline(lblend_key(l.signature))
+            {
+                let (w, h) = (l.uni.ffar[2] as u32, l.uni.ffar[3] as u32);
+                for ring in 0..rings - 1 {
+                    let mut u = l.uni;
+                    u.band = [0, 4, 0, ring];
+                    self.ctx.queue.write_buffer(uniform, 0, bytemuck::bytes_of(&u));
+                    let mut enc = device.create_command_encoder(&Default::default());
+                    {
+                        let mut pass = enc.begin_compute_pass(&Default::default());
+                        pass.set_pipeline(&lblend);
+                        pass.set_bind_group(0, &bind, &[]);
+                        pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
+                    }
+                    self.ctx.queue.submit(Some(enc.finish()));
+                }
+            }
+            // 3D terrain: the height maxima, level by level (every ring).
             if l.uni.lighti[3] != 0
                 && let Some(Ok(lmip)) = self.pipeline(lmip_key(l.signature))
             {
-                for (level, (w, h)) in rfr_core::render::light::mip_sizes(l.uni.ffar[2] as u32, l.uni.ffar[3] as u32).into_iter().enumerate() {
+                for (ring, (level, (w, h))) in (0..rings).flat_map(|r| {
+                    rfr_core::render::light::mip_sizes(l.uni.ffar[2] as u32, l.uni.ffar[3] as u32).into_iter().enumerate().map(move |x| (r, x))
+                }) {
                     let mut u = l.uni;
-                    u.band = [0, 3, level as u32, NONE];
+                    u.band = [0, 3, level as u32, ring];
                     self.ctx.queue.write_buffer(uniform, 0, bytemuck::bytes_of(&u));
                     let mut enc = device.create_command_encoder(&Default::default());
                     {
@@ -1383,6 +1421,7 @@ impl GpuRenderer {
             if lit {
                 built.push((lit_key(sig), compile(&device, &layout, &source, "lit")));
                 built.push((lmip_key(sig), compile(&device, &layout, &source, "lmip")));
+                built.push((lblend_key(sig), compile(&device, &layout, &source, "lblend")));
             }
             if let Ok(mut c) = cache.lock() {
                 for (k, r) in built {

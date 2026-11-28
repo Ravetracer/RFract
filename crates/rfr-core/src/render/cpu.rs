@@ -555,15 +555,22 @@ impl CpuRenderer {
                         }
                     },
                 );
-                light::Field::new(l, g, lh, data)
+                light::Field::raw(g, data)
             };
-            fields.push(Some(light::Fields {
-                near: grids.near.map(&field),
-                far: field(grids.far),
-                image_height: lh,
-                image: (w, h),
-                cells: l.camera.is_some(),
-                near_margin: l.near_margin,
+            fields.push(Some(if l.camera.is_some() {
+                // A terrain and its rings.
+                let levels = std::iter::once(grids.far).chain(grids.rings.iter().copied()).map(&field).collect();
+                light::Fields::terrain(l, levels, lh, (w, h))
+            } else {
+                light::Fields {
+                    near: grids.near.map(&field),
+                    far: field(grids.far),
+                    rings: Vec::new(),
+                    image_height: lh,
+                    image: (w, h),
+                    cells: false,
+                    near_margin: l.near_margin,
+                }
             }));
         }
         self.fields = fields;

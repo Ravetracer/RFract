@@ -89,6 +89,8 @@ mod tests {
         let flat = lit_doc();
         let mut terrain = lit_doc();
         terrain.layers[0].light.terrain = true;
+        terrain.layers[0].light.ground = 2;
+        terrain.layers[0].light.walls = true;
         terrain.layers[0].effects = Default::default();
         let (w, h) = (90u32, 50u32);
         for (name, doc) in [("flat", flat), ("terrain", terrain)] {

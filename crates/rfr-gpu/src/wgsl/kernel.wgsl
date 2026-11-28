@@ -454,15 +454,21 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var yf = i32(y) + U.win.y;
     var fidx = 0u;
     if U.band.y == 2u {
-        let far = U.band.z == 1u;
+        // A terrain's ring level j = band.z − 1 (light::Rings): its cells 2^j times as far
+        // apart around the middle cell.
+        let far = U.band.z >= 1u;
+        let ring = select(0u, U.band.z - 1u, far);
         let g = select(U.fnear, U.ffar, far);
         let st = select(1, i32(U.fstep.x), far);
         if x >= u32(g.z) || gid.y >= U.band.x || y >= u32(g.w) {
             return;
         }
-        xf = g.x + i32(x) * st;
-        yf = g.y + i32(y) * st;
-        fidx = select(0u, U.fstep.z, far) + y * u32(g.z) + x;
+        let m = 1 << ring;
+        let cx = (max(g.z, 1) - 1) / 2;
+        let cy = (max(g.w, 1) - 1) / 2;
+        xf = g.x + st * (cx + (i32(x) - cx) * m);
+        yf = g.y + st * (cy + (i32(y) - cy) * m);
+        fidx = select(0u, U.fstep.z, far) + ring * u32(g.z) * u32(g.w) + y * u32(g.z) + x;
     } else {
         if x >= U.size.x || gid.y >= U.band.x || y >= U.size.y {
             return;

@@ -941,6 +941,17 @@ fn lighting_section(ui: &mut Ui, l: &mut Layer) {
                 -2.0..=2.0,
                 c.target,
             );
+            widgets::label(
+                ui,
+                "Ground size",
+                "How far the ground reaches, in views: beyond the view it goes on in rings, each twice as wide and half as detailed (each step costs about one more view)",
+            );
+            ui.horizontal(|ui| {
+                for g in [1u32, 2, 4, 8, 16] {
+                    ui.selectable_value(&mut li.ground, g, format!("×{g}")).on_hover_text(format!("The ground {g} times as wide as the view"));
+                }
+            });
+            ui.end_row();
             widgets::checkbox(ui, "Walls", "Close the terrain into a block: walls down to a base below the lowest ground", &mut li.walls);
             if li.walls {
                 widgets::slider(

@@ -63,6 +63,8 @@ pub struct LightPlan {
     /// 3D terrain: walls down to a base (depth below the lowest ground as a share of the
     /// terrain height, the color at the base).
     pub walls: Option<(f32, [f32; 3])>,
+    /// 3D terrain: the fields of the ground (1: the view; each more one ring twice as wide).
+    pub rings: u32,
     /// Whether the layer is lit (else a layer with effects keeps its colors).
     pub shading: bool,
     /// Output the surface normal as a color (n / 2 + ½) instead of shading.
@@ -154,6 +156,7 @@ impl LightPlan {
             terrain_height: l.terrain_height.max(0.0) as f32,
             height_range: 1.0,
             walls: (l.terrain && l.walls).then_some((l.wall_depth.max(0.0) as f32, l.wall_color)),
+            rings: l.ground.clamp(1, 16).ilog2() + 1,
             shading: true,
             normal_output: l.normal_output,
             fx: None,
@@ -425,11 +428,66 @@ impl Grid {
 /// [`NEAR_MARGIN`] pixels (per axis) of the shaded pixel reads the near field, any other the far
 /// one, so a window shades exactly like the whole image. A 3D terrain has one field, the
 /// window's (terrains render whole images).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Grids {
     pub near: Option<Grid>,
     pub far: Grid,
+    /// A 3D terrain larger than the view: its rings around the far grid (see [`Rings`]).
+    pub rings: Vec<Grid>,
 }
+
+/// The rings of a terrain larger than the view: level j (0: the view) has the view's cells,
+/// `2^j` times as far apart, around the same middle cell (`cx`, `cy`); its cell i lies at cell
+/// `cx + (i − cx) · 2^j` of level 0. Lookups read the finest level holding the point; the
+/// outer [`RING_BAND`] of each level blends into the next, so the ground has no seams.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Rings {
+    pub levels: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl Rings {
+    /// The middle cell.
+    pub fn center(&self) -> (f32, f32) {
+        (((self.width.max(1) - 1) / 2) as f32, ((self.height.max(1) - 1) / 2) as f32)
+    }
+
+    /// A level-0 point in level `j`'s cells.
+    pub fn to_level(&self, j: u32, x: f32, y: f32) -> (f32, f32) {
+        let (cx, cy) = self.center();
+        let m = (1u32 << j) as f32;
+        (cx + (x - cx) / m, cy + (y - cy) / m)
+    }
+
+    /// A point of level `j`'s cells in level 0's.
+    pub fn from_level(&self, j: u32, u: f32, v: f32) -> (f32, f32) {
+        let (cx, cy) = self.center();
+        let m = (1u32 << j) as f32;
+        (cx + (u - cx) * m, cy + (v - cy) * m)
+    }
+
+    /// The finest level holding a level-0 point (the outermost beyond them all).
+    pub fn level_of(&self, x: f32, y: f32) -> u32 {
+        let (xm, ym) = ((self.width.max(1) - 1) as f32, (self.height.max(1) - 1) as f32);
+        for j in 0..self.levels {
+            let (u, v) = self.to_level(j, x, y);
+            if (0.0..=xm).contains(&u) && (0.0..=ym).contains(&v) {
+                return j;
+            }
+        }
+        self.levels - 1
+    }
+
+    /// The blend band of a level in cells: where it fades into the next coarser one.
+    pub fn band(&self) -> f32 {
+        let (cx, cy) = self.center();
+        (cx.min(cy) * 2.0 * RING_BAND).max(2.0)
+    }
+}
+
+/// The share of a ring level's width (from its edge) that blends into the next level.
+pub const RING_BAND: f32 = 0.125;
 
 /// Lookups this close to the shaded pixel (per axis, pixels) read the near field.
 pub const NEAR_MARGIN: u32 = 256;
@@ -500,7 +558,15 @@ impl LightPlan {
         if self.camera.is_some() {
             // A terrain: the ground of the whole view, whatever the window shows.
             let s = self.terrain_step(w, h);
-            return Grids { near: None, far: Grid { x: 0, y: 0, width: w.div_ceil(s), height: h.div_ceil(s), step: s } };
+            let (fw, fh) = (w.div_ceil(s), h.div_ceil(s));
+            let (cx, cy) = (((fw - 1) / 2) as i32, ((fh - 1) / 2) as i32);
+            let rings = (1..self.rings)
+                .map(|j| {
+                    let m = 1i32 << j;
+                    Grid { x: s as i32 * cx * (1 - m), y: s as i32 * cy * (1 - m), width: fw, height: fh, step: s * m as u32 }
+                })
+                .collect();
+            return Grids { near: None, far: Grid { x: 0, y: 0, width: fw, height: fh, step: s }, rings };
         }
         let [l, t, r, b] = self.reach(w, h).map(|v| v.ceil() as u32 + 2);
         let (fw, fh) = (w + l + r, h + t + b);
@@ -516,7 +582,7 @@ impl LightPlan {
             height: window.height + 2 * m as u32,
             step: 1,
         });
-        Grids { near, far }
+        Grids { near, far, rings: Vec::new() }
     }
 }
 
@@ -599,7 +665,21 @@ impl Field {
         let (width, height) = (grid.width, grid.height);
         let mut f = Field { grid, width, height, data, mips: Vec::new() };
         if l.camera.is_some() {
-            let k = l.slope_scale(image_height);
+            f.build_mips(l.slope_scale(image_height));
+        }
+        f
+    }
+
+    /// A field without height maxima (see [`Field::build_mips`]).
+    pub fn raw(grid: Grid, data: Vec<[f32; 6]>) -> Field {
+        Field { grid, width: grid.width, height: grid.height, data, mips: Vec::new() }
+    }
+
+    /// A terrain's height maxima (`k` · height per cell; the rings divide `k` by their scale).
+    pub fn build_mips(&mut self, k: f32) {
+        let (width, height) = (self.width, self.height);
+        let f = &*self;
+        {
             let sizes = mip_sizes(width, height);
             let mut levels: Vec<Vec<f32>> = Vec::with_capacity(sizes.len());
             for (lv, &(w, h)) in sizes.iter().enumerate() {
@@ -619,9 +699,32 @@ impl Field {
                 }
                 levels.push(m);
             }
-            f.mips = levels;
+            self.mips = levels;
         }
-        f
+    }
+
+    /// Blends the outer band of this ring level into `outer`, the next coarser one (heights
+    /// and colors; see [`Rings`]).
+    pub fn blend_into(&mut self, outer: &Field, rings: &Rings) {
+        let (w, h) = (self.width, self.height);
+        let band = rings.band();
+        let (cx, cy) = rings.center();
+        for y in 0..h {
+            for x in 0..w {
+                let d = x.min(w - 1 - x).min(y).min(h - 1 - y) as f32;
+                if d >= band {
+                    continue;
+                }
+                let t = 1.0 - d / band;
+                let (u, v) = (cx + (x as f32 - cx) * 0.5, cy + (y as f32 - cy) * 0.5);
+                let (c, hh) = (outer.color_at(u, v), outer.height_at(u, v));
+                let cell = &mut self.data[(y * w + x) as usize];
+                for k in 0..4 {
+                    cell[k] += (c[k] - cell[k]) * t;
+                }
+                cell[4] += (hh - cell[4]) * t;
+            }
+        }
     }
 
     fn at(&self, x: i64, y: i64) -> [f32; 6] {
@@ -665,6 +768,12 @@ impl Field {
     /// highest point stays below the ray are skipped level by level; in a level-0 cell the
     /// bilinear surface is searched in steps and the crossing refined by bisection.
     pub fn trace(&self, o: [f32; 3], d: [f32; 3], k: f32, base: Option<f32>) -> Option<Hit> {
+        self.trace_in(o, d, k, base, (0.0, f32::INFINITY), false)
+    }
+
+    /// [`Field::trace`] over the part `range` of the ray; `entry_hit`: a ray that comes into
+    /// the range below the surface meets it there (a terrain's inner ring, see [`Rings`]).
+    pub fn trace_in(&self, o: [f32; 3], d: [f32; 3], k: f32, base: Option<f32>, range: (f32, f32), entry_hit: bool) -> Option<Hit> {
         if self.mips.is_empty() {
             return None;
         }
@@ -689,6 +798,11 @@ impl Field {
                 t1 = t1.min(a.max(b));
             }
         }
+        if range.0 > t0 {
+            t0 = range.0;
+            side = None;
+        }
+        t1 = t1.min(range.1);
         let t_side = t0;
         let zt = self.mip(top, 0, 0);
         if o[2] > zt {
@@ -710,6 +824,9 @@ impl Field {
         // base, else the terrain is an open sheet. (Entering through the highest point, on a
         // plateau, is rounding, not a side.)
         if above(t0) < -1e-3 * (1.0 + zt.abs() + o[2].abs()) {
+            if entry_hit {
+                return Some(Hit::Surface(at(t0)));
+            }
             let z = o[2] + d[2] * t0;
             return match (base, side) {
                 (Some(b), Some((axis, up))) if t0 == t_side && z >= b => {
@@ -796,6 +913,8 @@ pub enum Hit {
 pub struct Fields {
     pub near: Option<Field>,
     pub far: Field,
+    /// A terrain larger than the view: its outer ring levels (1, 2, …; see [`Rings`]).
+    pub rings: Vec<Field>,
     /// The image's height: lengths are shares of it (a terrain: its field's height, lengths
     /// in cells).
     pub image_height: u32,
@@ -808,12 +927,32 @@ pub struct Fields {
 }
 
 impl Fields {
+    /// The fields of a terrain and its rings for one pass, from the cells of every level
+    /// (level 0 first): the rings' bands blended, the height maxima built.
+    pub fn terrain(l: &LightPlan, mut levels: Vec<Field>, image_height: u32, image: (u32, u32)) -> Fields {
+        let rings = Rings { levels: levels.len() as u32, width: levels[0].width, height: levels[0].height };
+        for j in 1..levels.len() {
+            let (inner, outer) = levels.split_at_mut(j);
+            inner[j - 1].blend_into(&outer[0], &rings);
+        }
+        let k = l.slope_scale(image_height);
+        for (j, f) in levels.iter_mut().enumerate() {
+            f.build_mips(k / (1u32 << j) as f32);
+        }
+        let mut it = levels.into_iter();
+        let far = it.next().expect("level 0");
+        Fields { near: None, far, rings: it.collect(), image_height, image, cells: true, near_margin: l.near_margin }
+    }
+
     /// The field a lookup at image point (x, y) reads when shading pixel `p0`, and the point
     /// in its cells.
     fn pick(&self, x: f32, y: f32, p0: [f32; 2]) -> (&Field, f32, f32) {
-        // A terrain is shaded in its field's cells.
+        // A terrain is shaded in its field's cells (level 0), read in its finest ring.
         if self.cells {
-            return (&self.far, x, y);
+            let r = self.ring_info();
+            let j = r.level_of(x, y);
+            let (u, v) = r.to_level(j, x, y);
+            return (self.level(j), u, v);
         }
         if let Some(n) = &self.near
             && (x - p0[0]).abs().max((y - p0[1]).abs()) <= self.near_margin as f32
@@ -822,6 +961,80 @@ impl Fields {
         }
         let g = &self.far.grid;
         (&self.far, (x - g.x as f32) / g.step as f32, (y - g.y as f32) / g.step as f32)
+    }
+
+    /// A terrain's rings.
+    pub fn ring_info(&self) -> Rings {
+        Rings { levels: self.rings.len() as u32 + 1, width: self.far.width, height: self.far.height }
+    }
+
+    /// A terrain's ring level `j` (0: the view).
+    fn level(&self, j: u32) -> &Field {
+        if j == 0 { &self.far } else { &self.rings[j as usize - 1] }
+    }
+
+    /// Where a camera ray (level-0 cells) meets a terrain and its rings: the ray runs through
+    /// the rings in order, each part traced in its own level; walls stand at the outermost.
+    pub fn trace_terrain(&self, o: [f32; 3], d: [f32; 3], k: f32, base: Option<f32>) -> Option<Hit> {
+        let r = self.ring_info();
+        let top = r.levels - 1;
+        // The ray's interval over each level's box (level-0 cells).
+        let (xm, ym) = ((r.width.max(1) - 1) as f32, (r.height.max(1) - 1) as f32);
+        let span = |j: u32| -> Option<(f32, f32)> {
+            let (x0, y0) = r.from_level(j, 0.0, 0.0);
+            let (x1, y1) = r.from_level(j, xm, ym);
+            let (mut a, mut b) = (0.0f32, f32::INFINITY);
+            for (oa, da, lo, hi) in [(o[0], d[0], x0, x1), (o[1], d[1], y0, y1)] {
+                if da.abs() < 1e-12 {
+                    if oa < lo || oa > hi {
+                        return None;
+                    }
+                } else {
+                    let (p, q) = ((lo - oa) / da, (hi - oa) / da);
+                    a = a.max(p.min(q));
+                    b = b.min(p.max(q));
+                }
+            }
+            (a <= b).then_some((a, b))
+        };
+        let spans: Vec<Option<(f32, f32)>> = (0..r.levels).map(span).collect();
+        // Each level's own parts: its interval without the next finer level's.
+        let mut parts: Vec<(f32, f32, u32)> = Vec::new();
+        for j in 0..r.levels {
+            let Some((a, b)) = spans[j as usize] else { continue };
+            match (j > 0).then(|| spans[j as usize - 1]).flatten() {
+                Some((ia, ib)) => {
+                    if ia > a {
+                        parts.push((a, ia.min(b), j));
+                    }
+                    if ib < b {
+                        parts.push((ib.max(a), b, j));
+                    }
+                }
+                None => parts.push((a, b, j)),
+            }
+        }
+        parts.sort_by(|p, q| p.0.total_cmp(&q.0));
+        let outer_entry = spans[top as usize].map(|s| s.0);
+        for (a, b, j) in parts {
+            let m = (1u32 << j) as f32;
+            let (ox, oy) = r.to_level(j, o[0], o[1]);
+            let (oj, dj) = ([ox, oy, o[2] / m], [d[0] / m, d[1] / m, d[2] / m]);
+            // Walls at the outermost level, where the ray comes into the ground; elsewhere a ray
+            // that crosses into a finer ring below the surface meets it there.
+            let first = j == top && Some(a) == outer_entry;
+            let hit = self.level(j).trace_in(oj, dj, k / m, base.filter(|_| first).map(|b| b / m), (a, b), !first);
+            if let Some(h) = hit {
+                return Some(match h {
+                    Hit::Surface((u, v)) => Hit::Surface(r.from_level(j, u, v)),
+                    Hit::Wall { x, y, z, n } => {
+                        let (x, y) = r.from_level(j, x, y);
+                        Hit::Wall { x, y, z: z * m, n }
+                    }
+                });
+            }
+        }
+        None
     }
 
     /// The height at image point (x, y), bilinear, read for pixel `p0`.
@@ -857,6 +1070,7 @@ impl Fields {
             };
         };
         let t = &self.far;
+        let p0 = [0.0, 0.0];
         let (u, v, _) = super::sample_offset(x, y, s);
         let (o, d) = camera_ray_in(
             cam,
@@ -870,16 +1084,16 @@ impl Fields {
         // Toward the viewer, with y up like the lights.
         let view = [-d[0], d[1], -d[2]];
         let base = l.wall_base(t.height);
-        let (hx, hy) = match t.trace(o, d, k, base) {
+        let (hx, hy) = match self.trace_terrain(o, d, k, base) {
             None => return [0.0; 4],
             Some(Hit::Surface(p)) => p,
             Some(Hit::Wall { x, y, z, n }) => {
                 // The edge's color fading to the wall color toward the base; lit by every light
                 // (nothing stands outside the block), without occlusion.
                 let (b, wall) = (base.unwrap_or(0.0), l.walls.map_or([0.0; 3], |w| w.1));
-                let top = k * t.height_at(x, y);
+                let top = k * self.height_at(x, y, p0);
                 let f = ((top - z) / (top - b).max(1e-6)).clamp(0.0, 1.0);
-                let edge = t.color_at(x, y);
+                let edge = self.color_at(x, y, p0);
                 let color = [0, 1, 2].map(|c| edge[c] + (wall[c] - edge[c]) * f);
                 let mut points = [([0.0f32; 3], 1.0f32); crate::doc::MAX_LIGHTS];
                 for (i, (pos, _)) in l.points.iter().enumerate() {
@@ -890,10 +1104,10 @@ impl Fields {
                 return shade_normal(l, [color[0], color[1], color[2], 1.0], n, &seen, 1.0, view, &points[..l.points.len()]);
             }
         };
-        let h = |dx: f32, dy: f32| t.height_at(hx + dx, hy + dy);
+        let h = |dx: f32, dy: f32| self.height_at(hx + dx, hy + dy, p0);
         let gx = (h(1.0, 0.0) - h(-1.0, 0.0)) * 0.5;
         let gy = (h(0.0, -1.0) - h(0.0, 1.0)) * 0.5;
-        self.shade_point(l, t.color_at(hx, hy), hx, hy, h(0.0, 0.0), gx, gy, view, &mut rng)
+        self.shade_point(l, self.color_at(hx, hy, p0), hx, hy, h(0.0, 0.0), gx, gy, view, &mut rng)
     }
 
     /// Shades the field's surface at (px, py) with height `h0` and slopes `gx`, `gy`: shadows,
@@ -1048,6 +1262,7 @@ mod tests {
         Fields {
             near: None,
             far: Field { grid, width: w, height: h, data, mips: Vec::new() },
+            rings: Vec::new(),
             image_height: h,
             image: (w, h),
             cells: false,
@@ -1079,6 +1294,28 @@ mod tests {
             let dark = LightPlan { lights: Vec::new(), ..l.clone() };
             assert!((shade(&dark, grey, 0.3, 0.1, 1.0, &[], 1.0, [0.0, 0.0, 1.0], &[])[1] - 0.5 * l.ambient).abs() < 1e-6);
         }
+    }
+
+    #[test]
+    fn rings_nest_around_the_middle() {
+        let r = Rings { levels: 3, width: 21, height: 11 };
+        assert_eq!(r.center(), (10.0, 5.0));
+        // Level 1 cell 0 lies 10 cells left of level 0's edge; level 2 twice as far.
+        assert_eq!(r.from_level(1, 0.0, 0.0), (-10.0, -5.0));
+        assert_eq!(r.from_level(2, 0.0, 0.0), (-30.0, -15.0));
+        assert_eq!(r.to_level(2, -30.0, -15.0), (0.0, 0.0));
+        assert_eq!(r.level_of(3.0, 4.0), 0);
+        assert_eq!(r.level_of(-5.0, 4.0), 1);
+        assert_eq!(r.level_of(-25.0, 4.0), 2);
+        assert_eq!(r.level_of(-100.0, 4.0), 2);
+        // The grids of a terrain four views wide: the same cells, wider steps.
+        let mut lighting = Lighting { enabled: true, terrain: true, ground: 4, ..Lighting::default() };
+        lighting.terrain_height = 0.1;
+        let l = LightPlan::new(&lighting);
+        let g = l.grids(21, 11, crate::render::Window::whole(21, 11));
+        assert_eq!(g.rings.len(), 2);
+        assert_eq!(g.rings[0], Grid { x: -10, y: -5, width: 21, height: 11, step: 2 });
+        assert_eq!(g.rings[1].pixel(0, 0), (-30, -15));
     }
 
     #[test]

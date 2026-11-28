@@ -95,9 +95,76 @@ fn l_effects(c: vec4<f32>, x: f32, y: f32, de: f32, rng: ptr<function, u32>) -> 
     return vec4<f32>((lc * la + under * (1.0 - la)) / a, a);
 }
 
-// A height of the far grid (a 3D terrain's one grid).
-fn l_height(x: i32, y: i32) -> f32 {
-    return bitcast<f32>(l_cell(x, y, true).z);
+// A terrain's ring levels (rfr_core::render::light::Rings): level j has the view's cells,
+// 2^j times as far apart around the middle cell; they follow each other in the buffer.
+fn l_rings() -> u32 {
+    return max(u32(U.lcam2.y), 1u);
+}
+
+fn l_center() -> vec2<f32> {
+    return vec2<f32>(f32((max(U.ffar.z, 1) - 1) / 2), f32((max(U.ffar.w, 1) - 1) / 2));
+}
+
+fn l_to_level(j: u32, p: vec2<f32>) -> vec2<f32> {
+    let c = l_center();
+    return c + (p - c) / f32(1u << j);
+}
+
+fn l_from_level(j: u32, p: vec2<f32>) -> vec2<f32> {
+    let c = l_center();
+    return c + (p - c) * f32(1u << j);
+}
+
+// The finest level holding a level-0 point (Rings::level_of).
+fn l_level_of(p: vec2<f32>) -> u32 {
+    let mx = vec2<f32>(f32(max(U.ffar.z, 1) - 1), f32(max(U.ffar.w, 1) - 1));
+    for (var j = 0u; j < l_rings(); j = j + 1u) {
+        let u = l_to_level(j, p);
+        if u.x >= 0.0 && u.y >= 0.0 && u.x <= mx.x && u.y <= mx.y {
+            return j;
+        }
+    }
+    return l_rings() - 1u;
+}
+
+// A cell of a terrain's ring level, the border continued.
+fn l_rcell(i: i32, j: i32, ring: u32) -> vec4<u32> {
+    let g = U.ffar;
+    let ii = u32(clamp(i, 0, g.z - 1));
+    let jj = u32(clamp(j, 0, g.w - 1));
+    return field[ring * u32(g.z) * u32(g.w) + jj * u32(g.z) + ii];
+}
+
+fn l_rheight(i: i32, j: i32, ring: u32) -> f32 {
+    return bitcast<f32>(l_rcell(i, j, ring).z);
+}
+
+fn l_rcolor(i: i32, j: i32, ring: u32) -> vec4<f32> {
+    let c = l_rcell(i, j, ring);
+    return vec4<f32>(unpack2x16unorm(c.x), unpack2x16unorm(c.y));
+}
+
+// Bilinear in a ring level's own cells (Field::height_at, Field::color_at).
+fn l_rheight_at(x: f32, y: f32, ring: u32) -> f32 {
+    let x0 = floor(x);
+    let y0 = floor(y);
+    let fx = x - x0;
+    let fy = y - y0;
+    let xi = i32(x0);
+    let yi = i32(y0);
+    let top = l_rheight(xi, yi, ring) + (l_rheight(xi + 1, yi, ring) - l_rheight(xi, yi, ring)) * fx;
+    let bottom = l_rheight(xi, yi + 1, ring) + (l_rheight(xi + 1, yi + 1, ring) - l_rheight(xi, yi + 1, ring)) * fx;
+    return top + (bottom - top) * fy;
+}
+
+fn l_rcolor_at(x: f32, y: f32, ring: u32) -> vec4<f32> {
+    let x0 = floor(x);
+    let y0 = floor(y);
+    let xi = i32(x0);
+    let yi = i32(y0);
+    let top = mix(l_rcolor(xi, yi, ring), l_rcolor(xi + 1, yi, ring), x - x0);
+    let bottom = mix(l_rcolor(xi, yi + 1, ring), l_rcolor(xi + 1, yi + 1, ring), x - x0);
+    return mix(top, bottom, y - y0);
 }
 
 fn l_height_in(x: i32, y: i32, far: bool) -> f32 {
@@ -112,6 +179,12 @@ fn l_color_in(x: i32, y: i32, far: bool) -> vec4<f32> {
 // rfr_core::render::light::Fields::height_at: bilinear in the grid the point reads, the border
 // continued (image pixels; a terrain's grid starts at 0).
 fn l_height_at(x: f32, y: f32) -> f32 {
+    // A terrain: level-0 cells, read in the finest ring holding the point.
+    if U.lighti.w != 0u {
+        let j = l_level_of(vec2<f32>(x, y));
+        let q = l_to_level(j, vec2<f32>(x, y));
+        return l_rheight_at(q.x, q.y, j);
+    }
     let far = l_far(x, y);
     let p = l_local(x, y, far);
     let x0 = floor(p.x);
@@ -127,6 +200,11 @@ fn l_height_at(x: f32, y: f32) -> f32 {
 
 // rfr_core::render::light::Fields::color_at
 fn l_color_at(x: f32, y: f32) -> vec4<f32> {
+    if U.lighti.w != 0u {
+        let j = l_level_of(vec2<f32>(x, y));
+        let q = l_to_level(j, vec2<f32>(x, y));
+        return l_rcolor_at(q.x, q.y, j);
+    }
     let far = l_far(x, y);
     let p = l_local(x, y, far);
     let x0 = floor(p.x);
@@ -145,8 +223,16 @@ fn l_mip_size(level: u32) -> vec2<u32> {
     return vec2<u32>((max(u32(U.ffar.z), 1u) + s) >> level, (max(u32(U.ffar.w), 1u) + s) >> level);
 }
 
-fn l_mip_base(level: u32) -> u32 {
-    var base = u32(U.ffar.z) * u32(U.ffar.w) * 4u;
+// The first word of mip level `level` of ring `ring`: after all rings' cells, one block of
+// maxima per ring.
+fn l_mip_base(level: u32, ring: u32) -> u32 {
+    let levels = l_mip_levels();
+    var block = 0u;
+    for (var l = 0u; l < levels; l = l + 1u) {
+        let n = l_mip_size(l);
+        block = block + n.x * n.y;
+    }
+    var base = u32(U.ffar.z) * u32(U.ffar.w) * 4u * l_rings() + ring * block;
     for (var l = 0u; l < level; l = l + 1u) {
         let n = l_mip_size(l);
         base = base + n.x * n.y;
@@ -174,11 +260,13 @@ fn l_mip_get(base: u32, level: u32, x: i32, y: i32) -> f32 {
     return bitcast<f32>(field[m / 4u][m % 4u]);
 }
 
-// One level of the height maxima (operation 3, level in band.z): level 0 from the four
-// heights around each cell (times the slope scale), higher levels from 2 × 2 cells below.
+// One level of the height maxima (operation 3, level in band.z, ring in band.w): level 0 from
+// the four heights around each cell (times the slope scale over the ring's scale), higher
+// levels from 2 × 2 cells below.
 @compute @workgroup_size(8, 8)
 fn lmip(@builtin(global_invocation_id) gid: vec3<u32>) {
     let level = U.band.z;
+    let ring = U.band.w;
     let n = l_mip_size(level);
     if gid.x >= n.x || gid.y >= n.y {
         return;
@@ -187,10 +275,10 @@ fn lmip(@builtin(global_invocation_id) gid: vec3<u32>) {
     let y = i32(gid.y);
     var v: f32;
     if level == 0u {
-        let k = U.light.y;
-        v = max(max(k * l_height(x, y), k * l_height(x + 1, y)), max(k * l_height(x, y + 1), k * l_height(x + 1, y + 1)));
+        let k = U.light.y / f32(1u << ring);
+        v = max(max(k * l_rheight(x, y, ring), k * l_rheight(x + 1, y, ring)), max(k * l_rheight(x, y + 1, ring), k * l_rheight(x + 1, y + 1, ring)));
     } else {
-        let pb = l_mip_base(level - 1u);
+        let pb = l_mip_base(level - 1u, ring);
         let p = l_mip_size(level - 1u);
         let x2 = 2 * x;
         let y2 = 2 * y;
@@ -198,8 +286,37 @@ fn lmip(@builtin(global_invocation_id) gid: vec3<u32>) {
         let yb = min(y2 + 1, i32(p.y) - 1);
         v = max(max(l_mip_get(pb, level - 1u, x2, y2), l_mip_get(pb, level - 1u, xb, y2)), max(l_mip_get(pb, level - 1u, x2, yb), l_mip_get(pb, level - 1u, xb, yb)));
     }
-    let m = l_mip_base(level) + gid.y * n.x + gid.x;
+    let m = l_mip_base(level, ring) + gid.y * n.x + gid.x;
     field[m / 4u][m % 4u] = bitcast<u32>(v);
+}
+
+// Blends the outer band of ring level band.w into the next coarser level (operation 4,
+// Field::blend_into): heights and colors.
+@compute @workgroup_size(8, 8)
+fn lblend(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let ring = U.band.w;
+    let w = u32(U.ffar.z);
+    let h = u32(U.ffar.w);
+    if gid.x >= w || gid.y >= h {
+        return;
+    }
+    let c0 = l_center();
+    let band = max(min(c0.x, c0.y) * 2.0 * 0.125, 2.0);
+    let d = f32(min(min(gid.x, w - 1u - gid.x), min(gid.y, h - 1u - gid.y)));
+    if d >= band {
+        return;
+    }
+    let t = 1.0 - d / band;
+    let u = c0 + (vec2<f32>(f32(gid.x), f32(gid.y)) - c0) * 0.5;
+    let at = ring * w * h + gid.y * w + gid.x;
+    let cell = field[at];
+    let col = vec4<f32>(unpack2x16unorm(cell.x), unpack2x16unorm(cell.y));
+    let hh = bitcast<f32>(cell.z);
+    let oc = l_rcolor_at(u.x, u.y, ring + 1u);
+    let oh = l_rheight_at(u.x, u.y, ring + 1u);
+    let nc = col + (oc - col) * t;
+    let nh = hh + (oh - hh) * t;
+    field[at] = vec4<u32>(pack2x16unorm(nc.xy), pack2x16unorm(nc.zw), bitcast<u32>(nh), cell.w);
 }
 
 // rfr_core::render::light::camera_ray_in: origin and direction (field cells, y down, z up)
@@ -224,18 +341,20 @@ fn l_camera_ray(zc: f32, x: f32, y: f32) -> array<vec3<f32>, 2> {
     return array<vec3<f32>, 2>(o, normalize(f + r * sx + u * sy));
 }
 
-fn l_above(o: vec3<f32>, d: vec3<f32>, k: f32, t: f32) -> f32 {
-    return o.z + d.z * t - k * l_height_at(o.x + d.x * t, o.y + d.y * t);
+fn l_above(o: vec3<f32>, d: vec3<f32>, k: f32, t: f32, ring: u32) -> f32 {
+    return o.z + d.z * t - k * l_rheight_at(o.x + d.x * t, o.y + d.y * t, ring);
 }
 
-// rfr_core::render::light::Field::trace: a surface hit (x, y, 1), a wall hit (x, y, 2 + side:
-// 0 enters toward +x, 1 toward −x, 2 toward +y, 3 toward −y), or z = 0 for a miss.
-fn l_trace(o: vec3<f32>, d: vec3<f32>, k: f32) -> vec3<f32> {
+// rfr_core::render::light::Field::trace_in over one ring level (its own cells) and the part
+// [tmin, tmax] of the ray: a surface hit (x, y, 1), a wall hit (x, y, 2 + side: 0 enters toward
+// +x, 1 toward −x, 2 toward +y, 3 toward −y; when `walls`, above `wbase`), or z = 0 for a miss;
+// `entry_hit`: a ray coming into the part below the surface meets it there.
+fn l_trace_in(o: vec3<f32>, d: vec3<f32>, k: f32, ring: u32, tmin: f32, tmax: f32, entry_hit: bool, walls: bool, wbase: f32) -> vec3<f32> {
     let levels = l_mip_levels();
     let top = levels - 1u;
     var bases: array<u32, 32>;
     for (var l = 0u; l < levels; l = l + 1u) {
-        bases[l] = l_mip_base(l);
+        bases[l] = l_mip_base(l, ring);
     }
     let xmax = max(f32(U.ffar.z) - 1.0, 0.0);
     let ymax = max(f32(U.ffar.w) - 1.0, 0.0);
@@ -260,6 +379,11 @@ fn l_trace(o: vec3<f32>, d: vec3<f32>, k: f32) -> vec3<f32> {
             t1 = min(t1, max(ta, tb));
         }
     }
+    if tmin > t0 {
+        t0 = tmin;
+        side = -1;
+    }
+    t1 = min(t1, tmax);
     let t_side = t0;
     let zt = l_mip_get(bases[top], top, 0, 0);
     if o.z > zt {
@@ -271,10 +395,13 @@ fn l_trace(o: vec3<f32>, d: vec3<f32>, k: f32) -> vec3<f32> {
     if t0 > t1 {
         return vec3<f32>(0.0);
     }
-    // Entering below the surface: through a side or from underneath; the wall when the
-    // terrain has walls and the ray comes in above the base.
-    if l_above(o, d, k, t0) < -1e-3 * (1.0 + abs(zt) + abs(o.z)) {
-        if U.lwalli.x != 0u && side >= 0 && t0 == t_side && o.z + d.z * t0 >= U.lwall.w {
+    // Entering below the surface: in an inner ring a hit; else through a side or from
+    // underneath, the wall when the terrain has walls and the ray comes in above the base.
+    if l_above(o, d, k, t0, ring) < -1e-3 * (1.0 + abs(zt) + abs(o.z)) {
+        if entry_hit {
+            return vec3<f32>(oa + da * t0, 1.0);
+        }
+        if walls && side >= 0 && t0 == t_side && o.z + d.z * t0 >= wbase {
             return vec3<f32>(oa + da * t0, 2.0 + f32(side));
         }
         return vec3<f32>(0.0);
@@ -308,18 +435,18 @@ fn l_trace(o: vec3<f32>, d: vec3<f32>, k: f32) -> vec3<f32> {
             level = level - 1u;
             continue;
         }
-        if l_above(o, d, k, t) <= 0.0 {
+        if l_above(o, d, k, t, ring) <= 0.0 {
             return vec3<f32>(p, 1.0);
         }
         var a = t;
         for (var j = 1u; j <= 4u; j = j + 1u) {
             let b = t + (te - t) * f32(j) / 4.0;
-            if l_above(o, d, k, b) <= 0.0 {
+            if l_above(o, d, k, b, ring) <= 0.0 {
                 var lo = a;
                 var hi2 = b;
                 for (var r = 0u; r < 8u; r = r + 1u) {
                     let m = 0.5 * (lo + hi2);
-                    if l_above(o, d, k, m) <= 0.0 {
+                    if l_above(o, d, k, m, ring) <= 0.0 {
                         hi2 = m;
                     } else {
                         lo = m;
@@ -335,6 +462,100 @@ fn l_trace(o: vec3<f32>, d: vec3<f32>, k: f32) -> vec3<f32> {
     // Out of steps: the ray skims the surface here.
     if t <= t1 {
         return vec3<f32>(oa + da * t, 1.0);
+    }
+    return vec3<f32>(0.0);
+}
+
+// rfr_core::render::light::Fields::trace_terrain: the ray (level-0 cells) through the rings in
+// order, each part traced in its own level; walls at the outermost. The hit in level-0 cells.
+fn l_trace(o: vec3<f32>, d: vec3<f32>, k: f32) -> vec3<f32> {
+    let n = l_rings();
+    let top = n - 1u;
+    let mx = vec2<f32>(f32(max(U.ffar.z, 1) - 1), f32(max(U.ffar.w, 1) - 1));
+    // Each level's interval over its box (a > b: none).
+    var sa: array<f32, 8>;
+    var sb: array<f32, 8>;
+    for (var j = 0u; j < n; j = j + 1u) {
+        let lo = l_from_level(j, vec2<f32>(0.0));
+        let hi = l_from_level(j, mx);
+        var a = 0.0;
+        var b = 3.4e38;
+        for (var c = 0; c < 2; c = c + 1) {
+            if abs(d[c]) < 1e-12 {
+                if o[c] < lo[c] || o[c] > hi[c] {
+                    a = 1.0;
+                    b = 0.0;
+                }
+            } else {
+                let p = (lo[c] - o[c]) / d[c];
+                let q = (hi[c] - o[c]) / d[c];
+                a = max(a, min(p, q));
+                b = min(b, max(p, q));
+            }
+        }
+        sa[j] = a;
+        sb[j] = b;
+    }
+    // Each level's own parts: its interval without the next finer level's.
+    var pa: array<f32, 16>;
+    var pb: array<f32, 16>;
+    var pj: array<u32, 16>;
+    var np = 0u;
+    for (var j = 0u; j < n; j = j + 1u) {
+        let a = sa[j];
+        let b = sb[j];
+        if a > b {
+            continue;
+        }
+        if j > 0u && sa[j - 1u] <= sb[j - 1u] {
+            let ia = sa[j - 1u];
+            let ib = sb[j - 1u];
+            if ia > a {
+                pa[np] = a;
+                pb[np] = min(ia, b);
+                pj[np] = j;
+                np = np + 1u;
+            }
+            if ib < b {
+                pa[np] = max(ib, a);
+                pb[np] = b;
+                pj[np] = j;
+                np = np + 1u;
+            }
+        } else {
+            pa[np] = a;
+            pb[np] = b;
+            pj[np] = j;
+            np = np + 1u;
+        }
+    }
+    // In order along the ray (stable, like the CPU's sort by start).
+    for (var i = 1u; i < np; i = i + 1u) {
+        var m = i;
+        while m > 0u && pa[m - 1u] > pa[m] {
+            let ta = pa[m];
+            pa[m] = pa[m - 1u];
+            pa[m - 1u] = ta;
+            let tb = pb[m];
+            pb[m] = pb[m - 1u];
+            pb[m - 1u] = tb;
+            let tj = pj[m];
+            pj[m] = pj[m - 1u];
+            pj[m - 1u] = tj;
+            m = m - 1u;
+        }
+    }
+    let outer_entry = sa[top];
+    for (var i = 0u; i < np; i = i + 1u) {
+        let j = pj[i];
+        let m = f32(1u << j);
+        let oj = vec3<f32>(l_to_level(j, o.xy), o.z / m);
+        let dj = d / m;
+        let first = j == top && sa[top] <= sb[top] && pa[i] == outer_entry;
+        let hit = l_trace_in(oj, dj, k / m, j, pa[i], pb[i], !first, first && U.lwalli.x != 0u, U.lwall.w / m);
+        if hit.z != 0.0 {
+            return vec3<f32>(l_from_level(j, hit.xy), hit.z);
+        }
     }
     return vec3<f32>(0.0);
 }
