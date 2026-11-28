@@ -591,6 +591,87 @@ impl PertGen {
         }
     }
 
+    fn ftmp(&mut self, r: String, d: String) -> (String, String) {
+        self.n += 1;
+        let k = self.n;
+        let _ = writeln!(self.out, "{}let q{k}r = {r};", self.pad);
+        let _ = writeln!(self.out, "{}let q{k}f = {d};", self.pad);
+        (format!("q{k}r"), format!("q{k}f"))
+    }
+
+    /// [`PertGen::expr`] with the delta in plain f32 (`fd<i>`, `dpixf`): rule for rule, for
+    /// steps whose deltas lie well inside the f32 range.
+    fn fexpr(&mut self, e: &PE) -> (String, String) {
+        let mul = |ra: &str, da: &str, rb: &str, db: &str| format!("v2_mul({ra}, {db}) + v2_mul({da}, {rb}) + v2_mul({da}, {db})");
+        match e {
+            PE::Const(c) => (format!("vec2<f32>({}, {})", lit(c.re), lit(c.im)), "vec2<f32>(0.0)".into()),
+            PE::Local(i) => (format!("pr{i}"), format!("fd{i}")),
+            PE::Pixel => ("pcen".into(), "dpixf".into()),
+            PE::Add(a, b) => {
+                let ((ra, da), (rb, db)) = (self.fexpr(a), self.fexpr(b));
+                self.ftmp(format!("{ra} + {rb}"), format!("{da} + {db}"))
+            }
+            PE::Sub(a, b) => {
+                let ((ra, da), (rb, db)) = (self.fexpr(a), self.fexpr(b));
+                self.ftmp(format!("{ra} - {rb}"), format!("{da} - {db}"))
+            }
+            PE::Mul(a, b) => {
+                let ((ra, da), (rb, db)) = (self.fexpr(a), self.fexpr(b));
+                self.ftmp(format!("v2_mul({ra}, {rb})"), mul(&ra, &da, &rb, &db))
+            }
+            PE::Div(a, b) => {
+                let ((ra, da), (rb, db)) = (self.fexpr(a), self.fexpr(b));
+                self.ftmp(format!("v2_div({ra}, {rb})"), format!("v2_div(v2_mul({da}, {rb}) - v2_mul({ra}, {db}), v2_mul({rb}, {rb} + {db}))"))
+            }
+            PE::Neg(a) => {
+                let (r, d) = self.fexpr(a);
+                self.ftmp(format!("-{r}"), format!("-{d}"))
+            }
+            PE::PowI(a, n) => {
+                let (r, d) = self.fexpr(a);
+                let (mut pr, mut pd) = (r.clone(), d.clone());
+                for _ in 1..*n {
+                    let next = mul(&pr, &pd, &r, &d);
+                    (pr, pd) = self.ftmp(format!("v2_mul({pr}, {r})"), next);
+                }
+                (pr, pd)
+            }
+            PE::Conj(a) => {
+                let (r, d) = self.fexpr(a);
+                self.ftmp(format!("vec2<f32>({r}.x, -{r}.y)"), format!("vec2<f32>({d}.x, -{d}.y)"))
+            }
+            PE::Abs(a) => {
+                let (r, d) = self.fexpr(a);
+                self.ftmp(format!("abs({r})"), format!("f_absd({r}, {d})"))
+            }
+            PE::Re(a) => {
+                let (r, d) = self.fexpr(a);
+                self.ftmp(format!("vec2<f32>({r}.x, 0.0)"), format!("vec2<f32>({d}.x, 0.0)"))
+            }
+            PE::Im(a) => {
+                let (r, d) = self.fexpr(a);
+                self.ftmp(format!("vec2<f32>({r}.y, 0.0)"), format!("vec2<f32>({d}.y, 0.0)"))
+            }
+            PE::Flip(a) => {
+                let (r, d) = self.fexpr(a);
+                self.ftmp(format!("{r}.yx"), format!("{d}.yx"))
+            }
+            PE::MakeC(a, b) => {
+                let ((ra, da), (rb, db)) = (self.fexpr(a), self.fexpr(b));
+                self.ftmp(format!("vec2<f32>({ra}.x, {rb}.x)"), format!("vec2<f32>({da}.x, {db}.x)"))
+            }
+        }
+    }
+
+    /// [`PertGen::assign`] in plain f32 (no derivatives).
+    fn fassign(&mut self, list: &[(usize, PE)]) {
+        for (i, e) in list {
+            let (r, d) = self.fexpr(e);
+            let _ = writeln!(self.out, "{}pr{i} = {r};", self.pad);
+            let _ = writeln!(self.out, "{}fd{i} = {d};", self.pad);
+        }
+    }
+
     fn dtmp(&mut self, f: String, d: String) -> (String, String) {
         self.n += 1;
         let k = self.n;
@@ -767,13 +848,45 @@ fn pert_code(p: &Perturbation, prog: &Program, use_bla: bool, deriv: bool, init:
     for (k, &s) in p.state.iter().enumerate() {
         let _ = writeln!(g.out, "{pad}pr{s} = refo[pm * {ns}u + {k}u];");
     }
-    g.assign(&p.body);
+    if deriv {
+        g.assign(&p.body);
+    } else {
+        // Deltas well inside the f32 range (squares included): the step in plain f32,
+        // normalized once; tiny deltas keep the extended exponent.
+        let inner: &'static str = if pad.len() <= 12 { "                " } else { "                    " };
+        let cond = p.state.iter().map(|s| format!("pd{s}.e > -60 && pd{s}.e < 60")).collect::<Vec<_>>().join(" && ");
+        let _ = writeln!(g.out, "{pad}if {cond} {{");
+        g.pad = inner;
+        for &s in &p.state {
+            let _ = writeln!(g.out, "{inner}var fd{s} = cf_f(pd{s});");
+        }
+        g.fassign(&p.body);
+        for &s in &p.state {
+            let _ = writeln!(g.out, "{inner}pd{s} = cf_v2(fd{s});");
+        }
+        let _ = writeln!(g.out, "{pad}}} else {{");
+        g.assign(&p.body);
+        let _ = writeln!(g.out, "{pad}}}");
+        g.pad = pad;
+    }
     let _ = writeln!(g.out, "{pad}pm = pm + 1u;");
     if use_bla {
         let _ = writeln!(g.out, "            }}");
     }
-    let _ = writeln!(g.out, "            let fz = cf_add(cf_v2(refo[min(pm, plen - 1u) * {ns}u + {kz}u]), pd{});", Z);
-    let _ = writeln!(g.out, "            if pm + 1u >= plen || cf_lt(cf_norm(fz), cf_norm(pd{})) {{", Z);
+    // Rebase where |Z + δ| < |δ| (in plain f32 while δ is in range).
+    let _ = writeln!(g.out, "            var rebase = pm + 1u >= plen;");
+    let _ = writeln!(g.out, "            if !rebase {{");
+    let _ = writeln!(g.out, "                let zref = refo[min(pm, plen - 1u) * {ns}u + {kz}u];");
+    let _ = writeln!(g.out, "                if pd{z}.e > -60 && pd{z}.e < 60 {{", z = Z);
+    let _ = writeln!(g.out, "                    let dzf = cf_f(pd{z});", z = Z);
+    let _ = writeln!(g.out, "                    let fzf = zref + dzf;");
+    let _ = writeln!(g.out, "                    rebase = dot(fzf, fzf) < dot(dzf, dzf);");
+    let _ = writeln!(g.out, "                }} else {{");
+    let _ = writeln!(g.out, "                    let fz = cf_add(cf_v2(zref), pd{z});", z = Z);
+    let _ = writeln!(g.out, "                    rebase = cf_lt(cf_norm(fz), cf_norm(pd{z}));", z = Z);
+    let _ = writeln!(g.out, "                }}");
+    let _ = writeln!(g.out, "            }}");
+    let _ = writeln!(g.out, "            if rebase {{");
     let _ = writeln!(g.out, "                let at = min(pm, plen - 1u);");
     for (k, &s) in p.state.iter().enumerate() {
         let _ = writeln!(g.out, "                pd{s} = cf_sub(cf_add(cf_v2(refo[at * {ns}u + {k}u]), pd{s}), cf_v2(refo[{k}u]));");
@@ -1028,6 +1141,7 @@ pub fn kernel(lp: &LayerPlan, mode: Mode) -> String {
             "    let pxo = vec2<f32>(f32(xf) + ju - w * 0.5, -(f32(yf) + jv - h * 0.5));\n",
             "    let pxr = vec2<f32>(pxo.x * U.rot.x - pxo.y * U.rot.y, pxo.x * U.rot.y + pxo.y * U.rot.x);\n",
             "    let dpix = cf_add(cf_make(pxr.x * U.pert.x, pxr.y * U.pert.x, U.perti.x), cf_make(U.pert.y, U.pert.z, U.perti.z));\n",
+            "    let dpixf = cf_f(dpix);\n",
             "    let pcen = U.pref.xy;\n",
             "    var pixel = c_f(pcen.x, pcen.y);"
         )

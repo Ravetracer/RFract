@@ -141,6 +141,25 @@ fn cf_absd(r: vec2<f32>, d: Cf) -> Cf {
     return cf_makec(cf_diffabs(r.x, cf_re(d)), cf_diffabs(r.y, cf_im(d)));
 }
 
+// Deltas in plain f32 (perturbation steps while every delta is in range): diffabs.
+fn f_diffabs(r: f32, d: f32) -> f32 {
+    let rd = r + d;
+    if r >= 0.0 {
+        if rd >= 0.0 {
+            return d;
+        }
+        return -(2.0 * r + d);
+    }
+    if rd > 0.0 {
+        return 2.0 * r + d;
+    }
+    return -d;
+}
+
+fn f_absd(r: vec2<f32>, d: vec2<f32>) -> vec2<f32> {
+    return vec2<f32>(f_diffabs(r.x, d.x), f_diffabs(r.y, d.y));
+}
+
 fn v2_mul(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
     return vec2<f32>(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
 }

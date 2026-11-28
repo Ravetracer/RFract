@@ -18,8 +18,11 @@ Laptop, shared with other work: compare medians of the same run only).
 - Tried and dropped: periodicity for inside coloring formulas once their state settles
   (orbit traps); the traps rarely settle before the iteration limit (the minimum keeps
   shrinking while the orbit converges), so the check made renders 20 % slower.
-- [ ] Ideas: deep zooms with scaled f32 deltas instead of floatexp where the exponent range
-      allows; terrain path tracing (2.1 s at 960 × 540, 64 spp); coloring-heavy layers.
+- [x] Deep zooms: perturbation steps (`PertGen::fexpr`, rule for rule) and the rebase check in
+      plain f32 while every delta's exponent is within ±60; the extended exponent only for
+      tiny deltas. 1e-40 example (4000 iterations, 22 % stepped one by one, the rest linear
+      steps): 1.05 → 0.50 s. Distance estimation keeps floatexp; the CPU keeps Fx (f64).
+- [ ] Ideas: terrain path tracing (2.1 s at 960 × 540, 64 spp); coloring-heavy layers.
 
 ## Stage 11 – Network rendering and scripting
 

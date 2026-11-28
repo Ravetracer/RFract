@@ -23,6 +23,9 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
 - Faster rendering: whole-number powers of z without loops (z², z³, z⁴ directly) and the
   periodicity check every 8th iteration instead of every one; on the benchmark set the GPU
   renders about 30 % faster overall (seahorse valley about 2×, distance estimation 2.2×).
+- Deep zooms on the GPU about twice as fast: perturbation steps and the rebasing check run in
+  plain f32 while the deltas are well inside its range (the extended exponent only for tiny
+  deltas).
 
 ## [0.12.0] - 2026-11-28
 
