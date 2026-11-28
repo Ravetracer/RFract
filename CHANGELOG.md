@@ -6,6 +6,10 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
 
 ### Added
 
+- Lua scripting (*File › Scripts…*, `rfr-cli script`): scripts change the document (a Lua
+  table with the fields of an `.rfr` file), render images and animations, fill the render
+  queue and list formulas and their parameters; parameters declared in the script header
+  get a form. Five example scripts; the Scripting chapter of the manual is the reference.
 - Network rendering: render clients on other computers (`rfr-cli client`) take frames of an
   animation or tiles of an image; *File › Network render…* and `rfr-cli net-render` send the
   document with its images and formula files and put the results together (`net-clients`

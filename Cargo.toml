@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/rfr-core", "crates/rfr-gpu", "crates/rfr-net", "crates/rfr-app", "crates/rfr-cli"]
+members = ["crates/rfr-core", "crates/rfr-gpu", "crates/rfr-net", "crates/rfr-script", "crates/rfr-app", "crates/rfr-cli"]
 
 [workspace.package]
 version = "0.12.0"

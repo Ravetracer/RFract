@@ -10,6 +10,7 @@ use rfr_core::doc::Document;
 use rfr_core::formula::library::library;
 
 mod net;
+mod script;
 
 const USAGE: &str = "\
 Usage: rfr-cli <command> [options]
@@ -64,6 +65,15 @@ Commands:
       --tile <px>            Still images: pixels per tile side (default: 512)
       --cpu                  The local client and the server's glow render on the CPU
   net-clients [--wait <s>]   List the render clients on the network
+  script <file.lua> [input] [options]
+                             Run a Lua script on a document (input: .rfr or PNG; default:
+                             the default document)
+      -o, --output <file>    Save the document the script leaves (.rfr)
+      --param <name=value>   A script parameter (repeatable; --info lists them)
+      --info                 Show the script's title and parameters
+      --api                  Print the scripting reference
+      --examples <dir>       Write the example scripts into <dir>
+      --cpu                  The script's renders run on the CPU
   formulas                   List the built-in formulas with their ids
   formulas --check <path>…   Compile formula files (.ufm, .ucl, .uxf, .frm) or folders and report
   params --check <path>… [--thumbs <dir>] [--notes]
@@ -841,6 +851,7 @@ fn main() -> ExitCode {
         Some("client") => net::client(rest),
         Some("net-render") => net::render(rest),
         Some("net-clients") => net::list(rest),
+        Some("script") => script::run(rest),
         Some("params" | "upr") if rest.first().map(String::as_str) == Some("--check") => check_upr(&rest[1..]),
         Some("formulas") if rest.first().map(String::as_str) == Some("--check") => check_formulas(&rest[1..]),
         Some("formulas") => {

@@ -26,6 +26,14 @@ pub struct Manual {
 }
 
 impl Manual {
+    /// Shows the chapter whose file name starts with `prefix` (`"14-"`).
+    pub fn select(&mut self, prefix: &str) {
+        if let Some(i) = CHAPTERS.iter().position(|(name, _)| name.starts_with(prefix)) {
+            self.chapter = i;
+            self.scroll_top = true;
+        }
+    }
+
     pub fn show(&mut self, ui: &mut Ui) {
         if CHAPTERS.is_empty() {
             ui.label("The manual is not part of this build.");

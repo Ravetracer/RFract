@@ -62,6 +62,7 @@ pub struct App {
     anim_export: crate::anim_export::AnimExport,
     queue: crate::queue_window::QueueWindow,
     net: crate::net_window::NetWindow,
+    scripts: crate::script_window::ScriptWindow,
     explorer: crate::explorer::Explorer,
     /// Gradient editor window: outside (false) or inside (true) coloring.
     gradient_window: Option<bool>,
@@ -137,6 +138,7 @@ impl App {
             anim_export: Default::default(),
             queue: crate::queue_window::QueueWindow::new(),
             net: crate::net_window::NetWindow::new(),
+            scripts: Default::default(),
             explorer: Default::default(),
             show_explore: false,
             doc: Doc::new(Document::for_formula("rfract:Mandelbrot")),
@@ -628,6 +630,12 @@ impl App {
                 if item(ui, "Render queue…", "").on_hover_text("Images and animations rendered one after the other (for example overnight)").clicked()
                 {
                     self.queue.open = true;
+                }
+                if item(ui, "Scripts…", "")
+                    .on_hover_text("Lua scripts that build and change documents, render images and animations and fill the render queue")
+                    .clicked()
+                {
+                    self.scripts.open();
                 }
                 if item(ui, "Network render…", "")
                     .on_hover_text("Renders the image or the animation on other computers of the network (render clients)")
@@ -1143,7 +1151,7 @@ impl eframe::App for App {
             self.timeline.stop_preview();
         }
         self.viewport.preview = self.timeline.preview(&self.doc.doc);
-        self.viewport.paused = self.export.busy() || self.anim_export.busy() || self.queue.busy() || self.net.local_busy();
+        self.viewport.paused = self.export.busy() || self.anim_export.busy() || self.queue.busy() || self.net.local_busy() || self.scripts.busy;
         let mut msg = None;
         egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::CANVAS)).show(ui, |ui| {
             msg = self.viewport.show(ui, frame, &mut self.doc.doc, &self.selection, &self.prefs);
@@ -1158,6 +1166,25 @@ impl eframe::App for App {
             if m.contains("failed") { self.warn(m) } else { self.notify(m) }
         }
         self.queue.show(&ctx, &self.doc.doc, self.doc.path.as_deref(), &self.prefs);
+        let run = crate::script_window::RunContext {
+            doc: &self.doc.doc,
+            doc_dir: self.doc.path.as_deref().and_then(|p| p.parent()),
+            gpu: self.viewport.gpu_context(),
+        };
+        if let Some(out) = self.scripts.show(&ctx, &run, &self.prefs) {
+            let n = out.queued.len();
+            if n > 0 {
+                self.queue.add_jobs(out.queued);
+                self.notify(format!("The script added {n} job(s) to the render queue (File › Render queue…)"));
+            }
+            if let Some(d) = out.doc {
+                self.doc.replace(d);
+                self.notify("The script changed the document (Undo takes it back)");
+            }
+        }
+        if std::mem::take(&mut self.scripts.show_reference) {
+            self.help.open_chapter("14-");
+        }
         if let Some(m) = self.net.show(&ctx, &self.doc.doc, &self.prefs, self.viewport.gpu_context()) {
             if m.contains("failed") { self.warn(m) } else { self.notify(m) }
         }

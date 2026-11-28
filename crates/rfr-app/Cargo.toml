@@ -15,6 +15,7 @@ rfd = "0.17.2"
 rfr-core = { path = "../rfr-core" }
 rfr-gpu = { path = "../rfr-gpu" }
 rfr-net = { path = "../rfr-net" }
+rfr-script = { path = "../rfr-script" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 wgpu = "30"

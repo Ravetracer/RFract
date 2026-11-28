@@ -45,6 +45,13 @@ const SHORTCUTS: &[(&str, &str)] = &[
 ];
 
 impl Help {
+    /// Opens the manual at the chapter whose file name starts with `prefix`.
+    pub fn open_chapter(&mut self, prefix: &str) {
+        self.open = true;
+        self.tab = Tab::Manual;
+        self.manual.select(prefix);
+    }
+
     pub fn show(&mut self, ctx: &egui::Context) {
         if !self.open {
             return;

@@ -63,6 +63,12 @@ impl QueueWindow {
         }
     }
 
+    /// Adds jobs (from a script) at the end of the queue.
+    pub fn add_jobs(&mut self, jobs: Vec<QueueJob>) {
+        self.queue.jobs.extend(jobs);
+        self.save();
+    }
+
     /// Updates the running job and starts the next one; returns a message when a job ended.
     pub fn poll(&mut self, gpu: Option<GpuContext>) -> Option<String> {
         let mut msg = None;

@@ -12,7 +12,11 @@ that come up along the way.
       folder path (client sets its formula folder per job). App window, CLI `client`,
       `net-render`, `net-clients`; loopback test.
 - [ ] Stage 11 exit: an animation and a poster across two machines (needs a second computer).
-- [ ] Lua scripting (from RWildFire).
+- [x] Lua scripting (from RWildFire): `rfr-script` (mlua 5.4; the document as a Lua table via
+      serde, read back as `Document`; `rfr` module: document, layer, copy, load, save, render,
+      animate (through `batch::run_job`), queue, formulas, params, zoom, pan, add_keyframe,
+      dump), header parameters as in RWildFire, app window `script_window.rs`, CLI `script`;
+      reference = manual chapter 14.
 
 ## Stage 10 – Road to 1.0
 
