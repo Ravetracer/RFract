@@ -255,6 +255,13 @@ fn gpu_matches_the_cpu_renderer() {
         path.layers[0].light.path_tracing = true;
         path.layers[0].light.bounces = 2;
         cases.push(("terrain path tracing".into(), path));
+        // A 3D object standing in the terrain: hidden by it, shadowing it, shadowed by it.
+        let mut scene = ter.clone();
+        let mut ob = rfr_core::doc::Layer { kind: LayerKind::Object, ..Default::default() };
+        ob.object.place = rfr_core::doc::Placement { on: true, x: 0.1, y: -0.2, height: 0.1, size: 0.35, turn: 20.0 };
+        ob.outside.transfer = rfr_core::doc::Transfer::Linear;
+        scene.layers.push(ob);
+        cases.push(("terrain with object".into(), scene));
         // Point lights from the document's light sources, with shadows, flat and as a terrain.
         let light = |x: &str, y: &str, h: f64, color: [f32; 3]| rfr_core::doc::LightSource {
             position: [x.into(), y.into()],

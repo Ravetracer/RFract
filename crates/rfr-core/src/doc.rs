@@ -455,6 +455,29 @@ pub struct Object3D {
     pub seed: [f64; 4],
     pub camera: Camera,
     pub detail: f64,
+    /// Placed into the scene of the first 3D terrain below this layer (see [`Placement`]).
+    pub place: Placement,
+}
+
+/// A 3D object standing in a terrain's scene: rendered with the terrain's camera and lights,
+/// the nearer surface wins, both cast shadows. `x`, `y`: the position in the view (half view
+/// heights from its middle, y up); `height` above the ground and `size` (the object's diameter)
+/// in image heights; `turn` about the vertical axis in degrees.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Placement {
+    pub on: bool,
+    pub x: f64,
+    pub y: f64,
+    pub height: f64,
+    pub size: f64,
+    pub turn: f64,
+}
+
+impl Default for Placement {
+    fn default() -> Self {
+        Placement { on: false, x: 0.0, y: 0.0, height: 0.05, size: 0.3, turn: 0.0 }
+    }
 }
 
 impl Default for Object3D {
@@ -470,6 +493,7 @@ impl Default for Object3D {
             seed: [-0.291, -0.399, 0.339, 0.437],
             camera: Camera { yaw: 30.0, pitch: 25.0, distance: 3.0, fov: 40.0, target: 0.0 },
             detail: 1.0,
+            place: Placement::default(),
         }
     }
 }

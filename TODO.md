@@ -81,14 +81,16 @@ Open points of the earlier stages (their notes below stay for the details).
       (`Camera::target`, Shift+Ctrl-drag; a fifth camera path channel).
 - [ ] Terrain fly mode: move the camera freely (WASD or arrow keys, mouse look), with flight
       recording.
-- [ ] 3D objects: bicomplex Julia and more DE formulas, 3D formula programs, depth compositing
+- [x] 3D objects: bicomplex Julia and more DE formulas, 3D formula programs, depth compositing
       with terrains.
   - [x] Bicomplex Julia/Mandelbrot (idempotent basis: the product of two complex sets, distance
         from the two complex estimates), Sierpinski tetrahedron, octahedral folds.
   - [x] 3D formula programs: `ProgramKind::Object` (`.r3d`), real `x`, `y`, `z` and `#px…#cz`
         (`Sys::P3`, `Sys::C3`), `Dual3` gradients (CPU, `scalar_dual3.wgsl`), distance from the
         Jacobian (Frobenius / √3; `distance = "linear"`), `bound`; `codegen::object_kernel`.
-  - [ ] Depth compositing: 3D objects placed into a terrain's scene (user's choice).
+  - [x] Depth compositing: 3D objects placed into a terrain's scene (`doc::Placement`,
+        `light::SceneObject`/`Place`, `Plan::build` attaches the object to the terrain below;
+        nearer surface wins, shadows both ways; path-traced bounces do not see the object).
 - [ ] Perturbation: BLA for formulas with more than z, double-float reference values on the
       GPU, fallback or hint for formulas that cannot be perturbed.
 - [ ] Exit: full renders of stage 8 (deep zoom from the app, 1080p fly-over).
@@ -175,8 +177,8 @@ Open points of the earlier stages (their notes below stay for the details).
       base, optional path tracing into OIDN.
 - [x] 3D object layers: Mandelbulb, quaternion Julia, Mandelbox, Menger sponge, sphere traced
       with the same lights (shadows, occlusion, reflections).
-- [ ] 3D objects: bicomplex Julia and more DE formulas, formulas from the formula language
-      (3D programs), depth for compositing with terrains.
+- [x] 3D objects: bicomplex Julia and more DE formulas, formulas from the formula language
+      (3D programs), depth for compositing with terrains (done in stage 10).
 - [x] Exit: lit 2.5D renders, 3D terrains and objects (the fly-over moved to stage 8).
 
 ## Stage 5 – More fractal types (layer kinds)

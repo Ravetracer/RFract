@@ -67,6 +67,8 @@ pub struct LightPlan {
     pub rings: u32,
     /// 3D terrain path tracing: the bounces (0: off; see [`Fields::path`]).
     pub path: u32,
+    /// 3D terrain: a 3D object standing in its scene (see [`SceneObject`]).
+    pub scene: Option<Arc<SceneObject>>,
     /// Whether the layer is lit (else a layer with effects keeps its colors).
     pub shading: bool,
     /// Output the surface normal as a color (n / 2 + ½) instead of shading.
@@ -160,6 +162,7 @@ impl LightPlan {
             walls: (l.terrain && l.walls).then_some((l.wall_depth.max(0.0) as f32, l.wall_color)),
             rings: l.ground.clamp(1, 16).ilog2() + 1,
             path: if l.terrain && l.path_tracing { l.bounces.clamp(1, 8) } else { 0 },
+            scene: None,
             shading: true,
             normal_output: l.normal_output,
             fx: None,
@@ -487,6 +490,82 @@ impl Rings {
         let (cx, cy) = self.center();
         (cx.min(cy) * 2.0 * RING_BAND).max(2.0)
     }
+}
+
+/// A 3D object standing in a terrain's scene (`doc::Placement`): its shape and its colors (the
+/// object layer's outside colors; histogram transfer counts as linear).
+#[derive(Clone, Debug)]
+pub struct SceneObject {
+    pub plan: super::object::ObjectPlan,
+    pub color: super::ColorPlan,
+}
+
+/// Where a scene object stands in a terrain's field: its middle (cells, z = k · height), the
+/// cells per object unit and its turn; object space has x right, y away (the field's −y) and z
+/// up.
+#[derive(Clone, Copy, Debug)]
+pub struct Place {
+    pub c: [f32; 3],
+    pub s: f32,
+    pub cos: f32,
+    pub sin: f32,
+}
+
+impl Place {
+    fn rot(&self, v: [f32; 3], sign: f32) -> [f32; 3] {
+        let s = self.sin * sign;
+        [v[0] * self.cos - v[1] * s, v[0] * s + v[1] * self.cos, v[2]]
+    }
+
+    /// A field point in object space.
+    pub fn to_obj(&self, p: [f32; 3]) -> [f32; 3] {
+        self.rot([(p[0] - self.c[0]) / self.s, -(p[1] - self.c[1]) / self.s, (p[2] - self.c[2]) / self.s], -1.0)
+    }
+
+    /// A field direction (y down) in object space.
+    pub fn dir_to_obj(&self, d: [f32; 3]) -> [f32; 3] {
+        self.rot([d[0], -d[1], d[2]], -1.0)
+    }
+
+    /// A direction of the lights (y up) in object space, and back.
+    pub fn light_to_obj(&self, d: [f32; 3]) -> [f32; 3] {
+        self.rot(d, -1.0)
+    }
+    pub fn obj_to_light(&self, d: [f32; 3]) -> [f32; 3] {
+        self.rot(d, 1.0)
+    }
+
+    /// An object point in the field.
+    pub fn from_obj(&self, q: [f32; 3]) -> [f32; 3] {
+        let v = self.rot(q, 1.0);
+        [self.c[0] + v[0] * self.s, self.c[1] - v[1] * self.s, self.c[2] + v[2] * self.s]
+    }
+}
+
+/// The share of the light from direction `dir` (y up) reaching field point `p` past a scene
+/// object (sphere traced in object space, at most `max_dist` cells; jitter ½).
+pub fn scene_shadow(sc: &SceneObject, pl: &Place, p: [f32; 3], dir: [f32; 3], max_dist: f32, soft: f32) -> f32 {
+    let q = pl.to_obj(p);
+    let l = pl.light_to_obj(dir);
+    // Rays that miss the bounding sphere see the light.
+    let r = sc.plan.bound();
+    let b = dot(q, l);
+    let c = dot(q, q) - r * r;
+    if c > 0.0 && (b > 0.0 || b * b - c < 0.0) {
+        return 1.0;
+    }
+    sc.plan.shadow_with(q, l, 0.5 / pl.s, 0.5, max_dist / pl.s, soft)
+}
+
+/// How far along the ray (o, d) a terrain hit lies (cells; `ground` gives the surface's z).
+fn hit_distance(h: Hit, o: [f32; 3], d: [f32; 3], ground: impl Fn(f32, f32) -> f32) -> f32 {
+    let p = match h {
+        Hit::Surface((x, y)) => [x, y, ground(x, y)],
+        Hit::Wall { x, y, z, .. } => [x, y, z],
+    };
+    // Along the ray's largest component.
+    let a = (0..3).max_by(|&i, &j| d[i].abs().total_cmp(&d[j].abs())).unwrap_or(0);
+    (p[a] - o[a]) / d[a]
 }
 
 /// Path tracing: how far (cells) a bounce starts above the surface, along its normal.
@@ -979,6 +1058,86 @@ impl Fields {
         (&self.far, (x - g.x as f32) / g.step as f32, (y - g.y as f32) / g.step as f32)
     }
 
+    /// A terrain's scene object and where it stands (terrains only).
+    pub fn scene<'a>(&self, l: &'a LightPlan) -> Option<(&'a SceneObject, Place)> {
+        let sc = l.scene.as_deref().filter(|_| self.cells)?;
+        let p = sc.plan.place.as_ref()?;
+        let (fw, fh) = (self.far.width as f32, self.far.height as f32);
+        let cx = (fw - 1.0) * 0.5 + p.x as f32 * fh * 0.5;
+        let cy = (fh - 1.0) * 0.5 - p.y as f32 * fh * 0.5;
+        let k = l.slope_scale(self.image_height);
+        let cz = k * self.height_at(cx, cy, [0.0, 0.0]) + p.height as f32 * fh;
+        let s = (p.size as f32 * fh / (2.0 * sc.plan.bound())).max(1e-6);
+        let a = (p.turn as f32).to_radians();
+        Some((sc, Place { c: [cx, cy, cz], s, cos: a.cos(), sin: a.sin() }))
+    }
+
+    /// A scene object seen by the camera ray (o, d) (field cells, d of unit length) at `t`
+    /// along it (cells): its color lit by the terrain's lights, shadowed by itself and by the
+    /// terrain (ObjectPlan::shade with the scene's lights).
+    #[allow(clippy::too_many_arguments)]
+    fn shade_scene(
+        &self,
+        l: &LightPlan,
+        sc: &SceneObject,
+        pl: &Place,
+        o: [f32; 3],
+        d: [f32; 3],
+        t_obj: f32,
+        trap: f32,
+        footprint: f32,
+        rng: &mut u32,
+    ) -> [f32; 4] {
+        let k = l.slope_scale(self.image_height);
+        let (oo, dd) = (pl.to_obj(o), pl.dir_to_obj(d));
+        let p = [oo[0] + dd[0] * t_obj, oo[1] + dd[1] * t_obj, oo[2] + dd[2] * t_obj];
+        let ob = &sc.plan;
+        let eps = footprint * t_obj.max(1e-3) * ob.detail;
+        let n = ob.normal(p, eps * 0.5);
+        let q = [p[0] + n[0] * eps * 2.0, p[1] + n[1] * eps * 2.0, p[2] + n[2] * eps * 2.0];
+        let qf = pl.from_obj(q);
+        let len = l.shadow * self.image_height as f32;
+        let reach = if len > 0.0 { len / pl.s } else { 0.0 };
+        let mut seen = [1.0f32; crate::doc::MAX_LIGHTS];
+        if len > 0.0 {
+            for (i, (dir, _)) in l.lights.iter().enumerate() {
+                let ld = pl.light_to_obj(*dir);
+                seen[i] = if dot(n, ld) > 0.0 {
+                    let own = ob.shadow_with(q, ld, eps, rnd(rng), reach, l.softness);
+                    own * self.shadow(dir, [qf[0], qf[1]], qf[2], k, len, l.softness, rnd(rng))
+                } else {
+                    0.0
+                };
+            }
+        }
+        // Point lights (field positions): shadows reach no farther than the light.
+        let mut points = [([0.0f32; 3], 1.0f32); crate::doc::MAX_LIGHTS];
+        for (i, (pos, _)) in l.points.iter().enumerate() {
+            let (dir, dist, fall) = point_dir(*pos, qf[0], qf[1], qf[2], l.reach[i]);
+            let ld = pl.light_to_obj(dir);
+            let mut sn = 1.0;
+            if len > 0.0 {
+                sn = if dot(n, ld) > 0.0 {
+                    let own = ob.shadow_with(q, ld, eps, rnd(rng), reach.min(dist / pl.s), l.softness);
+                    own * self.shadow(&dir, [qf[0], qf[1]], qf[2], k, len.min(dist), l.softness, rnd(rng))
+                } else {
+                    0.0
+                };
+            }
+            points[i] = (dir, sn * fall);
+        }
+        let open = if l.occlusion > 0.0 && l.occlusion_radius > 0.0 {
+            // The terrain's occlusion radius (image heights) in shares of the object's bound.
+            ob.occlusion_with(q, n, rnd(rng), l.occlusion_radius * self.image_height as f32 / (pl.s * ob.bound()), l.occlusion)
+        } else {
+            1.0
+        };
+        let color = sc.color.color(trap as f64 * 4.0);
+        // Toward the viewer, with y up like the lights.
+        let view = [-d[0], d[1], -d[2]];
+        shade_normal(l, color, pl.obj_to_light(n), &seen, open, view, &points[..l.points.len()])
+    }
+
     /// A terrain's rings.
     pub fn ring_info(&self) -> Rings {
         Rings { levels: self.rings.len() as u32 + 1, width: self.far.width, height: self.far.height }
@@ -1100,7 +1259,19 @@ impl Fields {
         // Toward the viewer, with y up like the lights.
         let view = [-d[0], d[1], -d[2]];
         let base = l.wall_base(t.height);
-        let (hx, hy) = match self.trace_terrain(o, d, k, base) {
+        let hit = self.trace_terrain(o, d, k, base);
+        // A scene object nearer than the terrain covers it.
+        if let Some((sc, pl)) = self.scene(l) {
+            let footprint = 2.0 * cam[3] / self.image.1 as f32;
+            let (oo, dd) = (pl.to_obj(o), pl.dir_to_obj(d));
+            if let Some((t_obj, trap)) = sc.plan.trace(oo, dd, footprint) {
+                let t_ter = hit.map_or(f32::INFINITY, |h| hit_distance(h, o, d, |x, y| k * self.height_at(x, y, p0)));
+                if t_obj * pl.s < t_ter {
+                    return self.shade_scene(l, sc, &pl, o, d, t_obj, trap, footprint, &mut rng);
+                }
+            }
+        }
+        let (hx, hy) = match hit {
             None => return [0.0; 4],
             Some(Hit::Surface(p)) => p,
             Some(Hit::Wall { x, y, z, n }) => return self.wall(l, x, y, z, n, view, k, base),
@@ -1133,9 +1304,14 @@ impl Fields {
         let p0 = [px, py];
         let mut seen = [1.0f32; crate::doc::MAX_LIGHTS];
         let len = l.shadow * hf;
+        // A terrain's scene object shades the terrain (from its point toward each light).
+        let scene = self.scene(l);
         if len > 0.0 {
             for (i, (dir, _)) in l.lights.iter().enumerate() {
                 seen[i] = self.shadow(dir, p0, z0, k, len, l.softness, rnd(rng));
+                if let Some((sc, pl)) = &scene {
+                    seen[i] *= scene_shadow(sc, pl, [px, py, z0], *dir, f32::INFINITY, l.softness);
+                }
             }
         }
         // Point lights: the direction from here; shadows reach no farther than the light.
@@ -1145,6 +1321,9 @@ impl Fields {
             points[i].0 = dir;
             if len > 0.0 {
                 points[i].1 = self.shadow(&dir, p0, z0, k, len.min(dist), l.softness, rnd(rng));
+                if let Some((sc, pl)) = &scene {
+                    points[i].1 *= scene_shadow(sc, pl, [px, py, z0], dir, dist, l.softness);
+                }
             }
             points[i].1 *= fall;
         }
@@ -1516,5 +1695,35 @@ mod tests {
         // Inner glow: brighter at the square's edge than in its middle.
         let ig = LayerEffects { inner_glow: 1.0, inner_size: 0.03, ..LayerEffects::default() };
         assert!(shade(ig.clone(), 21, 30)[0] > shade(ig, 30, 30)[0] + 0.05);
+    }
+
+    #[test]
+    fn objects_stand_in_the_terrain() {
+        use crate::doc::{Document, HeightSource, Layer, LayerKind, Placement, Transfer};
+        let mut ter = Document::for_formula("rfract:Mandelbrot");
+        let l = &mut ter.layers[0].light;
+        l.enabled = true;
+        l.height = HeightSource::Distance;
+        l.relief = 0.05;
+        l.terrain = true;
+        l.shadows = true;
+        l.camera.yaw = 30.0;
+        let mut ob = Layer { kind: LayerKind::Object, ..Default::default() };
+        ob.object.place = Placement { on: true, x: 0.1, y: -0.2, height: 0.1, size: 0.35, turn: 20.0 };
+        ob.outside.transfer = Transfer::Linear;
+        let mut scene = ter.clone();
+        scene.layers.push(ob.clone());
+        let (w, h) = (64u32, 48u32);
+        let img = |d: &Document| crate::render::cpu::render(d, w, h, 1).unwrap().rgba8();
+        let (a, b) = (img(&ter), img(&scene));
+        // The object changes a part of the image (itself and its shadow), not all of it.
+        let changed = (0..(w * h) as usize).filter(|&k| (0..3).any(|c| a[4 * k + c].abs_diff(b[4 * k + c]) > 8)).count();
+        assert!(changed > 20 && changed < (w * h / 2) as usize, "{changed} pixels changed");
+        // Without a terrain below, the layer shows the object with its own camera.
+        let mut alone = scene.clone();
+        alone.layers.remove(0);
+        let mut own = alone.clone();
+        own.layers[0].object.place.on = false;
+        assert_eq!(img(&alone), img(&own));
     }
 }

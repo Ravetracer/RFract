@@ -58,6 +58,8 @@ pub struct ObjectPlan {
     pub light: LightPlan,
     /// The shape `Formula`: its compiled program (see `render::LayerPlan::new`).
     pub formula: Option<Arc<ObjectFormula>>,
+    /// Placed into a terrain's scene (see [`crate::doc::Placement`]).
+    pub place: Option<crate::doc::Placement>,
 }
 
 /// Bicomplex sets: a component stops iterating beyond this squared radius (its distance
@@ -88,6 +90,7 @@ impl ObjectPlan {
             detail: o.detail.clamp(0.05, 20.0) as f32,
             light: LightPlan::new(light),
             formula: None,
+            place: o.place.on.then(|| o.place.clone()),
         }
     }
 
@@ -400,8 +403,13 @@ impl ObjectPlan {
     /// The share of the light from direction `l` reaching `p` (sphere traced toward it; soft
     /// edges by the softness, hard when it is 0).
     fn shadow(&self, p: [f32; 3], l: [f32; 3], eps: f32, jitter: f32, max_t: f32) -> f32 {
-        let soft = self.light.softness;
         let reach = (self.light.shadow * 2.0 * self.bound()).min(max_t);
+        self.shadow_with(p, l, eps, jitter, reach, self.light.softness)
+    }
+
+    /// [`ObjectPlan::shadow`] up to `reach` with softness `soft` (a terrain's scene).
+    #[allow(clippy::too_many_arguments)]
+    pub fn shadow_with(&self, p: [f32; 3], l: [f32; 3], eps: f32, jitter: f32, reach: f32, soft: f32) -> f32 {
         let mut t = eps * (4.0 + jitter);
         let mut seen = 1.0f32;
         for _ in 0..SHADOW_STEPS {
@@ -427,7 +435,12 @@ impl ObjectPlan {
 
     /// The open share of the sky at `p`: the distance along the normal compared with the step.
     fn occlusion(&self, p: [f32; 3], n: [f32; 3], jitter: f32) -> f32 {
-        let step = self.light.occlusion_radius * self.bound() / AO_SAMPLES as f32;
+        self.occlusion_with(p, n, jitter, self.light.occlusion_radius, self.light.occlusion)
+    }
+
+    /// [`ObjectPlan::occlusion`] with the radius (a share of the bounding radius) and strength.
+    pub fn occlusion_with(&self, p: [f32; 3], n: [f32; 3], jitter: f32, radius: f32, strength: f32) -> f32 {
+        let step = radius * self.bound() / AO_SAMPLES as f32;
         let mut occ = 0.0;
         let mut w = 0.5;
         for i in 1..=AO_SAMPLES {
@@ -436,7 +449,7 @@ impl ObjectPlan {
             occ += w * ((h - dist) / h).max(0.0);
             w *= 0.5;
         }
-        (1.0 - self.light.occlusion * occ * 2.0).clamp(0.0, 1.0)
+        (1.0 - strength * occ * 2.0).clamp(0.0, 1.0)
     }
 
     /// The layer's color (linear RGB, straight alpha) at image point (x, y) (pixels with the

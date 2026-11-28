@@ -385,6 +385,90 @@ impl LayerPlan {
     }
 }
 
+/// Every layer plan of `nodes` in render order (masks before their layer), mutable.
+fn layers_mut(nodes: &mut [Node]) -> Vec<&mut LayerPlan> {
+    fn walk<'a>(list: &'a mut [Node], out: &mut Vec<&'a mut LayerPlan>) {
+        for n in list {
+            match n {
+                Node::Layer { layer, mask, .. } => {
+                    if let Some(m) = mask {
+                        out.push(&mut m.layer);
+                    }
+                    out.push(layer);
+                }
+                Node::Group { children, mask, .. } => {
+                    if let Some(m) = mask {
+                        out.push(&mut m.layer);
+                    }
+                    walk(children, out);
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(nodes, &mut out);
+    out
+}
+
+/// 3D objects placed into a terrain's scene (`doc::Placement`): the nearest 3D terrain below
+/// each one in render order takes it (one object per terrain, the first above it), and the
+/// object's own layer leaves the stack. Objects without a free terrain below render alone.
+fn attach_scene_objects(nodes: &mut Vec<Node>) {
+    let mut host: Option<usize> = None;
+    let mut taken: Vec<usize> = Vec::new();
+    let mut pairs: Vec<(usize, usize)> = Vec::new();
+    for (i, lp) in layers_mut(nodes).iter().enumerate() {
+        if lp.light.as_ref().is_some_and(|l| l.camera.is_some()) {
+            host = Some(i);
+        } else if lp.object.as_ref().is_some_and(|o| o.place.is_some())
+            && let Some(hi) = host.filter(|h| !taken.contains(h))
+        {
+            taken.push(hi);
+            pairs.push((hi, i));
+        }
+    }
+    if pairs.is_empty() {
+        return;
+    }
+    let mut scenes: Vec<(usize, light::SceneObject)> = Vec::new();
+    {
+        let layers = layers_mut(nodes);
+        for &(hi, oi) in &pairs {
+            let o = &layers[oi];
+            let Some(plan) = o.object.clone() else { continue };
+            let mut color = o.outside.clone();
+            if color.transfer == crate::doc::Transfer::Histogram {
+                color.transfer = crate::doc::Transfer::Linear;
+            }
+            scenes.push((hi, light::SceneObject { plan, color }));
+        }
+    }
+    let placed: Vec<usize> = pairs.iter().map(|p| p.1).collect();
+    {
+        let mut layers = layers_mut(nodes);
+        for (hi, sc) in scenes {
+            if let Some(l) = layers[hi].light.as_mut() {
+                l.scene = Some(std::sync::Arc::new(sc));
+            }
+        }
+        // Mark the placed objects' layers to leave the stack.
+        for &oi in &placed {
+            layers[oi].object = None;
+            layers[oi].max_iter = 0;
+        }
+    }
+    fn prune(list: &mut Vec<Node>) {
+        list.retain_mut(|n| match n {
+            Node::Layer { layer, .. } => !(layer.max_iter == 0 && layer.object.is_none() && layer.density.is_none() && layer.light.is_none()),
+            Node::Group { children, .. } => {
+                prune(children);
+                true
+            }
+        });
+    }
+    prune(nodes);
+}
+
 /// Merge mode and opacity of a layer or group.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Blend {
@@ -538,6 +622,7 @@ impl Plan {
         }
         let (w, h) = (plan.frame.width, plan.frame.height);
         walk(&mut plan.nodes, doc, w, h);
+        attach_scene_objects(&mut plan.nodes);
         Ok(plan)
     }
 

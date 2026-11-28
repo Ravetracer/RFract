@@ -605,6 +605,37 @@ fn object_sections(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
             widgets::slider(ui, "Field of view", "Vertical opening angle of the camera in degrees", &mut cam.fov, 5.0..=120.0, c.fov);
         });
     }
+    let sec = widgets::section(ui, "Place in terrain", false);
+    if sec.reset {
+        l.object.place = rfr_core::doc::Placement::default();
+    }
+    if sec.open {
+        let p = &mut l.object.place;
+        let d = rfr_core::doc::Placement::default();
+        widgets::grid(ui, "object-place", |ui| {
+            widgets::checkbox(
+                ui,
+                "In the terrain",
+                "Stand the object in the scene of the first 3D terrain below this layer: it uses the terrain's camera and lights, \
+                 the nearer surface hides the other and both cast shadows",
+                &mut p.on,
+            );
+            if p.on {
+                widgets::slider(ui, "Position x", "Across the view, in half view heights from its middle", &mut p.x, -2.0..=2.0, d.x);
+                widgets::slider(ui, "Position y", "Up the view, in half view heights from its middle", &mut p.y, -2.0..=2.0, d.y);
+                widgets::slider(ui, "Height", "The object's middle above the ground there, in image heights", &mut p.height, -0.5..=1.0, d.height);
+                widgets::slider_log(ui, "Size", "The object's diameter in image heights", &mut p.size, 0.01..=2.0, d.size);
+                widgets::slider(ui, "Turn", "Rotation about the vertical axis in degrees", &mut p.turn, -180.0..=180.0, d.turn);
+            }
+        });
+        if l.object.place.on {
+            ui.label(
+                egui::RichText::new("In a terrain, the camera and lighting of this layer are not used; without a 3D terrain below, the layer shows the object as usual.")
+                    .small()
+                    .weak(),
+            );
+        }
+    }
     let sec = widgets::section(ui, "Colors", true);
     if sec.reset {
         l.outside = Layer::default().outside;

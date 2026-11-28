@@ -35,6 +35,7 @@ const DENSITY: &str = include_str!("wgsl/density.wgsl");
 const LIGHTING: &str = include_str!("wgsl/lighting.wgsl");
 const SHADE: &str = include_str!("wgsl/shade.wgsl");
 const OBJECT: &str = include_str!("wgsl/object.wgsl");
+const OBJECT_MAIN: &str = include_str!("wgsl/object_main.wgsl");
 const SCALAR_DUAL3: &str = include_str!("wgsl/scalar_dual3.wgsl");
 const SCALAR_DF64: &str = include_str!("wgsl/scalar_df64.wgsl");
 const CSTD: &str = include_str!("wgsl/cstd.wgsl");
@@ -412,7 +413,19 @@ pub fn param_programs(lp: &LayerPlan) -> Vec<&Prog> {
     v.extend(lp.outside.formula());
     v.extend(lp.inside.formula());
     v.extend(lp.post_transforms.iter());
+    // A terrain's scene object with a 3D formula: its parameters after the layer's.
+    v.extend(lp.light.as_ref().and_then(|l| l.scene.as_ref()).and_then(|s| s.plan.formula.as_ref()).map(|f| &f.prog));
     v
+}
+
+/// Where the parameters and image slots of a layer's 3D formula start (`param_programs`: the
+/// last program).
+fn formula_bases(lp: &LayerPlan) -> (usize, usize) {
+    let progs = param_programs(lp);
+    let before = &progs[..progs.len().saturating_sub(1)];
+    let params = before.iter().map(|p| p.program.params.len()).sum();
+    let images = before.iter().map(|p| p.program.params.iter().filter(|q| q.kind == ParamKind::Image).count()).sum();
+    (params, images)
 }
 
 /// A chain of transformations on `pixel`: each one runs only when the ones before left the
@@ -778,15 +791,16 @@ pub fn density_kernel(lp: &LayerPlan) -> String {
     format!("{SCALAR_F32}\n{CSTD}\n{BLEND}\n{prelude}\n{dens}")
 }
 
-/// The shader of a 3D object layer: kernel.wgsl before its main, shade.wgsl and object.wgsl;
-/// the built-in shapes take their parameters from uniforms, a 3D formula becomes `o_formula`
-/// over the three-derivative scalar layer (render::object::ObjectPlan::formula_de, step for
-/// step).
-pub fn object_kernel(lp: &LayerPlan) -> String {
-    let prelude = KERNEL.split("@compute").next().unwrap_or_default().replace("//@RNG_DECL", "var<private> rng_o: u32;");
-    let Some(fo) = lp.object.as_ref().and_then(|o| o.formula.as_ref()) else {
-        let stub = "fn o_formula(p: vec3<f32>) -> vec2<f32> {\n    return vec2<f32>(1.0, 1.0);\n}\n";
-        return format!("{SCALAR_F32}\n{CSTD}\n{BLEND}\n{prelude}\n{SHADE}\n{stub}\n{OBJECT}");
+/// The scene object of a terrain, or a 3D object layer's own object.
+pub fn object_of(lp: &LayerPlan) -> Option<&rfr_core::render::object::ObjectPlan> {
+    lp.object.as_ref().or_else(|| lp.light.as_ref().and_then(|l| l.scene.as_ref()).map(|s| &s.plan))
+}
+
+/// `o_formula` of a 3D formula over the three-derivative scalar layer
+/// (render::object::ObjectPlan::formula_de, step for step), or a stub for the built-in shapes.
+fn object_formula_code(fo: Option<&rfr_core::render::object::ObjectFormula>, bases: (usize, usize)) -> String {
+    let Some(fo) = fo else {
+        return "fn o_formula(p: vec3<f32>) -> vec2<f32> {\n    return vec2<f32>(1.0, 1.0);\n}\n".into();
     };
     let prog = &fo.prog;
     let g = Gen {
@@ -794,8 +808,8 @@ pub fn object_kernel(lp: &LayerPlan) -> String {
         values: &prog.values,
         funcs: func_choices(&prog.program, &prog.values),
         prefix: "o".into(),
-        base: 0,
-        img_base: 0,
+        base: bases.0,
+        img_base: bases.1,
         post: false,
     };
     let mut counter = 0;
@@ -823,7 +837,35 @@ pub fn object_kernel(lp: &LayerPlan) -> String {
         out,
         "    let r = length(vec3<f32>(s_v(o0), s_v(o1), s_v(o2)));\n    let frob = sqrt(dot(o0.yzw, o0.yzw) + dot(o1.yzw, o1.yzw) + dot(o2.yzw, o2.yzw));\n    let dr = max(frob / sqrt(3.0), 1e-12);\n    var de = {de};\n    if !(abs(de) <= 3.4e38) {{\n        de = 0.0;\n    }}\n    return vec2<f32>(max(de, 0.0), min(trap, r));\n}}"
     );
-    format!("{SCALAR_DUAL3}\n{CSTD}\n{BLEND}\n{prelude}\n{SHADE}\n{out}\n{OBJECT}")
+    out
+}
+
+/// The scalar layer of a module with 3D object code: three derivatives for a 3D formula.
+fn object_scalar(lp: &LayerPlan) -> (&'static str, Option<&rfr_core::render::object::ObjectFormula>) {
+    match object_of(lp).and_then(|o| o.formula.as_deref()) {
+        Some(fo) => (SCALAR_DUAL3, Some(fo)),
+        None => (SCALAR_F32, None),
+    }
+}
+
+/// The shader of a 3D object layer: kernel.wgsl before its main, shade.wgsl, `o_formula`,
+/// object.wgsl and its entry point (object_main.wgsl); the built-in shapes take their
+/// parameters from uniforms.
+pub fn object_kernel(lp: &LayerPlan) -> String {
+    let prelude = KERNEL.split("@compute").next().unwrap_or_default().replace("//@RNG_DECL", "var<private> rng_o: u32;");
+    let (scalar, fo) = object_scalar(lp);
+    let formula = object_formula_code(fo, (0, 0));
+    format!("{scalar}\n{CSTD}\n{BLEND}\n{prelude}\n{SHADE}\n{formula}\n{OBJECT}\n{OBJECT_MAIN}")
+}
+
+/// The shading shader of a lit layer (entry points `lit`, `lmip`, `lblend`): kernel.wgsl
+/// before its main, shade.wgsl, a terrain's scene object (object.wgsl, `o_formula`) and
+/// lighting.wgsl; it reads the fields the layer kernel wrote, so it needs no fractal code.
+pub fn lit_module(lp: &LayerPlan) -> String {
+    let prelude = KERNEL.split("@compute").next().unwrap_or_default().replace("//@RNG_DECL", "var<private> rng_o: u32;");
+    let (scalar, fo) = object_scalar(lp);
+    let formula = object_formula_code(fo, formula_bases(lp));
+    format!("{scalar}\n{CSTD}\n{BLEND}\n{prelude}\n{SHADE}\n{formula}\n{OBJECT}\n{LIGHTING}")
 }
 
 /// The complete kernel shader of a layer.
@@ -1032,7 +1074,7 @@ pub fn kernel(lp: &LayerPlan, mode: Mode) -> String {
                 "        return;\n",
                 "    }",
             ),
-            format!("{SHADE}\n{LIGHTING}"),
+            format!("{SHADE}\n{}\n{OBJECT}\n{LIGHTING}", object_formula_code(None, (0, 0))),
         )
     } else {
         ("", "", String::new())
@@ -1078,6 +1120,8 @@ pub fn signature(lp: &LayerPlan, mode: Mode) -> u64 {
     lp.density.is_some().hash(&mut h);
     lp.light.is_some().hash(&mut h);
     lp.object.is_some().hash(&mut h);
+    // A terrain's scene object (its 3D formula is among the parameter programs).
+    lp.light.as_ref().is_some_and(|l| l.scene.is_some()).hash(&mut h);
     mode.hash(&mut h);
     // Perturbation code has the parameter values folded in.
     if mode == Mode::Pert {

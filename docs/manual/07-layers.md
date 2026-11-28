@@ -157,6 +157,25 @@ The surface is colored with the layer's gradient by an orbit trap (how close the
 to the origin); *Colors* holds the gradient, transfer, density and offset. Where the rays
 miss, the layer is transparent: a gradient fill layer below makes a sky.
 
+### Objects in a terrain
+
+*Place in terrain › In the terrain* stands the object in the scene of the first 3D terrain
+below its layer (see *Coloring › 3D terrain*). It is then seen through the terrain's camera
+and lit by its lights: where the object is nearer, it hides the ground, where the ground is
+nearer, it hides the object, and both cast shadows on each other. The object's own camera and
+lighting settings are not used; its colors are.
+
+| Setting | What it does |
+|---------|--------------|
+| Position x, y | Where the object stands, in half view heights from the middle of the view (y up) |
+| Height | Its middle above the ground there, in image heights |
+| Size | Its diameter in image heights |
+| Turn | Rotation about the vertical axis in degrees |
+
+Each terrain takes one object (the first placed object layer above it); without a 3D
+terrain below, the layer shows the object with its own camera as usual. With *Path
+tracing*, the object blocks the direct light, but bounced light does not see it.
+
 ## Background
 
 *Image › Background* is the color below all layers. With its opacity at 0, exported PNGs keep

@@ -111,6 +111,9 @@ struct Uni {
     lwall: [f32; 4],
     lwalli: [u32; 4],
     lcam2: [f32; 4],
+    oplace: [f32; 4],
+    oturn: [f32; 4],
+    ocol: [f32; 4],
 }
 
 /// The lighting a layer's shaders use: a lit layer's or a 3D object's.
@@ -337,9 +340,10 @@ fn layer_uni(plan: &Plan, lp: &LayerPlan) -> Uni {
             Some(o) => o.camera,
             None => lp.light.as_ref().and_then(|l| l.camera).unwrap_or([0.0; 4]),
         },
-        obj: lp.object.as_ref().map_or([0.0; 4], |o| [o.power, o.scale, o.detail, o.bound()]),
-        obji: lp.object.as_ref().map_or([0; 4], |o| [o.shape.index(), o.iterations, o.julia as u32, 0]),
-        objc: lp.object.as_ref().map_or([0.0; 4], |o| o.seed),
+        // A 3D object layer's shape, or a terrain's scene object.
+        obj: codegen::object_of(lp).map_or([0.0; 4], |o| [o.power, o.scale, o.detail, o.bound()]),
+        obji: codegen::object_of(lp).map_or([0; 4], |o| [o.shape.index(), o.iterations, o.julia as u32, 0]),
+        objc: codegen::object_of(lp).map_or([0.0; 4], |o| o.seed),
         // Layer effects in pixels.
         fx0: lp.light.as_ref().and_then(|l| l.fx.as_ref()).map_or([0.0; 4], |e| {
             let h = f.height as f32;
@@ -389,6 +393,24 @@ fn field_uni(plan: &Plan, lp: &LayerPlan) -> Uni {
     // Path tracing: the bounces (0: off).
     let lwalli = [lwalli[0], lp.light.as_ref().map_or(0, |l| l.path), 0, 0];
     let lift = lp.light.as_ref().map_or(0.0, |l| l.camera_target * g.far.height as f32);
+    // A terrain's scene object: where it stands (light::Fields::scene) and its colors.
+    let fh = g.far.height as f32;
+    let scene = lp.light.as_ref().and_then(|l| l.scene.as_ref()).and_then(|s| Some((s, s.plan.place.as_ref()?)));
+    let (oplace, oturn, ocol) = match scene {
+        Some((s, p)) => {
+            let fw = g.far.width as f32;
+            let cx = (fw - 1.0) * 0.5 + p.x as f32 * fh * 0.5;
+            let cy = (fh - 1.0) * 0.5 - p.y as f32 * fh * 0.5;
+            let scale = (p.size as f32 * fh / (2.0 * s.plan.bound())).max(1e-6);
+            let a = (p.turn as f32).to_radians();
+            (
+                [cx, cy, p.height as f32 * fh, scale],
+                [a.cos(), a.sin(), 1.0, 0.0],
+                [s.color.transfer.index() as f32, s.color.density as f32, s.color.offset as f32, 0.0],
+            )
+        }
+        None => ([0.0; 4], [1.0, 0.0, 0.0, 0.0], [0.0; 4]),
+    };
     let rings = (1 + g.rings.len()) as f32;
     Uni {
         fnear: near,
@@ -397,6 +419,9 @@ fn field_uni(plan: &Plan, lp: &LayerPlan) -> Uni {
         lwall,
         lwalli,
         lcam2: [lift, rings, 0.0, 0.0],
+        oplace,
+        oturn,
+        ocol,
         ..Uni::default()
     }
 }
@@ -1091,7 +1116,8 @@ impl GpuRenderer {
                     }),
                     device.create_buffer(&wgpu::BufferDescriptor {
                         label: Some("lut"),
-                        size: ((2 * LUT_SIZE + 2 * HIST_ROWS) * 16) as u64,
+                        // Both gradients, both histogram tables, a terrain's scene object's gradient.
+                        size: ((3 * LUT_SIZE + 2 * HIST_ROWS) * 16) as u64,
                         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                         mapped_at_creation: false,
                     }),
@@ -1107,6 +1133,10 @@ impl GpuRenderer {
                     rows[k / 4][k % 4] = *v;
                 }
                 l.extend_from_slice(&rows);
+            }
+            match lp.light.as_ref().and_then(|li| li.scene.as_ref()) {
+                Some(s) => l.extend_from_slice(&s.color.lut),
+                None => l.extend(std::iter::repeat_n([0.0f32; 4], LUT_SIZE)),
             }
             self.ctx.queue.write_buffer(&lut, 0, bytemuck::cast_slice(&l));
             self.request_pipeline(signature, lp, mode);
@@ -1409,6 +1439,8 @@ impl GpuRenderer {
         let source = codegen::kernel(lp, mode);
         let density = lp.density.is_some();
         let lit = lp.light.is_some();
+        // The shading passes come from their own module (no fractal code, a scene object).
+        let lit_source = if lit { codegen::lit_module(lp) } else { String::new() };
         let device = self.ctx.device.clone();
         let layout = self.pipeline_layout.clone();
         let cache = self.cache.clone();
@@ -1421,9 +1453,9 @@ impl GpuRenderer {
                 built.push((dmax_key(sig), compile(&device, &layout, &source, "dmax")));
             }
             if lit {
-                built.push((lit_key(sig), compile(&device, &layout, &source, "lit")));
-                built.push((lmip_key(sig), compile(&device, &layout, &source, "lmip")));
-                built.push((lblend_key(sig), compile(&device, &layout, &source, "lblend")));
+                built.push((lit_key(sig), compile(&device, &layout, &lit_source, "lit")));
+                built.push((lmip_key(sig), compile(&device, &layout, &lit_source, "lmip")));
+                built.push((lblend_key(sig), compile(&device, &layout, &lit_source, "lblend")));
             }
             if let Ok(mut c) = cache.lock() {
                 for (k, r) in built {

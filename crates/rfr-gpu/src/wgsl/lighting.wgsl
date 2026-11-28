@@ -609,6 +609,135 @@ fn l_occlusion(px: f32, py: f32, z0: f32, k: f32, radius: f32, strength: f32, tu
     return clamp(1.0 - strength * sum / 8.0, 0.0, 1.0);
 }
 
+// ---- A 3D object in a terrain's scene (rfr_core::render::light::SceneObject, Place) ----
+
+fn l_scene_on() -> bool {
+    return U.lighti.w != 0u && U.oturn.z > 0.5;
+}
+
+// The object's middle in the field: over the ground at (x, y), lifted by its height.
+fn l_scene_center() -> vec3<f32> {
+    return vec3<f32>(U.oplace.x, U.oplace.y, U.light.y * l_height_at(U.oplace.x, U.oplace.y) + U.oplace.z);
+}
+
+fn l_scene_rot(v: vec3<f32>, sign: f32) -> vec3<f32> {
+    let s = U.oturn.y * sign;
+    return vec3<f32>(v.x * U.oturn.x - v.y * s, v.x * s + v.y * U.oturn.x, v.z);
+}
+
+// Place::to_obj, dir_to_obj, light_to_obj, obj_to_light, from_obj.
+fn l_to_obj(p: vec3<f32>) -> vec3<f32> {
+    let c = l_scene_center();
+    let s = U.oplace.w;
+    return l_scene_rot(vec3<f32>((p.x - c.x) / s, -(p.y - c.y) / s, (p.z - c.z) / s), -1.0);
+}
+
+fn l_dir_to_obj(d: vec3<f32>) -> vec3<f32> {
+    return l_scene_rot(vec3<f32>(d.x, -d.y, d.z), -1.0);
+}
+
+fn l_from_obj(q: vec3<f32>) -> vec3<f32> {
+    let c = l_scene_center();
+    let s = U.oplace.w;
+    let v = l_scene_rot(q, 1.0);
+    return vec3<f32>(c.x + v.x * s, c.y - v.y * s, c.z + v.z * s);
+}
+
+// rfr_core::render::light::scene_shadow: the light from `dir` (y up) reaching field point p
+// past the scene object (at most `max_dist` cells).
+fn l_scene_shadow(p: vec3<f32>, dir: vec3<f32>, max_dist: f32, soft: f32) -> f32 {
+    let q = l_to_obj(p);
+    let l = l_scene_rot(dir, -1.0);
+    let r = U.obj.w;
+    let b = dot(q, l);
+    let c = dot(q, q) - r * r;
+    if c > 0.0 && (b > 0.0 || b * b - c < 0.0) {
+        return 1.0;
+    }
+    return o_shadow_with(q, l, 0.5 / U.oplace.w, 0.5, max_dist / U.oplace.w, soft);
+}
+
+// The scene object's colors (ColorPlan::color with its own gradient after the layer's).
+fn l_scene_color(v: f32) -> vec4<f32> {
+    let t = transfer(u32(U.ocol.x), v) * U.ocol.y;
+    return finite4(lut_sample(2u * LUT_SIZE + 2u * HIST_ROWS, t + U.ocol.z));
+}
+
+// rfr_core::render::light::Fields::shade_scene: the object seen by the camera ray (o, d) at
+// t_obj (object units), lit by the terrain's lights, shadowed by itself and by the terrain.
+fn l_shade_scene(o: vec3<f32>, d: vec3<f32>, t_obj: f32, trap: f32, footprint: f32, rng: ptr<function, u32>) -> vec4<f32> {
+    let k = U.light.y;
+    let oo = l_to_obj(o);
+    let dd = l_dir_to_obj(d);
+    let p = oo + dd * t_obj;
+    let eps = footprint * max(t_obj, 1e-3) * U.obj.z;
+    let n = o_normal(p, eps * 0.5);
+    let q = p + n * (eps * 2.0);
+    let qf = l_from_obj(q);
+    let len = U.lshadow.x;
+    var reach = 0.0;
+    if len > 0.0 {
+        reach = len / U.oplace.w;
+    }
+    var seen = array<f32, 4>(1.0, 1.0, 1.0, 1.0);
+    if len > 0.0 {
+        for (var i = 0u; i < U.lighti.y; i = i + 1u) {
+            let dir = U.ldir[i].xyz;
+            let ld = l_scene_rot(dir, -1.0);
+            if dot(n, ld) > 0.0 {
+                let own = o_shadow_with(q, ld, eps, l_rnd(rng), reach, U.lshadow.y);
+                seen[i] = own * l_shadow(dir, qf.x, qf.y, qf.z, k, len, U.lshadow.y, l_rnd(rng));
+            } else {
+                seen[i] = 0.0;
+            }
+        }
+    }
+    var pts = array<vec4<f32>, 4>();
+    for (var i = 0u; i < u32(U.lenv.w); i = i + 1u) {
+        let dv = vec3<f32>(U.lpos[i].x - qf.x, qf.y - U.lpos[i].y, U.lpos[i].z - qf.z);
+        let dir = normalize(dv);
+        let dist = length(dv.xy);
+        let ld = l_scene_rot(dir, -1.0);
+        var sn = 1.0;
+        if len > 0.0 {
+            if dot(n, ld) > 0.0 {
+                let own = o_shadow_with(q, ld, eps, l_rnd(rng), min(reach, dist / U.oplace.w), U.lshadow.y);
+                sn = own * l_shadow(dir, qf.x, qf.y, qf.z, k, min(len, dist), U.lshadow.y, l_rnd(rng));
+            } else {
+                sn = 0.0;
+            }
+        }
+        let rch = U.lpos[i].w;
+        if rch > 0.0 {
+            sn = sn / (1.0 + dot(dv, dv) / (rch * rch));
+        }
+        pts[i] = vec4<f32>(dir, sn);
+    }
+    var open = 1.0;
+    if U.lshadow.z > 0.0 && U.lshadow.w > 0.0 {
+        open = o_occlusion_with(q, n, l_rnd(rng), U.lshadow.w / (U.oplace.w * U.obj.w), U.lshadow.z);
+    }
+    let color = l_scene_color(trap * 4.0);
+    return l_shade_n(color, l_scene_rot(n, 1.0), seen, open, vec3<f32>(-d.x, d.y, -d.z), pts);
+}
+
+// How far along the ray (o, d) a terrain hit (l_trace) lies (cells, along the ray's largest
+// component; rfr_core::render::light::hit_distance).
+fn l_hit_distance(hit: vec3<f32>, o: vec3<f32>, d: vec3<f32>) -> f32 {
+    var p = vec3<f32>(hit.xy, U.light.y * l_height_at(hit.x, hit.y));
+    if hit.z >= 2.0 {
+        p.z = l_wall_hit(hit, o, d).w;
+    }
+    var a = 0;
+    if abs(d.y) > abs(d[a]) {
+        a = 1;
+    }
+    if abs(d.z) > abs(d[a]) {
+        a = 2;
+    }
+    return (p[a] - o[a]) / d[a];
+}
+
 // rfr_core::render::light::Fields::light_at: shadows, ambient occlusion (`ao`; else no ambient
 // light, path tracing), then the light model, at point p (x, y, z = k · height) with normal n.
 fn l_light_at(color: vec4<f32>, p: vec3<f32>, n: vec3<f32>, view: vec3<f32>, rng: ptr<function, u32>, ao: bool) -> vec4<f32> {
@@ -617,9 +746,14 @@ fn l_light_at(color: vec4<f32>, p: vec3<f32>, n: vec3<f32>, view: vec3<f32>, rng
     let py = p.y;
     let z0 = p.z;
     var seen = array<f32, 4>(1.0, 1.0, 1.0, 1.0);
+    // A terrain's scene object shades the terrain too.
+    let scene = l_scene_on();
     if U.lshadow.x > 0.0 {
         for (var i = 0u; i < U.lighti.y; i = i + 1u) {
             seen[i] = l_shadow(U.ldir[i].xyz, px, py, z0, k, U.lshadow.x, U.lshadow.y, l_rnd(rng));
+            if scene {
+                seen[i] = seen[i] * l_scene_shadow(p, U.ldir[i].xyz, 3.4e38, U.lshadow.y);
+            }
         }
     }
     // Point lights: the direction from here; shadows reach no farther than the light
@@ -631,6 +765,9 @@ fn l_light_at(color: vec4<f32>, p: vec3<f32>, n: vec3<f32>, view: vec3<f32>, rng
         var sn = 1.0;
         if U.lshadow.x > 0.0 {
             sn = l_shadow(dir, px, py, z0, k, min(U.lshadow.x, length(d.xy)), U.lshadow.y, l_rnd(rng));
+            if scene {
+                sn = sn * l_scene_shadow(p, dir, length(d.xy), U.lshadow.y);
+            }
         }
         // light::falloff
         let reach = U.lpos[i].w;
@@ -795,6 +932,21 @@ fn lit(@builtin(global_invocation_id) gid: vec3<u32>) {
         let zc = k * l_height_at((f32(U.ffar.z) - 1.0) * 0.5, (f32(U.ffar.w) - 1.0) * 0.5) + U.lcam2.x;
         let ray = l_camera_ray(zc, f32(xi) + ju, f32(yi) + jv);
         let hit = l_trace(ray[0], ray[1], k);
+        // A scene object nearer than the terrain covers it.
+        if l_scene_on() {
+            let footprint = 2.0 * U.lcam.w / f32(U.win.w);
+            let oh = o_trace(l_to_obj(ray[0]), l_dir_to_obj(ray[1]), footprint);
+            if oh.z != 0.0 {
+                var t_ter = 3.4e38;
+                if hit.z != 0.0 {
+                    t_ter = l_hit_distance(hit, ray[0], ray[1]);
+                }
+                if oh.x * U.oplace.w < t_ter {
+                    l_blend(gid, x, l_shade_scene(ray[0], ray[1], oh.x, oh.y, footprint, &rng));
+                    return;
+                }
+            }
+        }
         if hit.z == 0.0 {
             l_blend(gid, x, vec4<f32>(0.0));
             return;

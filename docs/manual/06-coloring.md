@@ -174,6 +174,8 @@ the terrain layer is selected:
 
 Where no terrain is seen, the layer is transparent: the layers below and the background
 show, for example a gradient fill layer as a sky.
+A 3D object layer above the terrain can stand in its landscape (see *Layers › 3D objects ›
+Objects in a terrain*).
 
 **Ground size** (×1 to ×16) lets the ground reach beyond the view: around the view it goes on
 in rings, each twice as wide and half as detailed as the one inside, so the landscape near the

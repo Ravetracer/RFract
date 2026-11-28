@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 //
-// 3D object layers (rfr_core::render::object), appended to the part of kernel.wgsl before
-// its main and shade.wgsl: `main` sphere-traces the camera ray of each pixel of a band to the
-// shape's surface, lights it and blends it like a layer kernel. Uniforms: obj (power, scale,
+// 3D object shapes (rfr_core::render::object), appended to the part of kernel.wgsl before
+// its main, shade.wgsl and `o_formula`: the distance estimates, the trace, normals, shadows
+// and occlusion, for object layers (object_main.wgsl) and objects in a terrain's scene
+// (lighting.wgsl). Uniforms: obj (power, scale,
 // detail, bounding radius), obji (shape, iterations, Julia mode, unused), objc (seed), lcam
 // (camera direction and pitch in radians, distance, tan(fov / 2)).
 
@@ -268,8 +269,11 @@ fn o_normal(p: vec3<f32>, e: f32) -> vec3<f32> {
 
 // ObjectPlan::shadow
 fn o_shadow(p: vec3<f32>, l: vec3<f32>, eps: f32, jitter: f32, max_t: f32) -> f32 {
-    let soft = U.lshadow.y;
-    let reach = min(U.lshadow.x * 2.0 * U.obj.w, max_t);
+    return o_shadow_with(p, l, eps, jitter, min(U.lshadow.x * 2.0 * U.obj.w, max_t), U.lshadow.y);
+}
+
+// ObjectPlan::shadow_with: up to `reach` with softness `soft` (a terrain's scene too).
+fn o_shadow_with(p: vec3<f32>, l: vec3<f32>, eps: f32, jitter: f32, reach: f32, soft: f32) -> f32 {
     var t = eps * (4.0 + jitter);
     var seen = 1.0;
     for (var i = 0u; i < 64u; i = i + 1u) {
@@ -294,7 +298,12 @@ fn o_shadow(p: vec3<f32>, l: vec3<f32>, eps: f32, jitter: f32, max_t: f32) -> f3
 
 // ObjectPlan::occlusion
 fn o_occlusion(p: vec3<f32>, n: vec3<f32>, jitter: f32) -> f32 {
-    let step = U.lshadow.w * U.obj.w / 5.0;
+    return o_occlusion_with(p, n, jitter, U.lshadow.w, U.lshadow.z);
+}
+
+// ObjectPlan::occlusion_with: the radius (a share of the bound) and the strength.
+fn o_occlusion_with(p: vec3<f32>, n: vec3<f32>, jitter: f32, radius: f32, strength: f32) -> f32 {
+    let step = radius * U.obj.w / 5.0;
     var occ = 0.0;
     var w = 0.5;
     for (var i = 1u; i <= 5u; i = i + 1u) {
@@ -303,74 +312,6 @@ fn o_occlusion(p: vec3<f32>, n: vec3<f32>, jitter: f32) -> f32 {
         occ = occ + w * max((h - dist) / h, 0.0);
         w = w * 0.5;
     }
-    return clamp(1.0 - U.lshadow.z * occ * 2.0, 0.0, 1.0);
+    return clamp(1.0 - strength * occ * 2.0, 0.0, 1.0);
 }
 
-@compute @workgroup_size(8, 8)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let x = gid.x;
-    let y = gid.y + U.size.w;
-    if x >= U.size.x || gid.y >= U.band.x || y >= U.size.y {
-        return;
-    }
-    // The sample position (render::sample_offset) and the jitter of the secondary rays.
-    let s = U.size.z;
-    // The pixel in the whole image (the window lies inside it).
-    let xf = i32(x) + U.win.x;
-    let yf = i32(y) + U.win.y;
-    let ha = hash(u32(xf) ^ hash(u32(yf) + 0x68E31DA4u));
-    let hb = hash(ha);
-    let ju = f32(ha + s * 0xC13FA9A9u) / 4294967296.0;
-    let jv = f32(hb + s * 0x91E10DA6u) / 4294967296.0;
-    var rng = hash(u32(xf) ^ hash(u32(yf) ^ hash(s ^ 0x3C6EF372u)));
-    let ray = o_ray(f32(xf) + ju, f32(yf) + jv);
-    let o = ray[0];
-    let d = ray[1];
-    let footprint = 2.0 * U.lcam.w / f32(U.win.w);
-    let hit = o_trace(o, d, footprint);
-    if hit.z == 0.0 {
-        l_blend(gid, x, vec4<f32>(0.0));
-        return;
-    }
-    let t = hit.x;
-    let p = o + d * t;
-    let eps = footprint * max(t, 1e-3) * U.obj.z;
-    let n = o_normal(p, eps * 0.5);
-    let q = p + n * (eps * 2.0);
-    var seen = array<f32, 4>(1.0, 1.0, 1.0, 1.0);
-    if U.lshadow.x > 0.0 {
-        for (var i = 0u; i < U.lighti.y; i = i + 1u) {
-            let dir = U.ldir[i].xyz;
-            if dot(n, dir) > 0.0 {
-                seen[i] = o_shadow(q, dir, eps, l_rnd(&rng), 3.0e38);
-            } else {
-                seen[i] = 0.0;
-            }
-        }
-    }
-    // Point lights (world positions, ObjectPlan::shade).
-    var pts = array<vec4<f32>, 4>();
-    for (var i = 0u; i < u32(U.lenv.w); i = i + 1u) {
-        let v = U.lpos[i].xyz - q;
-        let dir = normalize(v);
-        var sn = 1.0;
-        if U.lshadow.x > 0.0 {
-            if dot(n, dir) > 0.0 {
-                sn = o_shadow(q, dir, eps, l_rnd(&rng), length(v));
-            } else {
-                sn = 0.0;
-            }
-        }
-        let reach = U.lpos[i].w;
-        if reach > 0.0 {
-            sn = sn / (1.0 + dot(v, v) / (reach * reach));
-        }
-        pts[i] = vec4<f32>(dir, sn);
-    }
-    var open = 1.0;
-    if U.lshadow.z > 0.0 && U.lshadow.w > 0.0 {
-        open = o_occlusion(q, n, l_rnd(&rng));
-    }
-    let color = region_color(false, hit.y * 4.0);
-    l_blend(gid, x, l_shade_n(color, n, seen, open, -d, pts));
-}

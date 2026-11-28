@@ -100,6 +100,12 @@ struct Uni {
     // 3D terrain camera: the height of the point it orbits above the middle of the ground
     // (field cells), unused…
     lcam2: vec4<f32>,
+    // A 3D object in a terrain's scene (rfr_core::render::light::SceneObject): its middle over
+    // the ground (x, y in cells; its height above the ground in cells), cells per object unit;
+    // the turn (cos, sin), on (z); its colors (transfer, density, offset)
+    oplace: vec4<f32>,
+    oturn: vec4<f32>,
+    ocol: vec4<f32>,
 }
 
 struct Params {
