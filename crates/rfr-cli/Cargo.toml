@@ -9,3 +9,4 @@ license.workspace = true
 naga = { version = "30.0.1", features = ["wgsl-in"] }
 rfr-core = { path = "../rfr-core" }
 rfr-gpu = { path = "../rfr-gpu" }
+rfr-net = { path = "../rfr-net" }

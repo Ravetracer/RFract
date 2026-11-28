@@ -25,7 +25,7 @@ impl FrameRenderer {
     }
 
     /// The averaged image (linear, straight alpha) of `plan` with `samples` samples.
-    pub(crate) fn render_plan(&mut self, plan: &Plan, samples: u32) -> Result<Vec<[f32; 4]>, String> {
+    pub fn render_plan(&mut self, plan: &Plan, samples: u32) -> Result<Vec<[f32; 4]>, String> {
         match &mut self.gpu {
             Some(r) => {
                 r.set_plan(plan);
@@ -52,7 +52,7 @@ impl FrameRenderer {
 
     /// Density layers of `plan`: their largest counts after each of `passes` passes, per
     /// density layer (the first sweep of a tiled poster).
-    pub(crate) fn density_maxima(&mut self, plan: &Plan, passes: u32) -> Result<Vec<Vec<[u32; 3]>>, String> {
+    pub fn density_maxima(&mut self, plan: &Plan, passes: u32) -> Result<Vec<Vec<[u32; 3]>>, String> {
         match &mut self.gpu {
             Some(r) => {
                 r.set_plan(plan);

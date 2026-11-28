@@ -42,6 +42,7 @@ next concrete steps are in `TODO.md`. Siblings with code to reuse: `../RWildFire
 |------|---------|
 | `crates/rfr-core` | `formula/` (`parse.rs` lexer and parsers for UFM syntax and FRM-like v1, `ast.rs` (program kinds), `check.rs` names/types → `ir.rs`, `cpu.rs` closures generic over the scalar with coloring hooks and transformations, `color.rs` formula colors, `library.rs` bundled sets, user formula folders indexed in the background and compiled on first use, `reload_file`), `formulas/` (`rfract/rfract.ufm` fractals, `rfract.ucl` colorings, `rfract.uxf` transformations, `rfract.r3d` 3D formulas, `fractint.ufm` FractInt escape-time types with FractInt's parameter layout, `fractalpark/` bundled set, `tools/import_fractalpark.py`), `math/` (`scalar.rs` f64 and dual numbers, `complex.rs` stdlib), `doc.rs` (.rfr model v2: layer tree, merge modes, masks), `gradient.rs` (OKLab gradients, opacity, LUT), `gradient_io.rs` (.ugr/.map/.ggr/.gpl/.cpt), `palette.rs` (generator, from RMandelbulb3D), `render/` (`mod.rs` plan tree, sample positions, coloring math, precision; `composite.rs` merge modes; `cpu.rs` reference renderer; `histogram.rs` histogram coloring (quantiles of a probe); `orbit.rs` orbit tracer (orbit display); `oidn.rs`; `post.rs` effects, `Glow` + `apply_region` for tiles; `tiles.rs` poster tiles), `io/` (.rfr, PNG with document, `upr.rs` and `par.rs` parameter file import into documents with notes), `animation.rs` (keyframes, view/camera path, timing incl. recorded flights, drivers, flight → keyframes, zoom sequence path), `expr.rs` (driver expressions), `audio.rs` (sound levels), `video.rs` (ffmpeg sink), `queue.rs` (render queue model), `explore.rs` (random documents, framing, mutations, thumbnail quality), `paths.rs` |
 | `crates/rfr-gpu` | `codegen.rs` (layer plan → WGSL: fractal, transformations, colorings with local prefixes and parameter bases), `wgsl/` (`scalar_f32`, `scalar_dual`, `scalar_df64`, `scalar_dd_dual` layers, `cstd.wgsl` complex stdlib, `blend.wgsl` merge modes, `kernel.wgsl` layer kernel, `composite.wgsl` fill/merge/accumulate, `display.wgsl`), `renderer.rs` (op schedule with scratch slots, per-layer pipelines and buffers, progressive bands, readback), `animation.rs` (frame renderer with motion blur, stills, zoom sequence), `batch.rs` (queue jobs), `poster.rs` (tiled posters); `tests/shaders.rs` (all programs validate, GPU/CPU parity incl. layers) |
+| `crates/rfr-net` | Network rendering (port of `rmb-net`): `proto.rs` (messages, units, job spec), `discovery.rs` (UDP announcements), `assets.rs` (files of a job: images, user formula files; client cache), `client.rs`, `server.rs`; `tests/loopback.rs` |
 | `crates/rfr-app` | egui app: `app.rs` (layout, menus, files, shortcuts), `layers.rs` (layer tree, selection), `viewport.rs` (preview, navigation, Julia pick, color cycling, orbit display), `inset.rs` (Julia preview inset), `inspector.rs` (layer/mask/fractal/transformation/coloring settings), `browser.rs` (formula list, user formulas by file, new formulas), `editor.rs` (formula editor), `palette_editor.rs` (from RMandelbulb3D; opacity, import/export), `export.rs`, `timeline.rs` (keyframes, flight recording, timing, drivers, sound), `anim_export.rs`, `queue_window.rs`, `explorer.rs` (explore lane), `doc.rs` (undo), `help.rs`/`manual.rs`, `theme.rs`, `widgets.rs`, `icons.rs`, `prefs.rs` |
 | `crates/rfr-cli` | Command line (`render`, `animate`, `batch`, `formulas`, `formulas --check`, `params --check`, `info`) |
 | `docs/manual` | User manual: `NN-*.md` chapters, `images/`, `manual.css` |
@@ -57,6 +58,23 @@ RAYON_NUM_THREADS=8 cargo test -j 8 --workspace -- --test-threads=8
 cargo clippy -j 8 --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 ```
+
+## Network rendering
+
+- Clients (`rfr-cli client`) announce themselves on UDP 47820 every 2 s (also to 127.0.0.1)
+  and listen on TCP 47821; the server (`server::run_job`, app window `net_window.rs`, CLI
+  `net-render`) connects to the chosen ones. Length-prefixed JSON messages, results and files
+  as raw bytes after them; `rfr_net::version` must match (bump `PROTOCOL` when messages change).
+- Units: `Frames { f, n }` (n > 1 only for zoom sequences), `Tile { i }` over
+  `tiles::tiles_sized(w, h, 512)` (clients send the linear region with margin,
+  `poster::tile_region`; the server runs `poster::finish_tile` with the glow of
+  `poster::whole_glow` and writes PNG bands), `Maxima { i }` first when density layers need the
+  whole image's counts (tiles are held until all arrived, `Work::held`).
+- Files: `rfr_core::files` lists image paths and formula ids; `assets::prepare` sends images by
+  absolute path (mirrored below `jobs/<id>/root`) and user formula files by their path in the
+  formula folders (`jobs/<id>/formulas`, set as the client's formula folder for the job), with
+  the `.ulb` files when an entry uses classes. The in-process client (`start_local`) uses the
+  server's files directly.
 
 ## Formula language and renderers
 

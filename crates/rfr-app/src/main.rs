@@ -21,6 +21,7 @@ mod inspector;
 mod layers;
 mod lights;
 mod manual;
+mod net_window;
 mod palette_editor;
 mod prefs;
 mod queue_window;

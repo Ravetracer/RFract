@@ -9,6 +9,8 @@ use std::time::Instant;
 use rfr_core::doc::Document;
 use rfr_core::formula::library::library;
 
+mod net;
+
 const USAGE: &str = "\
 Usage: rfr-cli <command> [options]
 
@@ -40,6 +42,28 @@ Commands:
       -W, -H, -s             Documents: size and samples (default: the document's)
       --cpu                  Render on the CPU
       --ffmpeg <program>     The ffmpeg program (default: found on the search path)
+  client [options]           Run a render client: it announces itself on the local network
+                             and renders for the servers that connect (until Ctrl+C)
+      --name <name>          Name shown on the servers (default: the host name)
+      --key <key>            Only servers that know this key may connect
+      --port <n>             TCP port (default 47821; another one if it is taken)
+      --cache <dir>          Folder for the received files (default: the cache folder)
+      --cpu                  Render on the CPU
+  net-render <input.rfr> [options]
+                             Render a document on the render clients of the network: its
+                             animation as frames, else a still image in tiles
+      -o, -W, -H, -s         Output, size and samples (default: the document's)
+      --still                The still image even when the document has an animation
+      --from <n>, --to <n>, --format <name>, --sequence, --ffmpeg <program>
+                             As for 'animate'
+      --clients <a,b|all>    The clients found on the network to use (default: all)
+      --client <host[:port]> A client by address (networks without broadcasts; repeatable)
+      --local                This machine renders too
+      --key <key>            Key for clients started with --key
+      --wait <s>             How long to look for clients (default: 3)
+      --tile <px>            Still images: pixels per tile side (default: 512)
+      --cpu                  The local client and the server's glow render on the CPU
+  net-clients [--wait <s>]   List the render clients on the network
   formulas                   List the built-in formulas with their ids
   formulas --check <path>…   Compile formula files (.ufm, .ucl, .uxf, .frm) or folders and report
   params --check <path>… [--thumbs <dir>] [--notes]
@@ -814,6 +838,9 @@ fn main() -> ExitCode {
         Some("render") => render(rest),
         Some("animate") => animate(rest),
         Some("batch") => batch(rest),
+        Some("client") => net::client(rest),
+        Some("net-render") => net::render(rest),
+        Some("net-clients") => net::list(rest),
         Some("params" | "upr") if rest.first().map(String::as_str) == Some("--check") => check_upr(&rest[1..]),
         Some("formulas") if rest.first().map(String::as_str) == Some("--check") => check_formulas(&rest[1..]),
         Some("formulas") => {

@@ -5,7 +5,13 @@ that come up along the way.
 
 ## Stage 11 – Network rendering and scripting
 
-- [ ] Network rendering (`rfr-net`, port of `rmb-net`): frames and poster tiles on render nodes.
+- [x] Network rendering (`rfr-net`, port of `rmb-net`): frames and poster tiles on render nodes.
+      Frames (runs of frames for zoom sequences), tiles of 512 px with the server finishing
+      them (`poster::finish_tile`, glow from `poster::whole_glow`, PNG bands), density counts
+      first (`Unit::Maxima`); files: images by absolute path, user formula files by their
+      folder path (client sets its formula folder per job). App window, CLI `client`,
+      `net-render`, `net-clients`; loopback test.
+- [ ] Stage 11 exit: an animation and a poster across two machines (needs a second computer).
 - [ ] Lua scripting (from RWildFire).
 
 ## Stage 10 – Road to 1.0

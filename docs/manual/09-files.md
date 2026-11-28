@@ -143,3 +143,58 @@ On the command line `rfr-cli batch` renders the waiting jobs of that queue file
 rfr-cli batch ~/.config/rfract/queue.json
 rfr-cli batch zoom.rfr flight.rfr picture.rfr --out renders -W 1920 -H 1080
 ```
+
+## Network rendering
+
+Other computers of the local network can help with long renders. On each of them start a
+render client (the same RFract version):
+
+```
+rfr-cli client
+rfr-cli client --name studio --key secret
+```
+
+The client announces itself on the network and waits; it renders on its graphics card
+(`--cpu`: on the processor) for whichever server connects, then waits for the next job.
+Stop it with Ctrl+C. `--key` lets only servers that know the key use it.
+
+*File › Network render…* lists the clients it hears (new ones start chosen; busy ones and
+other versions are shown but cannot be chosen). Clients the announcements do not reach
+(another subnet, a network that blocks broadcasts) can be added by address (`host` or
+`host:port`). **This computer too** renders on this computer as well (the preview pauses
+meanwhile). Choose the animation or the image, the size, the samples, the frames and the
+output, then **Render on … clients**; the window shows the progress of every client.
+
+- **Animations** go out frame by frame: every client renders whole frames (with motion blur,
+  palette rotation and the effects), the server collects them and encodes the movie after
+  the last one. In the zoom sequence mode a client renders a run of frames in a row, since
+  its images carry over from frame to frame.
+- **Images** go out in tiles of 512 pixels: every client renders tiles (exactly the pixels of
+  the whole image there), the server denoises them, adds the effects and the glow and writes
+  the PNG a band of rows at a time. With density layers the clients first count the
+  densities of every tile, then render the tiles with the whole image's largest counts.
+
+Fast clients take more pieces than slow ones; at the end an idle client also takes over the
+piece that would take longest elsewhere, and the first result counts. A client that drops out
+gives its piece back to the others; a finished piece it could not deliver is sent when it
+comes back. The server sends every file the document needs: images of image parameters and
+environments, and the formula files from your formula folders that the document uses (with
+the class libraries when they need them). Clients keep received files by content in their
+cache folder, so a second job sends only what changed.
+
+On the command line:
+
+```
+rfr-cli net-clients
+rfr-cli net-render zoom.rfr -o zoom.mp4 --local
+rfr-cli net-render poster.rfr --still -W 7680 -H 4320 --clients studio,attic
+rfr-cli net-render zoom.rfr --client 192.168.1.20 --key secret
+```
+
+`net-render` renders the animation when the document has one (`--still`: the image), with
+the options of `animate`; `--clients` picks clients by name (default: all found within
+`--wait` seconds), `--client` adds one by address, `--local` renders on this computer too.
+
+!!! note
+    The clients use UDP port 47820 for the announcements and TCP port 47821 for the
+    servers; a firewall must let them through on the clients' computers.

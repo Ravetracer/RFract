@@ -4,6 +4,13 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
 
 ## [Unreleased]
 
+### Added
+
+- Network rendering: render clients on other computers (`rfr-cli client`) take frames of an
+  animation or tiles of an image; *File › Network render…* and `rfr-cli net-render` send the
+  document with its images and formula files and put the results together (`net-clients`
+  lists the clients).
+
 ## [0.12.0] - 2026-11-28
 
 ### Added

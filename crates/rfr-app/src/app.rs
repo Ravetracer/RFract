@@ -61,6 +61,7 @@ pub struct App {
     timeline: crate::timeline::Timeline,
     anim_export: crate::anim_export::AnimExport,
     queue: crate::queue_window::QueueWindow,
+    net: crate::net_window::NetWindow,
     explorer: crate::explorer::Explorer,
     /// Gradient editor window: outside (false) or inside (true) coloring.
     gradient_window: Option<bool>,
@@ -135,6 +136,7 @@ impl App {
             timeline: Default::default(),
             anim_export: Default::default(),
             queue: crate::queue_window::QueueWindow::new(),
+            net: crate::net_window::NetWindow::new(),
             explorer: Default::default(),
             show_explore: false,
             doc: Doc::new(Document::for_formula("rfract:Mandelbrot")),
@@ -626,6 +628,12 @@ impl App {
                 if item(ui, "Render queue…", "").on_hover_text("Images and animations rendered one after the other (for example overnight)").clicked()
                 {
                     self.queue.open = true;
+                }
+                if item(ui, "Network render…", "")
+                    .on_hover_text("Renders the image or the animation on other computers of the network (render clients)")
+                    .clicked()
+                {
+                    self.net.open_for(&self.doc.doc, self.doc.path.as_deref());
                 }
                 ui.separator();
                 if item(ui, "Preferences…", "Ctrl+,").on_hover_text("Interface size, preview quality, formula folders").clicked() {
@@ -1135,7 +1143,7 @@ impl eframe::App for App {
             self.timeline.stop_preview();
         }
         self.viewport.preview = self.timeline.preview(&self.doc.doc);
-        self.viewport.paused = self.export.busy() || self.anim_export.busy() || self.queue.busy();
+        self.viewport.paused = self.export.busy() || self.anim_export.busy() || self.queue.busy() || self.net.local_busy();
         let mut msg = None;
         egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::CANVAS)).show(ui, |ui| {
             msg = self.viewport.show(ui, frame, &mut self.doc.doc, &self.selection, &self.prefs);
@@ -1150,6 +1158,9 @@ impl eframe::App for App {
             if m.contains("failed") { self.warn(m) } else { self.notify(m) }
         }
         self.queue.show(&ctx, &self.doc.doc, self.doc.path.as_deref(), &self.prefs);
+        if let Some(m) = self.net.show(&ctx, &self.doc.doc, &self.prefs, self.viewport.gpu_context()) {
+            if m.contains("failed") { self.warn(m) } else { self.notify(m) }
+        }
         if let Some(m) = self.anim_export.update(&ctx) {
             if m.contains("failed") { self.warn(m) } else { self.notify(m) }
         }

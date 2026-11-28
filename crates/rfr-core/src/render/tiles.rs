@@ -28,10 +28,16 @@ pub fn merge_maxima(a: &[Vec<[u32; 3]>], b: &[Vec<[u32; 3]>]) -> Vec<Vec<[u32; 3
 
 /// The tiles of a `w` × `h` image, row by row.
 pub fn tiles(w: u32, h: u32) -> Vec<[u32; 4]> {
+    tiles_sized(w, h, TILE)
+}
+
+/// The tiles of a `w` × `h` image with `side` pixels per side (at most), row by row.
+pub fn tiles_sized(w: u32, h: u32, side: u32) -> Vec<[u32; 4]> {
+    let side = side.max(16);
     let mut out = Vec::new();
-    for y in (0..h).step_by(TILE as usize) {
-        for x in (0..w).step_by(TILE as usize) {
-            out.push([x, y, TILE.min(w - x), TILE.min(h - y)]);
+    for y in (0..h).step_by(side as usize) {
+        for x in (0..w).step_by(side as usize) {
+            out.push([x, y, side.min(w - x), side.min(h - y)]);
         }
     }
     out
