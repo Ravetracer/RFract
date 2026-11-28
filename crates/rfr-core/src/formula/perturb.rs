@@ -86,6 +86,11 @@ pub struct DeltaState {
     /// By local slot (only the state locals matter).
     pub delta: Vec<Cfx>,
     refs: Vec<C64>,
+    /// Distance estimation: the derivative of every local's full value along the sample's
+    /// direction, per pixel (empty without), and the derivative of the pixel (the direction
+    /// times the pixel size).
+    pub deriv: Vec<Cfx>,
+    dseed: Cfx,
 }
 
 struct Lower<'a> {
@@ -561,14 +566,114 @@ impl Perturbation {
         }
     }
 
-    /// Starts a sample at offset `dpix` from the reference point.
-    pub fn start(&self, orbit: &RefOrbit, dpix: Cfx) -> DeltaState {
-        let mut st = DeltaState { m: 0, delta: vec![Cfx::ZERO; self.nlocals], refs: vec![C64::new(0.0, 0.0); self.nlocals] };
-        for (i, e) in &self.init {
-            let (r, d) = self.eval_delta(e, &st.refs, &st.delta, orbit.center, dpix);
+    /// Forward-mode derivative of `e` (dual numbers on the full values, with an extended
+    /// exponent for the derivative): returns the full value (`f64`) and its derivative. The
+    /// derivative of the pixel is `st.dseed`.
+    fn eval_deriv(&self, e: &PE, st: &DeltaState, center: C64, dpix: Cfx) -> (C64, Cfx) {
+        let ev = |x: &PE| self.eval_deriv(x, st, center, dpix);
+        let full = |r: C64, d: Cfx| {
+            let (re, im) = d.to_c64();
+            C64::new(r.re + re, r.im + im)
+        };
+        match e {
+            PE::Const(c) => (*c, Cfx::ZERO),
+            PE::Local(i) => (full(st.refs[*i], st.delta[*i]), st.deriv[*i]),
+            PE::Pixel => (full(center, dpix), st.dseed),
+            PE::Add(a, b) => {
+                let ((va, da), (vb, db)) = (ev(a), ev(b));
+                (va + vb, da + db)
+            }
+            PE::Sub(a, b) => {
+                let ((va, da), (vb, db)) = (ev(a), ev(b));
+                (va - vb, da - db)
+            }
+            PE::Mul(a, b) => {
+                let ((va, da), (vb, db)) = (ev(a), ev(b));
+                (va * vb, da * cfx(vb) + cfx(va) * db)
+            }
+            PE::Div(a, b) => {
+                let ((va, da), (vb, db)) = (ev(a), ev(b));
+                let q = va / vb;
+                (q, (da - cfx(q) * db) / cfx(vb))
+            }
+            PE::Neg(a) => {
+                let (v, d) = ev(a);
+                (-v, -d)
+            }
+            PE::PowI(a, n) => {
+                let (v, d) = ev(a);
+                let mut p = C64::new(1.0, 0.0);
+                for _ in 1..*n {
+                    p = p * v;
+                }
+                (p * v, cfx(p * C64::new(*n as f64, 0.0)) * d)
+            }
+            PE::Conj(a) => {
+                let (v, d) = ev(a);
+                (v.conj(), d.conj())
+            }
+            PE::Abs(a) => {
+                let (v, d) = ev(a);
+                let sign = |x: f64| {
+                    if x < 0.0 {
+                        -1.0
+                    } else if x > 0.0 {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                };
+                (C64::new(v.re.abs(), v.im.abs()), Cfx::new(sign(v.re) * d.re, sign(v.im) * d.im, d.e))
+            }
+            PE::Re(a) => {
+                let (v, d) = ev(a);
+                (C64::new(v.re, 0.0), Cfx::new(d.re, 0.0, d.e))
+            }
+            PE::Im(a) => {
+                let (v, d) = ev(a);
+                (C64::new(v.im, 0.0), Cfx::new(d.im, 0.0, d.e))
+            }
+            PE::Flip(a) => {
+                let (v, d) = ev(a);
+                (C64::new(v.im, v.re), Cfx { re: d.im, im: d.re, e: d.e })
+            }
+            PE::MakeC(a, b) => {
+                let ((va, da), (vb, db)) = (ev(a), ev(b));
+                (C64::new(va.re, vb.re), Cfx::from_fx(da.re_fx(), db.re_fx()))
+            }
+        }
+    }
+
+    /// Runs the assignments `list` on a sample (deltas, and derivatives when it has them).
+    fn assign(&self, list: &[(usize, PE)], st: &mut DeltaState, center: C64, dpix: Cfx) {
+        for (i, e) in list {
+            // The derivative reads the locals before the assignment, like the delta.
+            let dd = (!st.deriv.is_empty()).then(|| self.eval_deriv(e, st, center, dpix).1);
+            let (r, d) = self.eval_delta(e, &st.refs, &st.delta, center, dpix);
             st.refs[*i] = r;
             st.delta[*i] = d;
+            if let Some(dd) = dd {
+                st.deriv[*i] = dd;
+            }
         }
+    }
+
+    /// Starts a sample at offset `dpix` from the reference point.
+    pub fn start(&self, orbit: &RefOrbit, dpix: Cfx) -> DeltaState {
+        self.start_with(orbit, dpix, None)
+    }
+
+    /// [`Perturbation::start`] with derivatives (distance estimation) when `dseed`, the
+    /// derivative of the pixel, is given.
+    pub fn start_with(&self, orbit: &RefOrbit, dpix: Cfx, dseed: Option<Cfx>) -> DeltaState {
+        let mut st = DeltaState {
+            m: 0,
+            delta: vec![Cfx::ZERO; self.nlocals],
+            refs: vec![C64::new(0.0, 0.0); self.nlocals],
+            deriv: if dseed.is_some() { vec![Cfx::ZERO; self.nlocals] } else { Vec::new() },
+            dseed: dseed.unwrap_or(Cfx::ZERO),
+        };
+        self.assign(&self.init, &mut st, orbit.center, dpix);
         st
     }
 
@@ -578,11 +683,7 @@ impl Perturbation {
         for (k, &s) in self.state.iter().enumerate() {
             st.refs[s] = orbit.state(st.m)[k];
         }
-        for (i, e) in &self.body {
-            let (r, d) = self.eval_delta(e, &st.refs, &st.delta, orbit.center, dpix);
-            st.refs[*i] = r;
-            st.delta[*i] = d;
-        }
+        self.assign(&self.body, st, orbit.center, dpix);
         st.m += 1;
         let zk = self.state.iter().position(|&s| s == Z).unwrap_or(0);
         let zref = orbit.state(st.m.min(orbit.len - 1))[zk];
@@ -939,7 +1040,7 @@ mod tests {
                 let d = [(i as f64 - 4.5) / 5.0 * radius, (j as f64 - 4.5) / 5.0 * radius];
                 let mut g = k.frame();
                 g.ismand = true;
-                let p = k.run_perturbed(&mut g, maxit, Deep { pert: &pert, orbit: &orbit, bla: None }, Cfx::from_c64(d[0], d[1]), |_| {});
+                let p = k.run_perturbed(&mut g, maxit, Deep { pert: &pert, orbit: &orbit, bla: None }, Cfx::from_c64(d[0], d[1]), None, |_| {});
                 // The exact escape of the exact point (center + d).
                 let scale = Fx::from_f64(radius * 1e-6);
                 let exact = [big::add(center[0], Fx::from_f64(d[0]), scale), big::add(center[1], Fx::from_f64(d[1]), scale)];
@@ -977,8 +1078,52 @@ mod tests {
         assert_eq!(orbit.len, 1001, "-1.75 is inside the set");
         let mut f = k.frame();
         let d = Cfx::from_fx(Fx::parse("3e-500").unwrap(), Fx::ZERO);
-        let o = k.run_perturbed(&mut f, 1000, Deep { pert: &pert, orbit: &orbit, bla: None }, d, |_| {});
+        let o = k.run_perturbed(&mut f, 1000, Deep { pert: &pert, orbit: &orbit, bla: None }, d, None, |_| {});
         assert!(!o.escaped);
+    }
+
+    #[test]
+    fn perturbed_derivatives_match_dual_numbers() {
+        // Formulas with products, powers, conjugates and abs: the derivative of the
+        // perturbed orbit equals the one of direct dual-number iteration at the same point.
+        use crate::math::scalar::{Dual, Scalar};
+        let lib = library();
+        for (id, center) in
+            [("rfract:Mandelbrot", ["-0.7436", "0.1318"]), ("rfract:BurningShip", ["-1.762", "-0.028"]), ("rfract:Tricorn", ["-0.3", "0.9"])]
+        {
+            let e = lib.get(id).unwrap();
+            let prog = e.program().unwrap();
+            let values: Vec<ParamValue> = prog.params.iter().map(|p| p.default.clone()).collect();
+            let k = Compiled::<Dual>::new(&prog, &values);
+            let pert = Perturbation::new(&prog, &values, true, [0.0, 0.0]).unwrap();
+            let center_text = [center[0].to_string(), center[1].to_string()];
+            let orbit = k.reference_orbit(&pert, &center_text, 200, 2000);
+            let px = 1e-6;
+            let mut compared = 0;
+            for (i, dir) in [(0.0f64, 1.0f64), (0.6, 0.8), (-1.0, 0.0)].into_iter().enumerate() {
+                let off = [(i as f64 - 1.0) * 3e-4, 2e-4];
+                let c = [center[0].parse::<f64>().unwrap() + off[0], center[1].parse::<f64>().unwrap() + off[1]];
+                let mut f = k.frame();
+                f.ismand = true;
+                let seed = Cfx::from_c64(dir.0 * px, dir.1 * px);
+                let p =
+                    k.run_perturbed(&mut f, 2000, Deep { pert: &pert, orbit: &orbit, bla: None }, Cfx::from_c64(off[0], off[1]), Some(seed), |_| {});
+                let mut g = k.frame();
+                g.ismand = true;
+                g.pixel = crate::math::complex::Cx::new(Dual::new(c[0], dir.0 * px), Dual::new(c[1], dir.1 * px));
+                g.c = g.pixel;
+                let q = k.run(&mut g, 2000);
+                if !q.escaped || p.iter != q.iter {
+                    continue;
+                }
+                let dz = |o: &crate::formula::cpu::Orbit<Dual>| o.z.re.d().hypot(o.z.im.d());
+                let (a, b) = (dz(&p), dz(&q));
+                assert!(a > 0.0 && ((a - b) / b).abs() < 1e-4, "{id} {dir:?}: perturbed {a}, direct {b}");
+                assert!((p.z.re.v() - q.z.re.v()).abs() < 1e-6 * q.z.re.v().abs().max(1.0));
+                compared += 1;
+            }
+            assert!(compared >= 2, "{id}: only {compared} comparable orbits");
+        }
     }
 
     #[test]
@@ -1001,11 +1146,11 @@ mod tests {
                 let d = Cfx::from_fx(radius * ((i as f64 - 3.5) / 4.0), radius * ((j as f64 - 3.5) / 4.0));
                 let mut f = k.frame();
                 f.ismand = true;
-                let a = k.run_perturbed(&mut f, 12000, Deep { pert: &pert, orbit: &orbit, bla: None }, d, |_| {});
+                let a = k.run_perturbed(&mut f, 12000, Deep { pert: &pert, orbit: &orbit, bla: None }, d, None, |_| {});
                 let mut calls = 0u64;
                 let mut g = k.frame();
                 g.ismand = true;
-                let b = k.run_perturbed(&mut g, 12000, Deep { pert: &pert, orbit: &orbit, bla: Some(&table) }, d, |_| calls += 1);
+                let b = k.run_perturbed(&mut g, 12000, Deep { pert: &pert, orbit: &orbit, bla: Some(&table) }, d, None, |_| calls += 1);
                 plain_steps += a.iter as u64;
                 bla_steps += calls;
                 total += 1;

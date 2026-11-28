@@ -22,6 +22,8 @@ pub enum Mode {
     Dual,
     /// Double-float (two f32 per value, about 48 bits): deep views.
     Df64,
+    /// Double-float with f32 derivatives: distance estimation in deep views.
+    DualDf64,
     /// Perturbation against a reference orbit (deeper than double precision).
     Pert,
 }
@@ -488,6 +490,8 @@ struct PertGen {
     out: String,
     n: usize,
     pad: &'static str,
+    /// Derivatives (distance estimation): `pdd<i>` per local, `pdseed` for the pixel.
+    deriv: bool,
 }
 
 impl PertGen {
@@ -566,19 +570,93 @@ impl PertGen {
         }
     }
 
+    fn dtmp(&mut self, f: String, d: String) -> (String, String) {
+        self.n += 1;
+        let k = self.n;
+        let _ = writeln!(self.out, "{}let w{k}f = {f};", self.pad);
+        let _ = writeln!(self.out, "{}let w{k}d = {d};", self.pad);
+        (format!("w{k}f"), format!("w{k}d"))
+    }
+
+    /// Forward-mode derivative of an expression: its full value (`vec2<f32>`) and derivative
+    /// (`Cf`) (rfr_core Perturbation::eval_deriv, rule for rule).
+    fn dexpr(&mut self, e: &PE) -> (String, String) {
+        match e {
+            PE::Const(c) => (format!("vec2<f32>({}, {})", lit(c.re), lit(c.im)), "CF0".into()),
+            PE::Local(i) => (format!("(pr{i} + cf_f(pd{i}))"), format!("pdd{i}")),
+            PE::Pixel => ("(pcen + cf_f(dpix))".into(), "pdseed".into()),
+            PE::Add(a, b) => {
+                let ((fa, da), (fb, db)) = (self.dexpr(a), self.dexpr(b));
+                self.dtmp(format!("{fa} + {fb}"), format!("cf_add({da}, {db})"))
+            }
+            PE::Sub(a, b) => {
+                let ((fa, da), (fb, db)) = (self.dexpr(a), self.dexpr(b));
+                self.dtmp(format!("{fa} - {fb}"), format!("cf_sub({da}, {db})"))
+            }
+            PE::Mul(a, b) => {
+                let ((fa, da), (fb, db)) = (self.dexpr(a), self.dexpr(b));
+                self.dtmp(format!("v2_mul({fa}, {fb})"), format!("cf_add(cf_mul({da}, cf_v2({fb})), cf_mul(cf_v2({fa}), {db}))"))
+            }
+            PE::Div(a, b) => {
+                let ((fa, da), (fb, db)) = (self.dexpr(a), self.dexpr(b));
+                let (q, _) = self.dtmp(format!("v2_div({fa}, {fb})"), "CF0".into());
+                self.dtmp(q.clone(), format!("cf_div(cf_sub({da}, cf_mul(cf_v2({q}), {db})), cf_v2({fb}))"))
+            }
+            PE::Neg(a) => {
+                let (f, d) = self.dexpr(a);
+                self.dtmp(format!("-{f}"), format!("cf_neg({d})"))
+            }
+            PE::PowI(a, n) => {
+                let (f, d) = self.dexpr(a);
+                let (p, _) = self.dtmp(format!("v2_powi({f}, {}u)", n - 1), "CF0".into());
+                self.dtmp(format!("v2_mul({p}, {f})"), format!("cf_mul(cf_v2({p} * {}), {d})", lit(*n as f64)))
+            }
+            PE::Conj(a) => {
+                let (f, d) = self.dexpr(a);
+                self.dtmp(format!("vec2<f32>({f}.x, -{f}.y)"), format!("cf_conj({d})"))
+            }
+            PE::Abs(a) => {
+                let (f, d) = self.dexpr(a);
+                self.dtmp(format!("abs({f})"), format!("cf_signs(sign({f}), {d})"))
+            }
+            PE::Re(a) => {
+                let (f, d) = self.dexpr(a);
+                self.dtmp(format!("vec2<f32>({f}.x, 0.0)"), format!("cf_re({d})"))
+            }
+            PE::Im(a) => {
+                let (f, d) = self.dexpr(a);
+                self.dtmp(format!("vec2<f32>({f}.y, 0.0)"), format!("cf_im({d})"))
+            }
+            PE::Flip(a) => {
+                let (f, d) = self.dexpr(a);
+                self.dtmp(format!("{f}.yx"), format!("cf_flip({d})"))
+            }
+            PE::MakeC(a, b) => {
+                let ((fa, da), (fb, db)) = (self.dexpr(a), self.dexpr(b));
+                self.dtmp(format!("vec2<f32>({fa}.x, {fb}.x)"), format!("cf_makec(cf_re({da}), cf_re({db}))"))
+            }
+        }
+    }
+
     fn assign(&mut self, list: &[(usize, PE)]) {
         for (i, e) in list {
+            // The derivative reads the locals before the assignment, like the delta.
+            let dd = self.deriv.then(|| self.dexpr(e).1);
             let (r, d) = self.expr(e);
             let _ = writeln!(self.out, "{}pr{i} = {r};", self.pad);
             let _ = writeln!(self.out, "{}pd{i} = {d};", self.pad);
+            if let Some(dd) = dd {
+                let _ = writeln!(self.out, "{}pdd{i} = {dd};", self.pad);
+            }
         }
     }
 }
 
 /// The fractal's init and loop by perturbation (rfr_core Perturbation::start, step and full):
 /// deltas iterate against the reference orbit in `refo`; the locals `l<i>` get the full values
-/// for the bailout, the colorings and `final`.
-fn pert_code(p: &Perturbation, prog: &Program, use_bla: bool, init: &mut String, body: &mut String) {
+/// for the bailout, the colorings and `final`. With `deriv` the locals carry derivatives
+/// `pdd<i>` (per pixel; no linear steps then).
+fn pert_code(p: &Perturbation, prog: &Program, use_bla: bool, deriv: bool, init: &mut String, body: &mut String) {
     let ns = p.state.len();
     let kz = p.state.iter().position(|&s| s == Z).unwrap_or(0);
     let write_full = |out: &mut String, pad: &str| {
@@ -588,9 +666,17 @@ fn pert_code(p: &Perturbation, prog: &Program, use_bla: bool, init: &mut String,
             let _ = writeln!(out, "{pad}l{s} = {v};");
         }
     };
-    let mut g = PertGen { out: String::new(), n: 0, pad: "        " };
+    let mut g = PertGen { out: String::new(), n: 0, pad: "        ", deriv };
     for &s in &p.state {
         let _ = writeln!(g.out, "        var pr{s} = vec2<f32>(0.0);\n        var pd{s} = CF0;");
+        if deriv {
+            let _ = writeln!(g.out, "        var pdd{s} = CF0;");
+        }
+    }
+    if deriv {
+        // The pixel's derivative: the sample's direction times the pixel size.
+        let _ = writeln!(g.out, "        let pdir = vec2<f32>(cos(turn * TAU), sin(turn * TAU));");
+        let _ = writeln!(g.out, "        let pdseed = cf_make(pdir.x * U.pert.x, pdir.y * U.pert.x, U.perti.x);");
     }
     g.assign(&p.init);
     let _ = writeln!(g.out, "        var pm = 0u;\n        let plen = u32(max(U.perti.y, 1));");
@@ -757,7 +843,7 @@ pub fn kernel(lp: &LayerPlan, mode: Mode) -> String {
     let mut body = String::new();
     let pert = if mode == Mode::Pert { perturbation(lp) } else { None };
     match &pert {
-        Some(p) => pert_code(p, &lp.fractal.program, p.bla_possible() && !lp.coloring_loops(), &mut init, &mut body),
+        Some(p) => pert_code(p, &lp.fractal.program, p.bla_possible() && !lp.every_iteration(), lp.needs_derivative(), &mut init, &mut body),
         None => {
             fractal.stmts(&fractal.prog.init, &mut init, 2, &mut counter);
             fractal.stmts(&fractal.prog.body, &mut body, 3, &mut counter);
@@ -805,15 +891,22 @@ pub fn kernel(lp: &LayerPlan, mode: Mode) -> String {
         }
         out
     };
+    let dz_pert = format!("        dzv = min(length(cf_f(pdd{})), 3.0e38);", Z);
     let out_final = final_of(&outside, false, &mut counter);
     let in_final = final_of(&inside, true, &mut counter);
     let pixel = match mode {
         Mode::Plain => "    var pixel = c_f(pr.x, pr.y);".to_string(),
         Mode::Dual => {
-            "    let dir = vec2<f32>(cos(turn * TAU), sin(turn * TAU));\n    var pixel = Cx(vec2<f32>(pr.x, dir.x), vec2<f32>(pr.y, dir.y));"
+            "    let dir = vec2<f32>(cos(turn * TAU), sin(turn * TAU)) * U.rot.z;\n    var pixel = Cx(vec2<f32>(pr.x, dir.x), vec2<f32>(pr.y, dir.y));"
                 .to_string()
         }
         Mode::Df64 => "    var pixel = Cx(dd_add(dd(U.view.x, U.lo.x), dd_f(off.x)), dd_add(dd(U.view.y, U.lo.y), dd_f(off.y)));".to_string(),
+        // The derivative per pixel, like Mode::Dual.
+        Mode::DualDf64 => concat!(
+            "    let dir = vec2<f32>(cos(turn * TAU), sin(turn * TAU)) * U.rot.z;\n",
+            "    var pixel = Cx(S(dd_add(dd(U.view.x, U.lo.x), dd_f(off.x)), dir.x), S(dd_add(dd(U.view.y, U.lo.y), dd_f(off.y)), dir.y));"
+        )
+        .to_string(),
         // The offset from the reference point in pixels, scaled with an extended exponent.
         Mode::Pert => concat!(
             "    let pxo = vec2<f32>(f32(x) + ju - w * 0.5, -(f32(y) + jv - h * 0.5));\n",
@@ -824,7 +917,7 @@ pub fn kernel(lp: &LayerPlan, mode: Mode) -> String {
         )
         .to_string(),
     };
-    let mut mode_init = if mode == Mode::Df64 { "    dd_one = U.rot.w;\n".to_string() } else { String::new() };
+    let mut mode_init = if matches!(mode, Mode::Df64 | Mode::DualDf64) { "    dd_one = U.rot.w;\n".to_string() } else { String::new() };
     // One random stream per program (render::cpu seeds the same way).
     let mut rng_decl = String::new();
     let streams: Vec<(&str, u32)> = std::iter::once((fractal.prefix.as_str(), 1u32))
@@ -850,6 +943,8 @@ pub fn kernel(lp: &LayerPlan, mode: Mode) -> String {
         .replace("//@BAILOUT", &fractal.expr(&fractal.prog.bailout))
         .replace("//@COLOR_LOOP", color_loop.trim_end())
         .replace("//@FINAL", fin.trim_end())
+        // Perturbation with derivatives: |dz| from the derivative of z (huge ones stay huge).
+        .replace("//@DZ", if pert.is_some() && lp.needs_derivative() { &dz_pert } else { "" })
         .replace("//@OUT_FINAL", out_final.trim_end())
         .replace("//@IN_FINAL", in_final.trim_end());
     // Lit layers: the height of the sample, and the field write of operation 2.
@@ -860,7 +955,7 @@ pub fn kernel(lp: &LayerPlan, mode: Mode) -> String {
                 "            let r2f = norm2(zv);\n",
                 "            if r2f > 4.0 && dzv > 0.0 && dzv <= 3.4e38 {\n",
                 "                let rf = sqrt(r2f);\n",
-                "                fde = max(rf * log(rf) / dzv / U.rot.z, 0.0);\n",
+                "                fde = max(rf * log(rf) / dzv, 0.0);\n",
                 "            }\n",
                 "        }\n",
                 "        if U.lighti.x == 0u {\n",
@@ -875,7 +970,7 @@ pub fn kernel(lp: &LayerPlan, mode: Mode) -> String {
                 "            let r2 = norm2(zv);\n",
                 "            if escaped && r2 > 4.0 && dzv > 0.0 && dzv <= 3.4e38 {\n",
                 "                let r = sqrt(r2);\n",
-                "                hgt = -log(1.0 + max(r * log(r) / dzv / U.rot.z, 0.0));\n",
+                "                hgt = -log(1.0 + max(r * log(r) / dzv, 0.0));\n",
                 "            }\n",
                 "        }",
             ),
@@ -899,8 +994,16 @@ pub fn kernel(lp: &LayerPlan, mode: Mode) -> String {
         Mode::Pert => &format!("{SCALAR_F32}\n{PERTURB}"),
         Mode::Dual => SCALAR_DUAL,
         Mode::Df64 => SCALAR_DF64,
+        Mode::DualDf64 => &dd_dual(),
     };
     format!("{scalar}\n{CSTD}\n{BLEND}\n{kernel}\n{lighting}")
+}
+
+/// The double-float dual layer: the dd_* arithmetic of `scalar_df64.wgsl` without its scalar
+/// names, then `scalar_dd_dual.wgsl`.
+fn dd_dual() -> String {
+    let dd = SCALAR_DF64.split("// ---- scalar layer names").next().unwrap_or_default();
+    format!("{dd}\n{}", include_str!("wgsl/scalar_dd_dual.wgsl"))
 }
 
 /// The compositing shader (fill, group merge, accumulation).

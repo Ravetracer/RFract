@@ -44,6 +44,16 @@ fn every_library_program_gives_valid_wgsl() {
         }
     }
     assert!(perturbable >= 10, "only {perturbable} formulas can be perturbed");
+    // Distance estimation in deep views: double-float with derivatives, perturbation with
+    // derivatives (the bundled formulas).
+    for e in library().usable().filter(|e| e.id.starts_with("rfract:")) {
+        let mut doc = Document::for_formula(&e.id);
+        doc.layers[0].outside_method = OutsideMethod::Distance;
+        check(&format!("distance {}", e.title), &doc, &[Mode::DualDf64]);
+        if codegen::perturbation(&first_layer(&doc)).is_some() {
+            check(&format!("distance {}", e.title), &doc, &[Mode::Pert]);
+        }
+    }
     // Density layers: the Mandelbrot (Buddhabrot) and every attractor.
     for e in library().usable().filter(|e| e.id == "rfract:Mandelbrot" || e.id.starts_with("rfract-attractor:")) {
         let mut doc = Document::for_formula(&e.id);
@@ -374,6 +384,11 @@ fn gpu_matches_the_cpu_renderer() {
         d.view.set_center(c);
         d.layers[0].max_iter = 3000;
         assert_eq!(rfr_gpu::renderer::renderer_mode(&Plan::sized(&d, 16, 9).unwrap()), Mode::Df64, "{name} needs double-float");
+        // Distance estimation there: double-float with derivatives.
+        let mut de = d.clone();
+        de.layers[0].outside_method = OutsideMethod::Distance;
+        assert_eq!(rfr_gpu::renderer::renderer_mode(&Plan::sized(&de, 16, 9).unwrap()), Mode::DualDf64);
+        cases.push((format!("{name} distance"), de));
         cases.push((name.into(), d));
     }
     let (w, h, s) = (160, 90, 4);
@@ -429,6 +444,17 @@ fn gpu_perturbation_matches_the_cpu() {
     let gpu = rfr_core::render::cpu::rgba8(&rfr_gpu::render_blocking(ctx.clone(), &plan_post, s, |_| true).unwrap());
     let diff = block_diff(&cpu, &gpu, w as usize, h as usize);
     assert!(diff < 4.0, "perturbation with a post-transformation: block difference {diff:.2} of 255");
+
+    // Distance estimation: derivatives through the deltas (no linear steps).
+    let mut de = d.clone();
+    de.layers[0].outside_method = OutsideMethod::Distance;
+    let plan_de = Plan::sized(&de, w, h).unwrap();
+    let cpu = rfr_core::render::cpu::render(&de, w, h, s).unwrap().rgba8();
+    let gpu = rfr_core::render::cpu::rgba8(&rfr_gpu::render_blocking(ctx.clone(), &plan_de, s, |_| true).unwrap());
+    let smooth = rfr_core::render::cpu::render(&d, w, h, s).unwrap().rgba8();
+    assert!(block_diff(&cpu, &smooth, w as usize, h as usize) > 10.0, "distance coloring differs from the smooth fallback");
+    let diff = block_diff(&cpu, &gpu, w as usize, h as usize);
+    assert!(diff < 4.0, "perturbation with distance estimation: block difference {diff:.2} of 255");
 
     // Moving the view keeps the reference orbit (the samples add the offset); the image
     // matches a render with a fresh orbit at the new center.

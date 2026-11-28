@@ -233,9 +233,9 @@ fn source_index(s: MaskSource) -> u32 {
     }
 }
 
-/// The scalar mode a layer renders with: f32 (with derivatives when its coloring needs them)
-/// while that is precise enough, else double-float (distance estimation then falls back to the
-/// smooth iteration count).
+/// The scalar mode a layer renders with: f32 while that is precise enough, then
+/// double-float, deeper perturbation (when the formula allows it); derivatives where the
+/// coloring needs them (distance estimation).
 pub fn layer_mode(plan: &Plan, lp: &LayerPlan) -> Mode {
     // 3D objects do not depend on the plane's precision.
     if lp.object.is_some() {
@@ -245,6 +245,7 @@ pub fn layer_mode(plan: &Plan, lp: &LayerPlan) -> Mode {
         Precision::Single if lp.needs_derivative() => Mode::Dual,
         Precision::Single => Mode::Plain,
         Precision::Beyond if codegen::perturbation(lp).is_some() => Mode::Pert,
+        _ if lp.needs_derivative() => Mode::DualDf64,
         _ => Mode::Df64,
     }
 }
@@ -254,6 +255,8 @@ pub fn renderer_mode(plan: &Plan) -> Mode {
     let modes: Vec<Mode> = plan.layers().iter().map(|l| layer_mode(plan, l)).collect();
     if modes.contains(&Mode::Pert) {
         Mode::Pert
+    } else if modes.contains(&Mode::DualDf64) {
+        Mode::DualDf64
     } else if modes.contains(&Mode::Df64) {
         Mode::Df64
     } else if modes.contains(&Mode::Dual) {
@@ -908,7 +911,7 @@ impl GpuRenderer {
                 // Linear steps: built for the largest |δc| the reference can still see (the
                 // view and its reach), so navigating near it keeps them.
                 let mut st = st;
-                if p.bla_possible() && !lp.coloring_loops() {
+                if p.bla_possible() && !lp.every_iteration() {
                     let need_dc = plan.frame.max_offset_fx() + off[0].abs() + off[1].abs();
                     if st.bla_levels == 0 || need_dc > st.bla_dc {
                         let dc = need_dc * 1.5 + plan.frame.radius_fx * 6.0;

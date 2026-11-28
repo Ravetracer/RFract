@@ -20,6 +20,10 @@ use crate::math::complex::{C64, Cx};
 use crate::math::fx::Cfx;
 use crate::math::scalar::{Dual, Scalar};
 
+/// A sample's offset from the view center (deep zooms) and the derivative of its pixel
+/// (distance estimation in perturbation views).
+type Seed = (Cfx, Option<Cfx>);
+
 /// The compiled programs of one layer.
 struct LayerK<S> {
     fractal: Compiled<S>,
@@ -67,22 +71,23 @@ impl<S: Scalar + Send + Sync + 'static> LayerK<S> {
 
     /// Color (linear RGB, straight alpha) of the layer at plane point `p` of pixel `pix`
     /// (x, y, sample index), its height when the layer is lit (else 0), and whether the orbit
-    /// stayed inside for at least [`GUESS_MIN_ITER`] iterations (see [`guess_tile`]).
-    fn eval(&self, f: &mut LayerF<S>, lp: &LayerPlan, plan: &Plan, p: Cx<S>, d: Cfx, pix: (u32, u32, u32)) -> ([f32; 4], [f32; 2], bool) {
-        let Some((o, post)) = self.orbit(f, lp, plan, p, d, pix) else {
+    /// stayed inside for at least [`GUESS_MIN_ITER`] iterations (see [`guess_tile`]). `deep`:
+    /// see [`LayerK::orbit`].
+    fn eval(&self, f: &mut LayerF<S>, lp: &LayerPlan, plan: &Plan, p: Cx<S>, deep: Seed, pix: (u32, u32, u32)) -> ([f32; 4], [f32; 2], bool) {
+        let Some((o, post)) = self.orbit(f, lp, plan, p, deep, pix) else {
             return ([0.0; 4], [0.0, 3.0e38], false);
         };
         let maxit = lp.max_iter;
         let region = if o.escaped { &lp.outside } else { &lp.inside };
         let r = Self::result(&o);
         // The color and the gradient position before the offset (lit layers' heights).
-        let (color, raw) = self.shade(f, lp, plan, &o, &post, &r);
+        let (color, raw) = self.shade(f, lp, &o, &post, &r);
         let value = raw.map_or(0.0, |v| region.position(v));
         // Lit layers and layers with effects: the height and the distance to the set in pixels.
         let field = lp.light.as_ref().map_or([0.0, 3.0e38], |l| {
             let smooth = if o.escaped { smooth_iter(&r) } else { maxit as f64 };
-            let distance = if l.source == crate::doc::HeightSource::Distance { light::distance_height(&r, plan.frame.pixel_size()) } else { 0.0 };
-            [light::height(l.source, smooth, value, distance, color), light::distance_px(&r, plan.frame.pixel_size())]
+            let distance = if l.source == crate::doc::HeightSource::Distance { light::distance_height(&r) } else { 0.0 };
+            [light::height(l.source, smooth, value, distance, color), light::distance_px(&r)]
         });
         (color, field, !o.escaped && maxit >= GUESS_MIN_ITER)
     }
@@ -107,7 +112,7 @@ impl<S: Scalar + Send + Sync + 'static> LayerK<S> {
 
     /// The color of an orbit by its region's coloring and the coloring value (before the
     /// transfer; none for solid colors and formulas that set the color directly).
-    fn shade(&self, f: &mut LayerF<S>, lp: &LayerPlan, plan: &Plan, o: &Orbit<S>, post: &PostZ<S>, r: &OrbitResult) -> ([f32; 4], Option<f64>) {
+    fn shade(&self, f: &mut LayerF<S>, lp: &LayerPlan, o: &Orbit<S>, post: &PostZ<S>, r: &OrbitResult) -> ([f32; 4], Option<f64>) {
         let region = if o.escaped { &lp.outside } else { &lp.inside };
         match region.method {
             ColorMethod::Formula(_) => {
@@ -125,14 +130,16 @@ impl<S: Scalar + Send + Sync + 'static> LayerK<S> {
                     _ => (region.solid, None),
                 }
             }
-            _ => (shade_native(region, r, plan.frame.pixel_size()), native_value(region, r, plan.frame.pixel_size())),
+            _ => (shade_native(region, r), native_value(region, r)),
         }
     }
 
     /// The orbit of the sample at plane point `p` of pixel `pix` (its transformations, the
     /// fractal with the colorings' hooks) and `z` as the colorings see it at the end; none
-    /// when a transformation makes it solid.
-    fn orbit(&self, f: &mut LayerF<S>, lp: &LayerPlan, plan: &Plan, mut p: Cx<S>, d: Cfx, pix: (u32, u32, u32)) -> Option<(Orbit<S>, PostZ<S>)> {
+    /// when a transformation makes it solid. Deep zooms: `deep` is the offset from the view
+    /// center and the derivative of the pixel (distance estimation).
+    fn orbit(&self, f: &mut LayerF<S>, lp: &LayerPlan, plan: &Plan, mut p: Cx<S>, deep: Seed, pix: (u32, u32, u32)) -> Option<(Orbit<S>, PostZ<S>)> {
+        let (d, dseed) = deep;
         // Screen values and one random stream per program (kernel.wgsl seeds the same way).
         let base = super::hash(pix.0 ^ super::hash(pix.1 ^ super::hash(pix.2.wrapping_add(0x9E37_79B9))));
         let screen = |fr: &mut Frame<S>, tag: u32| {
@@ -219,7 +226,9 @@ impl<S: Scalar + Send + Sync + 'static> LayerK<S> {
                 }
             };
             match &self.pert {
-                Some((pert, orbit, bla)) => self.fractal.run_perturbed(&mut f.fractal, maxit, Deep { pert, orbit, bla: bla.as_ref() }, d, hook),
+                Some((pert, orbit, bla)) => {
+                    self.fractal.run_perturbed(&mut f.fractal, maxit, Deep { pert, orbit, bla: bla.as_ref() }, d, dseed, hook)
+                }
                 None => self.fractal.run_with(&mut f.fractal, maxit, hook),
             }
         };
@@ -282,18 +291,25 @@ impl Kernel {
                 strokes: density::Strokes::new(d),
             }));
         }
-        // Deeper than double precision: perturbation when the formula allows it.
+        // Deeper than double precision: perturbation when the formula allows it (with
+        // derivatives for distance estimation).
         if plan.precision() == Precision::Beyond
             && lp.transforms.is_empty()
             && let Ok(pert) = Perturbation::new(&lp.fractal.program, &lp.fractal.values, !lp.julia, lp.seed)
         {
-            let mut k = LayerK::<f64>::new(lp);
-            let bits = crate::math::big::bits_for(plan.frame.pixel_size_fx());
-            let orbit = k.fractal.reference_orbit(&pert, &plan.center_text, bits, lp.max_iter);
-            let bla =
-                if lp.coloring_loops() { None } else { pert.bla_table(&orbit, plan.frame.max_offset_fx(), crate::formula::perturb::BLA_EPS_CPU) };
-            k.pert = Some((pert, orbit, bla));
-            return Kernel::Plain(k);
+            fn deep<S: Scalar + Send + Sync + 'static>(lp: &LayerPlan, plan: &Plan, pert: Perturbation) -> LayerK<S> {
+                let mut k = LayerK::<S>::new(lp);
+                let bits = crate::math::big::bits_for(plan.frame.pixel_size_fx());
+                let orbit = k.fractal.reference_orbit(&pert, &plan.center_text, bits, lp.max_iter);
+                let bla = if lp.every_iteration() {
+                    None
+                } else {
+                    pert.bla_table(&orbit, plan.frame.max_offset_fx(), crate::formula::perturb::BLA_EPS_CPU)
+                };
+                k.pert = Some((pert, orbit, bla));
+                k
+            }
+            return if lp.needs_derivative() { Kernel::Dual(deep(lp, plan, pert)) } else { Kernel::Plain(deep(lp, plan, pert)) };
         }
         if lp.needs_derivative() { Kernel::Dual(LayerK::new(lp)) } else { Kernel::Plain(LayerK::new(lp)) }
     }
@@ -320,12 +336,13 @@ impl Kernel {
             return (o.shade(plan.frame.width, plan.frame.height, x, y, |t| lp.outside.color(t), rng), [0.0, 3.0e38], false);
         }
         match (self, f) {
-            (Kernel::Plain(k), KernelF::Plain(f)) => k.eval(f, lp, plan, p, d, pix),
+            (Kernel::Plain(k), KernelF::Plain(f)) => k.eval(f, lp, plan, p, (d, None), pix),
             (Kernel::Dual(k), KernelF::Dual(f)) => {
                 // Derivative along a direction that turns from sample to sample (non-analytic
-                // formulas average over directions); |dz| is per plane unit.
+                // formulas average over directions); |dz| is per pixel.
                 let (s, c) = (turn * std::f64::consts::TAU).sin_cos();
-                k.eval(f, lp, plan, Cx::new(Dual::new(p.re, c), Dual::new(p.im, s)), d, pix)
+                let (p, seed) = dual_pixel(plan, p, c, s);
+                k.eval(f, lp, plan, p, (d, Some(seed)), pix)
             }
             _ => unreachable!("kernel and frames differ"),
         }
@@ -733,6 +750,14 @@ pub fn heights_at(plan: &Plan, pts: &[(f64, f64)]) -> Vec<f32> {
     pts.iter().map(|&(x, y)| k.eval(&mut f, lp, plan, (plan.frame.plane(x, y), plan.frame.offset_fx(x, y)), 0.0, (0, 0, 0)).1[0]).collect()
 }
 
+/// A plane point with its derivative along direction (`c`, `s`) per pixel, and that
+/// derivative with an extended exponent (perturbation, deeper than `f64` reaches).
+fn dual_pixel(plan: &Plan, p: C64, c: f64, s: f64) -> (Cx<Dual>, Cfx) {
+    let px = plan.frame.pixel_size();
+    let seed = Cfx::from_c64(c, s) * Cfx::from_fx(plan.frame.pixel_size_fx(), crate::math::fx::Fx::ZERO);
+    (Cx::new(Dual::new(p.re, c * px), Dual::new(p.im, s * px)), seed)
+}
+
 /// Coloring values (before the transfer) of the plan's first layer at the pixel centers,
 /// row-major, with whether the orbit stayed inside; none for pixels colored without a value
 /// (solid colors, direct formula colors). Density and 3D object layers give nothing.
@@ -743,7 +768,7 @@ pub fn coloring_values(plan: &Plan) -> Vec<Option<(bool, f64)>> {
         k: &LayerK<S>,
         lp: &LayerPlan,
         plan: &Plan,
-        lift: impl Fn(C64) -> Cx<S> + Sync,
+        lift: impl Fn(C64) -> (Cx<S>, Option<Cfx>) + Sync,
     ) -> Vec<Option<(bool, f64)>> {
         let (w, h) = (plan.frame.width as usize, plan.frame.height as usize);
         let mut out = vec![None; w * h];
@@ -753,9 +778,10 @@ pub fn coloring_values(plan: &Plan) -> Vec<Option<(bool, f64)>> {
                 for (x, out) in row.iter_mut().enumerate() {
                     let (px, py) = (x as f64 + 0.5, y as f64 + 0.5);
                     let (p, d) = (plan.frame.plane(px, py), plan.frame.offset_fx(px, py));
-                    *out = k.orbit(f, lp, plan, lift(p), d, (x as u32, y as u32, 0)).and_then(|(o, post)| {
+                    let (p, seed) = lift(p);
+                    *out = k.orbit(f, lp, plan, p, (d, seed), (x as u32, y as u32, 0)).and_then(|(o, post)| {
                         let r = LayerK::<S>::result(&o);
-                        k.shade(f, lp, plan, &o, &post, &r).1.filter(|v| v.is_finite()).map(|v| (!o.escaped, v))
+                        k.shade(f, lp, &o, &post, &r).1.filter(|v| v.is_finite()).map(|v| (!o.escaped, v))
                     });
                 }
             },
@@ -763,8 +789,11 @@ pub fn coloring_values(plan: &Plan) -> Vec<Option<(bool, f64)>> {
         out
     }
     match Kernel::new(lp, plan) {
-        Kernel::Plain(k) => run(&k, lp, plan, |p| p),
-        Kernel::Dual(k) => run(&k, lp, plan, |p| Cx::new(Dual::new(p.re, 1.0), Dual::new(p.im, 0.0))),
+        Kernel::Plain(k) => run(&k, lp, plan, |p| (p, None)),
+        Kernel::Dual(k) => run(&k, lp, plan, |p| {
+            let (p, seed) = dual_pixel(plan, p, 1.0, 0.0);
+            (p, Some(seed))
+        }),
         Kernel::Density(_) | Kernel::Object => Vec::new(),
     }
 }
@@ -775,7 +804,12 @@ pub fn coloring_values(plan: &Plan) -> Vec<Option<(bool, f64)>> {
 pub fn iteration_counts(plan: &Plan) -> Vec<Option<u32>> {
     let layers = plan.layers();
     let Some(lp) = layers.first() else { return Vec::new() };
-    fn run<S: Scalar + Send + Sync + 'static>(k: &LayerK<S>, lp: &LayerPlan, plan: &Plan, lift: impl Fn(C64) -> Cx<S> + Sync) -> Vec<Option<u32>> {
+    fn run<S: Scalar + Send + Sync + 'static>(
+        k: &LayerK<S>,
+        lp: &LayerPlan,
+        plan: &Plan,
+        lift: impl Fn(C64) -> (Cx<S>, Option<Cfx>) + Sync,
+    ) -> Vec<Option<u32>> {
         let (w, h) = (plan.frame.width as usize, plan.frame.height as usize);
         let mut out = vec![None; w * h];
         out.par_chunks_mut(w).enumerate().for_each_init(
@@ -784,15 +818,19 @@ pub fn iteration_counts(plan: &Plan) -> Vec<Option<u32>> {
                 for (x, o) in row.iter_mut().enumerate() {
                     let (px, py) = (x as f64 + 0.5, y as f64 + 0.5);
                     let (p, d) = (plan.frame.plane(px, py), plan.frame.offset_fx(px, py));
-                    *o = k.orbit(f, lp, plan, lift(p), d, (x as u32, y as u32, 0)).filter(|(o, _)| o.escaped).map(|(o, _)| o.iter);
+                    let (p, seed) = lift(p);
+                    *o = k.orbit(f, lp, plan, p, (d, seed), (x as u32, y as u32, 0)).filter(|(o, _)| o.escaped).map(|(o, _)| o.iter);
                 }
             },
         );
         out
     }
     match Kernel::new(lp, plan) {
-        Kernel::Plain(k) => run(&k, lp, plan, |p| p),
-        Kernel::Dual(k) => run(&k, lp, plan, |p| Cx::new(Dual::new(p.re, 1.0), Dual::new(p.im, 0.0))),
+        Kernel::Plain(k) => run(&k, lp, plan, |p| (p, None)),
+        Kernel::Dual(k) => run(&k, lp, plan, |p| {
+            let (p, seed) = dual_pixel(plan, p, 1.0, 0.0);
+            (p, Some(seed))
+        }),
         Kernel::Density(_) | Kernel::Object => Vec::new(),
     }
 }

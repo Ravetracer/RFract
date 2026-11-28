@@ -308,6 +308,12 @@ impl LayerPlan {
         !self.post_transforms.is_empty() || [&self.outside, &self.inside].iter().any(|c| c.formula().is_some_and(|p| !p.program.body.is_empty()))
     }
 
+    /// Deep zooms must run every iteration (no linear steps): for colorings that loop, for
+    /// post-transformations and for derivatives.
+    pub fn every_iteration(&self) -> bool {
+        self.coloring_loops() || self.needs_derivative()
+    }
+
     pub fn new(l: &Layer) -> Result<LayerPlan, String> {
         let fractal = Prog::resolve(&l.formula, &l.params, ProgramKind::Fractal).map_err(|e| format!("{}: {e}", l.name))?;
         let resolve = |list: &[crate::doc::TransformRef]| {
@@ -648,12 +654,13 @@ pub struct OrbitResult {
     pub zprev2: C64,
     pub iter: u32,
     pub escaped: bool,
-    /// |dz/dpixel| along the sample's direction (0 without derivatives).
+    /// |dz/dpixel| along the sample's direction, per pixel (0 without derivatives): the
+    /// derivatives are seeded with the pixel size, so deep zooms stay in range.
     pub dz: f64,
 }
 
 /// Coloring value of an escaped (or converged) orbit.
-pub fn outside_value(method: OutsideMethod, o: &OrbitResult, pixel_size: f64) -> f64 {
+pub fn outside_value(method: OutsideMethod, o: &OrbitResult) -> f64 {
     let n = o.iter as f64;
     match method {
         OutsideMethod::Iterations | OutsideMethod::Solid | OutsideMethod::Formula => n,
@@ -662,8 +669,9 @@ pub fn outside_value(method: OutsideMethod, o: &OrbitResult, pixel_size: f64) ->
             let r2 = o.z.norm();
             if r2 > 4.0 && o.dz > 0.0 && o.dz.is_finite() {
                 let r = r2.sqrt();
+                // Distance in pixels.
                 let de = r * r.ln() / o.dz;
-                (de / pixel_size).max(0.0).ln_1p()
+                de.max(0.0).ln_1p()
             } else {
                 smooth_iter(o)
             }
@@ -709,20 +717,20 @@ pub fn inside_value(method: InsideMethod, o: &OrbitResult) -> f64 {
 }
 
 /// The coloring value of a region by its native method (`None` for solid and formula colors).
-pub fn native_value(c: &ColorPlan, o: &OrbitResult, pixel_size: f64) -> Option<f64> {
+pub fn native_value(c: &ColorPlan, o: &OrbitResult) -> Option<f64> {
     Some(match &c.method {
         ColorMethod::Solid | ColorMethod::Formula(_) => return None,
         ColorMethod::Smooth => smooth_iter(o),
         ColorMethod::Iterations => o.iter as f64,
-        ColorMethod::Distance => outside_value(OutsideMethod::Distance, o, pixel_size),
+        ColorMethod::Distance => outside_value(OutsideMethod::Distance, o),
         ColorMethod::Magnitude => inside_value(InsideMethod::Magnitude, o),
         ColorMethod::Angle => inside_value(InsideMethod::Angle, o),
     })
 }
 
 /// Color (linear RGB, straight alpha) of one region by its native method (not Formula).
-pub fn shade_native(c: &ColorPlan, o: &OrbitResult, pixel_size: f64) -> [f32; 4] {
-    match native_value(c, o, pixel_size) {
+pub fn shade_native(c: &ColorPlan, o: &OrbitResult) -> [f32; 4] {
+    match native_value(c, o) {
         Some(v) => finite(c.color(v)),
         None => c.solid,
     }

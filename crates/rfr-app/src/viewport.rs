@@ -214,6 +214,7 @@ impl Viewport {
             Some(Mode::Plain) => "f32",
             Some(Mode::Dual) => "f32 + derivatives",
             Some(Mode::Df64) => "double-float",
+            Some(Mode::DualDf64) => "double-float + derivatives",
             Some(Mode::Pert) => "perturbation",
             None => "",
         };

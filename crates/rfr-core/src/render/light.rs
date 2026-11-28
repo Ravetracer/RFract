@@ -241,11 +241,11 @@ pub fn luminance(c: [f32; 4]) -> f32 {
 }
 
 /// The distance estimate in pixels for escaped orbits with a derivative, else very far.
-pub fn distance_px(o: &OrbitResult, pixel_size: f64) -> f32 {
+pub fn distance_px(o: &OrbitResult) -> f32 {
     let r2 = o.z.norm();
     if o.escaped && r2 > 4.0 && o.dz > 0.0 && o.dz.is_finite() {
         let r = r2.sqrt();
-        ((r * r.ln() / o.dz / pixel_size).max(0.0)) as f32
+        ((r * r.ln() / o.dz).max(0.0)) as f32
     } else {
         3.0e38
     }
@@ -253,11 +253,11 @@ pub fn distance_px(o: &OrbitResult, pixel_size: f64) -> f32 {
 
 /// The height by distance estimation: −ln(1 + distance / pixel size) for escaped orbits with
 /// a derivative, 0 (the top) otherwise.
-pub fn distance_height(o: &OrbitResult, pixel_size: f64) -> f64 {
+pub fn distance_height(o: &OrbitResult) -> f64 {
     let r2 = o.z.norm();
     if o.escaped && r2 > 4.0 && o.dz > 0.0 && o.dz.is_finite() {
         let r = r2.sqrt();
-        -(r * r.ln() / o.dz / pixel_size).max(0.0).ln_1p()
+        -(r * r.ln() / o.dz).max(0.0).ln_1p()
     } else {
         0.0
     }

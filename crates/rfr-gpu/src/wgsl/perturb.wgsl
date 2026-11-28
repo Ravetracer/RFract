@@ -145,6 +145,20 @@ fn v2_mul(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
     return vec2<f32>(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
 }
 
+// a^n for n >= 0.
+fn v2_powi(a: vec2<f32>, n: u32) -> vec2<f32> {
+    var r = vec2<f32>(1.0, 0.0);
+    for (var k = 0u; k < n; k = k + 1u) {
+        r = v2_mul(r, a);
+    }
+    return r;
+}
+
+// The parts of `a` times the signs `s` (±1 or 0 per part).
+fn cf_signs(s: vec2<f32>, a: Cf) -> Cf {
+    return cf_make(s.x * a.re, s.y * a.im, a.e);
+}
+
 fn v2_div(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
     let d = b.x * b.x + b.y * b.y;
     return vec2<f32>((a.x * b.x + a.y * b.y) / d, (a.y * b.x - a.x * b.y) / d);

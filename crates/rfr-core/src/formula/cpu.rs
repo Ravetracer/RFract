@@ -939,10 +939,15 @@ impl<S: Scalar + Send + Sync + 'static> Compiled<S> {
 
     /// Writes the real or complex local `slot` (`f64` value).
     fn set_local(&self, f: &mut Frame<S>, slot: usize, v: crate::math::complex::C64) {
+        self.set_local_d(f, slot, v, crate::math::complex::C64::new(0.0, 0.0));
+    }
+
+    /// Writes the real or complex local `slot` with derivative `d` (kept by dual numbers).
+    fn set_local_d(&self, f: &mut Frame<S>, slot: usize, v: crate::math::complex::C64, d: crate::math::complex::C64) {
         let (ty, k) = self.layout.slot[slot];
         match ty {
-            Ty::Complex => f.cx[k] = Cx::from_f64(v.re, v.im),
-            Ty::Real => f.reals[k] = S::from_f64(v.re),
+            Ty::Complex => f.cx[k] = Cx::new(S::with_d(v.re, d.re), S::with_d(v.im, d.im)),
+            Ty::Real => f.reals[k] = S::with_d(v.re, d.re),
             _ => {}
         }
     }
@@ -964,24 +969,32 @@ impl<S: Scalar + Send + Sync + 'static> Compiled<S> {
 
     /// [`Compiled::run_with`] by perturbation: the deltas of the sample at offset `dpix` from
     /// the reference iterate; the frame holds the full values for the bailout, the hooks and
-    /// `final`.
+    /// `final`. With `dseed` (the derivative of the pixel) the locals also get their
+    /// derivatives (dual numbers; no linear steps should be used then).
     pub fn run_perturbed(
         &self,
         f: &mut Frame<S>,
         maxit: u32,
         deep: super::perturb::Deep,
         dpix: crate::math::fx::Cfx,
+        dseed: Option<crate::math::fx::Cfx>,
         mut hook: impl FnMut(Hook<S>),
     ) -> Orbit<S> {
+        use crate::math::complex::C64;
         let super::perturb::Deep { pert, orbit, bla } = deep;
         self.reset(f, maxit);
         let z = self.layout.slot[Z].1;
-        let mut full = vec![crate::math::complex::C64::new(0.0, 0.0); pert.nlocals];
-        let mut st = pert.start(orbit, dpix);
+        let mut full = vec![C64::new(0.0, 0.0); pert.nlocals];
+        let mut st = pert.start_with(orbit, dpix, dseed);
         let mut write = |f: &mut Frame<S>, st: &super::perturb::DeltaState| {
             pert.full(orbit, st, &mut full);
             for &s in &pert.state {
-                self.set_local(f, s, full[s]);
+                // Derivatives beyond f64 (far below the pixel scale) stay at the largest value.
+                let d = st.deriv.get(s).map_or(C64::new(0.0, 0.0), |d| {
+                    let (re, im) = d.to_c64();
+                    if re.is_finite() && im.is_finite() { C64::new(re, im) } else { C64::new(1e300, 0.0) }
+                });
+                self.set_local_d(f, s, full[s], d);
             }
         };
         write(f, &st);

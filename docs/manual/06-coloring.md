@@ -124,7 +124,7 @@ shine on it from above. Switch on **Lit** and choose where the heights come from
 | Iterations | The smooth iteration count (logarithmic). Points near the set lie higher; the set itself is a plateau. |
 | Coloring | The coloring value, the position in the gradient: the relief follows the color bands. |
 | Brightness | The brightness of the layer's color. On an image layer this gives a bump map of the image. |
-| Distance | The estimated distance to the set (logarithmic): smooth slopes that rise toward the set, independent of the iteration bands. Needs derivatives like the *Distance* coloring; in very deep views it falls back to flat ground. |
+| Distance | The estimated distance to the set (logarithmic): smooth slopes that rise toward the set, independent of the iteration bands. Needs derivatives like the *Distance* coloring (at any depth). |
 
 - **Relief** sets how steep the slopes are; negative values turn the relief inside out. The
   relief keeps its look when you render the same view at another size.

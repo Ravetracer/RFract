@@ -14,6 +14,8 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
   its iteration count and the period of orbits that stay inside.
 - Julia preview (*View › Julia preview*, I): a small Julia set of the point under the cursor
   in the corner of the view; a click on it opens that Julia set.
+- Distance estimation in deep views: double-float views and perturbation views (beyond
+  10⁻¹⁵) color by distance instead of falling back to the smooth iteration count.
 
 ### Fixed
 

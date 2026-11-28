@@ -87,7 +87,7 @@ The graphics card computes with 32-bit floating point numbers while that is prec
 Zoom in further (beyond a few thousand times at full HD) and RFract switches to double-float arithmetic (two 32-bit
 numbers per value, about 48 bits), which stays clean to about 10¹² at full HD. The status bar
 shows the arithmetic in use (*f32*, *f32 + derivatives* for distance estimation,
-*double-float* or *perturbation*).
+*double-float*, *double-float + derivatives* or *perturbation*).
 
 ## Deep zoom
 
@@ -104,7 +104,12 @@ center of a spiral often needs tens of thousands). Most of them are skipped: whe
 difference to the reference stays small, RFract jumps over hundreds or thousands of
 iterations at once with precomputed linear steps (*bilinear approximation*), so a full HD
 image at 10⁻³⁰ with 50 000 iterations takes seconds. Coloring algorithms that look at every
-iteration (orbit traps and the like) need all of them and render slower at depth.
+iteration (orbit traps and the like), post-transformations and distance estimation need all
+of them and render slower at depth.
+
+Distance estimation works at every depth: in double-float views the derivatives ride along
+in 32-bit numbers, in perturbation views they follow the differences to the reference with
+the same unlimited exponent.
 
 Perturbation works for formulas built from sums, products, quotients, whole-number powers,
 `conj`, `abs`, `real`, `imag` and `flip` with variables that do not depend on conditions in the
@@ -115,5 +120,3 @@ user formulas. RFract derives the perturbed formula itself; nothing has to be wr
     Layers whose formula cannot be perturbed (functions such as `sin` or `exp`, conditions
     that depend on the orbit, integer variables) or that use transformations show rounding
     steps beyond double precision; the status bar warns and its hover text names them.
-    Distance estimation colors by the smooth iteration count in double-float and perturbation
-    views.

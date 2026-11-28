@@ -399,8 +399,9 @@ fn shade_native(inside: bool, z: vec2<f32>, zp: vec2<f32>, zp2: vec2<f32>, iter:
             let r2 = norm2(z);
             if r2 > 4.0 && dz > 0.0 && dz <= 3.4e38 {
                 let r = sqrt(r2);
+                // dz is per pixel: the distance in pixels.
                 let de = r * log(r) / dz;
-                v = log(1.0 + max(de / U.rot.z, 0.0));
+                v = log(1.0 + max(de, 0.0));
             } else {
                 v = smooth_iter(z, zp, zp2, iter);
             }
@@ -530,7 +531,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let zv = vec2<f32>(s_v(l0.re), s_v(l0.im));
         let zpv = vec2<f32>(s_v(zprev.re), s_v(zprev.im));
         let zp2v = vec2<f32>(s_v(zprev2.re), s_v(zprev2.im));
-        let dzv = sqrt(s_d(l0.re) * s_d(l0.re) + s_d(l0.im) * s_d(l0.im));
+        var dzv = sqrt(s_d(l0.re) * s_d(l0.re) + s_d(l0.im) * s_d(l0.im));
+//@DZ
         g_value = 0.0;
         if escaped {
             if U.iter.z == 6u {

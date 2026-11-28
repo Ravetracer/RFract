@@ -17,6 +17,11 @@ pub trait Scalar:
     fn d(self) -> f64 {
         0.0
     }
+    /// A value with derivative `d` (dropped by plain numbers).
+    fn with_d(v: f64, d: f64) -> Self {
+        let _ = d;
+        Self::from_f64(v)
+    }
     fn zero() -> Self {
         Self::from_f64(0.0)
     }
@@ -150,6 +155,9 @@ impl Scalar for Dual {
     }
     fn d(self) -> f64 {
         self.d
+    }
+    fn with_d(v: f64, d: f64) -> Self {
+        Dual::new(v, d)
     }
     fn abs(self) -> Self {
         if self.v < 0.0 { -self } else { self }

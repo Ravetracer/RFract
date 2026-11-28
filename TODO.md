@@ -47,7 +47,11 @@ Open points of the earlier stages (their notes below stay for the details).
 - [x] Orbit display (`render::orbit::Tracer`, f64, period of inside orbits) and Julia preview
       inset (`rfr-app` `inset.rs`, CPU render in the background, newest request only, at most
       1000 iterations; a click opens the Julia set).
-- [ ] Distance estimation in double-float views (dual double-float) and perturbation views.
+- [x] Distance estimation in double-float views (`Mode::DualDf64`, `scalar_dd_dual.wgsl`:
+      double-float values, f32 derivatives) and perturbation views (forward-mode derivatives
+      of the full values with an extended exponent, `Perturbation::eval_deriv`, codegen
+      `PertGen::dexpr`; no linear steps then). Derivatives are per pixel everywhere
+      (`OrbitResult::dz`). The CPU reference is slow there (no BLA, `Cfx` per operation).
 - [ ] Windows of a larger frame: poster tiles with lit layers, effects, density layers and 3D
       objects; shadow field margin.
 - [ ] Terrain: larger than the view, walls down to a base, optional path tracing into OIDN.
@@ -205,10 +209,9 @@ Open points of the earlier stages (their notes below stay for the details).
 
 ## Open points from stage 1
 
-- Distance estimation in double-float views falls back to the smooth iteration count (needs a
-  dual double-float mode).
+- Distance estimation in double-float views: done in stage 10.
 - Integer arithmetic: the CPU uses 64-bit, the GPU 32-bit integers (only differs on overflow).
-- The view's orbit display and a Julia preview inset are not there yet.
+- Orbit display and Julia preview inset: done in stage 10.
 
 ## Ideas
 

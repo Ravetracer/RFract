@@ -668,7 +668,7 @@ fn fractal_sections(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
                 (
                     OutsideMethod::Distance,
                     "Distance",
-                    "Estimated distance to the set (relative to the pixel size): bright thin filaments; deep views fall back to Smooth",
+                    "Estimated distance to the set (relative to the pixel size): bright thin filaments, at any depth",
                 ),
                 (OutsideMethod::Formula, "Formula", "A coloring algorithm (orbit traps, averages, decompositions, …)"),
                 (OutsideMethod::Solid, "Solid", "One color"),
