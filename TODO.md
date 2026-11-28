@@ -7,6 +7,7 @@ that come up along the way.
 
 `rfr-cli bench` (14 cases + julia, minibrot; 1080p) on the development laptop (RTX A2000
 Laptop, shared with other work: compare medians of the same run only).
+Totals of the 14 original cases: 19.97 s → 12.18 s (−39 %).
 
 - [x] `c_powi` / `Cx::powi` without loops for n = 2, 3, 4 and by squaring otherwise (same
       products): seahorse 1.34 → 0.80 s, distance 1.82 → 0.96 s; total 19.97 → 14.33 s.
@@ -27,7 +28,11 @@ Laptop, shared with other work: compare medians of the same run only).
       per step). Terrains got their own entry point (`lit_ter`; `lit` for flat lit layers),
       since the bigger terrain code slowed flat lit layers by 18 % through register use.
       Terrain 1.00 → 0.81 s, path tracing 2.2 → 1.35 s, flat lit layers unchanged.
-- [ ] Ideas: coloring-heavy layers (traps 2.5 s, layers 3.1 s).
+- Tried and dropped: both colorings looping, iterate with the inside coloring only and run
+      escaped orbits again with the outside one (results identical): no faster for traps,
+      4–15 % slower for layers and kaleidoscope (the replay runs as divergent work in warps
+      whose inside pixels still iterate).
+- [ ] Coloring-heavy layers stay as they are (their inside orbits need every iteration).
 
 ## Stage 11 – Network rendering and scripting
 
