@@ -68,10 +68,13 @@ Open points of the earlier stages (their notes below stay for the details).
   - [x] Part 4: density layers: `Histogram` of the window (whole-image pixels in, the rest
         dropped; Metropolis scores on the whole image), `density_maxima` (first sweep over the
         tiles), `Plan::with_density_max` (the whole image's largest counts per pass).
-- [ ] Terrain: larger than the view, walls down to a base, optional path tracing into OIDN.
+- [x] Terrain: larger than the view, walls down to a base, optional path tracing into OIDN.
   - [x] Larger than the view: `Lighting::ground`, `light::Rings` (levels of the view's cells,
         2^j apart around the middle; outer bands blended into the next level; the trace runs
         through the rings in order, each part in its own level's maxima).
+  - [x] Path tracing (`Lighting::path_tracing`, `bounces`; `Fields::path`: direct light with
+        shadows, cosine-weighted bounces through the rings, the sky times the ambient strength;
+        the denoiser's albedo and normal images render without it).
   - [x] Walls down to a base (`Lighting::walls`, `Hit::Wall`, base below the source's lowest
         ground; walls lit without shadows, edge colors fading to the wall color).
 - [x] Terrain camera: camera-relative dragging (`viewport::terrain_drag`), target height

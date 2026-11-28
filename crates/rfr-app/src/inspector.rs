@@ -952,6 +952,22 @@ fn lighting_section(ui: &mut Ui, l: &mut Layer) {
                 }
             });
             ui.end_row();
+            widgets::checkbox(
+                ui,
+                "Path tracing",
+                "Light bounces between the surfaces and the sky (its colors times Ambient) lights the terrain, instead of the ambient light and occlusion: softer, more natural light, but noisy (more samples, and the denoiser)",
+                &mut li.path_tracing,
+            );
+            if li.path_tracing {
+                widgets::slider_u32(
+                    ui,
+                    "Bounces",
+                    "How often light bounces between surfaces (each one costs another ray)",
+                    &mut li.bounces,
+                    1..=4,
+                    def.bounces,
+                );
+            }
             widgets::checkbox(ui, "Walls", "Close the terrain into a block: walls down to a base below the lowest ground", &mut li.walls);
             if li.walls {
                 widgets::slider(

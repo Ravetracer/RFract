@@ -242,6 +242,11 @@ fn gpu_matches_the_cpu_renderer() {
         l.walls = true;
         l.camera.pitch = 15.0;
         cases.push(("terrain ground 4".into(), ground));
+        // Path tracing (two bounces): noisy, so the structure is compared.
+        let mut path = ter.clone();
+        path.layers[0].light.path_tracing = true;
+        path.layers[0].light.bounces = 2;
+        cases.push(("terrain path tracing".into(), path));
         // Point lights from the document's light sources, with shadows, flat and as a terrain.
         let light = |x: &str, y: &str, h: f64, color: [f32; 3]| rfr_core::doc::LightSource {
             position: [x.into(), y.into()],

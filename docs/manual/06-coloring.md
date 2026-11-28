@@ -180,6 +180,13 @@ in rings, each twice as wide and half as detailed as the one inside, so the land
 camera keeps its detail while the horizon moves far away. The rings blend into each other
 without seams; each step costs about as much as one more view.
 
+**Path tracing** replaces the ambient light and occlusion with light that bounces: every
+sample follows a ray from the surface into a random direction (*Bounces* times), lighting it
+with what that ray sees: the sky (its horizon and zenith colors or the environment image, times
+*Ambient*), the lights, or more terrain. Hollows get darker and slopes catch the sky's color,
+but each sample is noisy: render with many samples and switch on the denoiser (*Effects ›
+Denoise*), which uses the terrain's colors and normals to keep its edges sharp.
+
 Without walls the terrain is an open sheet. **Walls** close it into a block: its sides go down
 to a base that lies *Wall depth* (a share of the terrain height) below the lowest ground the
 height source gives. The walls show the colors of the terrain's edge, fading to *Wall color*

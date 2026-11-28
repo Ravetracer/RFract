@@ -634,6 +634,7 @@ pub fn aux_documents(doc: &crate::doc::Document) -> Option<[crate::doc::Document
                 li.reflection = 0.0;
                 li.shadows = false;
                 li.occlusion = 0.0;
+                li.path_tracing = false;
             }
             l.effects = LayerEffects::default();
             albedo(&mut l.children);
@@ -645,6 +646,7 @@ pub fn aux_documents(doc: &crate::doc::Document) -> Option<[crate::doc::Document
                 l.light.normal_output = true;
                 l.light.shadows = false;
                 l.light.occlusion = 0.0;
+                l.light.path_tracing = false;
             } else if l.kind != LayerKind::Group {
                 l.visible = false;
             }

@@ -65,6 +65,8 @@ pub struct LightPlan {
     pub walls: Option<(f32, [f32; 3])>,
     /// 3D terrain: the fields of the ground (1: the view; each more one ring twice as wide).
     pub rings: u32,
+    /// 3D terrain path tracing: the bounces (0: off; see [`Fields::path`]).
+    pub path: u32,
     /// Whether the layer is lit (else a layer with effects keeps its colors).
     pub shading: bool,
     /// Output the surface normal as a color (n / 2 + ½) instead of shading.
@@ -157,6 +159,7 @@ impl LightPlan {
             height_range: 1.0,
             walls: (l.terrain && l.walls).then_some((l.wall_depth.max(0.0) as f32, l.wall_color)),
             rings: l.ground.clamp(1, 16).ilog2() + 1,
+            path: if l.terrain && l.path_tracing { l.bounces.clamp(1, 8) } else { 0 },
             shading: true,
             normal_output: l.normal_output,
             fx: None,
@@ -484,6 +487,19 @@ impl Rings {
         let (cx, cy) = self.center();
         (cx.min(cy) * 2.0 * RING_BAND).max(2.0)
     }
+}
+
+/// Path tracing: how far (cells) a bounce starts above the surface, along its normal.
+pub const PATH_EPS: f32 = 0.05;
+
+/// A cosine-weighted direction around the unit normal `n` from two random numbers (0..1).
+pub fn cosine_dir(n: [f32; 3], u1: f32, u2: f32) -> [f32; 3] {
+    let r = u1.sqrt();
+    let a = std::f32::consts::TAU * u2;
+    let (x, y, z) = (r * a.cos(), r * a.sin(), (1.0 - u1).max(0.0).sqrt());
+    let t = if n[2].abs() < 0.999 { normalize([-n[1], n[0], 0.0]) } else { [1.0, 0.0, 0.0] };
+    let b = [n[1] * t[2] - n[2] * t[1], n[2] * t[0] - n[0] * t[2], n[0] * t[1] - n[1] * t[0]];
+    normalize([t[0] * x + b[0] * y + n[0] * z, t[1] * x + b[1] * y + n[1] * z, t[2] * x + b[2] * y + n[2] * z])
 }
 
 /// The share of a ring level's width (from its edge) that blends into the next level.
@@ -1087,23 +1103,11 @@ impl Fields {
         let (hx, hy) = match self.trace_terrain(o, d, k, base) {
             None => return [0.0; 4],
             Some(Hit::Surface(p)) => p,
-            Some(Hit::Wall { x, y, z, n }) => {
-                // The edge's color fading to the wall color toward the base; lit by every light
-                // (nothing stands outside the block), without occlusion.
-                let (b, wall) = (base.unwrap_or(0.0), l.walls.map_or([0.0; 3], |w| w.1));
-                let top = k * self.height_at(x, y, p0);
-                let f = ((top - z) / (top - b).max(1e-6)).clamp(0.0, 1.0);
-                let edge = self.color_at(x, y, p0);
-                let color = [0, 1, 2].map(|c| edge[c] + (wall[c] - edge[c]) * f);
-                let mut points = [([0.0f32; 3], 1.0f32); crate::doc::MAX_LIGHTS];
-                for (i, (pos, _)) in l.points.iter().enumerate() {
-                    let (dir, _, fall) = point_dir(*pos, x, y, z, l.reach[i]);
-                    points[i] = (dir, fall);
-                }
-                let seen = [1.0f32; crate::doc::MAX_LIGHTS];
-                return shade_normal(l, [color[0], color[1], color[2], 1.0], n, &seen, 1.0, view, &points[..l.points.len()]);
-            }
+            Some(Hit::Wall { x, y, z, n }) => return self.wall(l, x, y, z, n, view, k, base),
         };
+        if l.path > 0 {
+            return self.path(l, (hx, hy), view, k, base, &mut rng);
+        }
         let h = |dx: f32, dy: f32| self.height_at(hx + dx, hy + dy, p0);
         let gx = (h(1.0, 0.0) - h(-1.0, 0.0)) * 0.5;
         let gy = (h(0.0, -1.0) - h(0.0, 1.0)) * 0.5;
@@ -1114,9 +1118,18 @@ impl Fields {
     /// ambient occlusion, then [`shade`].
     #[allow(clippy::too_many_arguments)]
     fn shade_point(&self, l: &LightPlan, color: [f32; 4], px: f32, py: f32, h0: f32, gx: f32, gy: f32, v: [f32; 3], rng: &mut u32) -> [f32; 4] {
+        let k = l.slope_scale(self.image_height);
+        self.light_at(l, color, [px, py, k * h0], normalize([-k * gx, -k * gy, 1.0]), v, rng, true)
+    }
+
+    /// The light at surface point `p` (x, y and z = k · height) with normal `n`: shadows,
+    /// ambient occlusion (`ao`; else no ambient light at all, path tracing), then
+    /// [`shade_normal`].
+    #[allow(clippy::too_many_arguments)]
+    fn light_at(&self, l: &LightPlan, color: [f32; 4], p: [f32; 3], n: [f32; 3], v: [f32; 3], rng: &mut u32, ao: bool) -> [f32; 4] {
         let hf = self.image_height as f32;
         let k = l.slope_scale(self.image_height);
-        let z0 = k * h0;
+        let [px, py, z0] = p;
         let p0 = [px, py];
         let mut seen = [1.0f32; crate::doc::MAX_LIGHTS];
         let len = l.shadow * hf;
@@ -1136,8 +1149,95 @@ impl Fields {
             points[i].1 *= fall;
         }
         let radius = l.occlusion_radius * hf;
-        let open = if l.occlusion > 0.0 && radius > 0.0 { self.occlusion(p0, z0, k, radius, l.occlusion, rnd(rng), rnd(rng)) } else { 1.0 };
-        shade(l, color, gx, gy, k, &seen, open, v, &points[..l.points.len()])
+        let open = if !ao {
+            0.0
+        } else if l.occlusion > 0.0 && radius > 0.0 {
+            self.occlusion(p0, z0, k, radius, l.occlusion, rnd(rng), rnd(rng))
+        } else {
+            1.0
+        };
+        shade_normal(l, color, n, &seen, open, v, &points[..l.points.len()])
+    }
+
+    /// A terrain wall at (x, y) and height `z` with outward normal `n`, seen from `v`: the
+    /// edge's color fading to the wall color toward the base, lit by every light (nothing
+    /// stands outside the block), without occlusion.
+    #[allow(clippy::too_many_arguments)]
+    fn wall(&self, l: &LightPlan, x: f32, y: f32, z: f32, n: [f32; 3], v: [f32; 3], k: f32, base: Option<f32>) -> [f32; 4] {
+        let p0 = [0.0, 0.0];
+        let (b, wall) = (base.unwrap_or(0.0), l.walls.map_or([0.0; 3], |w| w.1));
+        let top = k * self.height_at(x, y, p0);
+        let f = ((top - z) / (top - b).max(1e-6)).clamp(0.0, 1.0);
+        let edge = self.color_at(x, y, p0);
+        let color = [0, 1, 2].map(|c| edge[c] + (wall[c] - edge[c]) * f);
+        let mut points = [([0.0f32; 3], 1.0f32); crate::doc::MAX_LIGHTS];
+        for (i, (pos, _)) in l.points.iter().enumerate() {
+            let (dir, _, fall) = point_dir(*pos, x, y, z, l.reach[i]);
+            points[i] = (dir, fall);
+        }
+        let seen = [1.0f32; crate::doc::MAX_LIGHTS];
+        shade_normal(l, [color[0], color[1], color[2], 1.0], n, &seen, 1.0, v, &points[..l.points.len()])
+    }
+
+    /// Path tracing a terrain from its surface point `hit` (level-0 cells) seen from `view`
+    /// (y up): at every point the direct light (shadows, no ambient light), then a bounce in a
+    /// cosine-weighted direction; a ray that leaves the terrain sees the sky (times the
+    /// ambient strength), one that meets a wall its light. Every bounce dims the light by the
+    /// surface's color.
+    #[allow(clippy::too_many_arguments)]
+    pub fn path(&self, l: &LightPlan, hit: (f32, f32), view: [f32; 3], k: f32, base: Option<f32>, rng: &mut u32) -> [f32; 4] {
+        let p0 = [0.0, 0.0];
+        let (mut px, mut py) = hit;
+        let mut v = view;
+        let mut beta = [1.0f32; 3];
+        let mut out = [0.0f32; 3];
+        let mut alpha = 1.0;
+        for b in 0..=l.path {
+            let h = |dx: f32, dy: f32| self.height_at(px + dx, py + dy, p0);
+            let gx = (h(1.0, 0.0) - h(-1.0, 0.0)) * 0.5;
+            let gy = (h(0.0, -1.0) - h(0.0, 1.0)) * 0.5;
+            let n = normalize([-k * gx, -k * gy, 1.0]);
+            let color = self.color_at(px, py, p0);
+            if b == 0 {
+                alpha = color[3];
+            }
+            let z0 = k * h(0.0, 0.0);
+            let c = self.light_at(l, color, [px, py, z0], n, v, rng, false);
+            for i in 0..3 {
+                out[i] += beta[i] * c[i];
+            }
+            if b == l.path {
+                break;
+            }
+            for i in 0..3 {
+                beta[i] *= color[i];
+            }
+            // The bounce (y up), and in the field's cells (y down).
+            let w = cosine_dir(n, rnd(rng), rnd(rng));
+            let (wf, nf) = ([w[0], -w[1], w[2]], [n[0], -n[1], n[2]]);
+            let o = [px + nf[0] * PATH_EPS, py + nf[1] * PATH_EPS, z0 + nf[2] * PATH_EPS];
+            match self.trace_terrain(o, wf, k, base) {
+                None => {
+                    let s = l.environment(w);
+                    for i in 0..3 {
+                        out[i] += beta[i] * l.ambient * s[i];
+                    }
+                    break;
+                }
+                Some(Hit::Surface(p)) => {
+                    (px, py) = p;
+                    v = [-w[0], -w[1], -w[2]];
+                }
+                Some(Hit::Wall { x, y, z, n }) => {
+                    let c = self.wall(l, x, y, z, n, [-w[0], -w[1], -w[2]], k, base);
+                    for i in 0..3 {
+                        out[i] += beta[i] * c[i];
+                    }
+                    break;
+                }
+            }
+        }
+        [out[0], out[1], out[2], alpha]
     }
 
     /// The layer's alpha blurred with a Gaussian of `sigma` pixels around (x, y), estimated from

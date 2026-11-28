@@ -27,6 +27,8 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
   keyframes and recorded flights include it.
 - Terrain *Ground size* (×1 to ×16): the ground reaches beyond the view in rings that get
   coarser outward, so the horizon can be far away while the middle keeps its detail.
+- Terrain path tracing (*Path tracing*, *Bounces*): light bounces between the surfaces and
+  the sky lights them, for the denoiser.
 
 ### Changed
 

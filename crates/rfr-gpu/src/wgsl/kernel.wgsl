@@ -93,7 +93,8 @@ struct Uni {
     fnear: vec4<i32>,
     ffar: vec4<i32>,
     fstep: vec4<u32>,
-    // 3D terrain walls: the color at the base (linear RGB), the base (k · height); walls on (x)
+    // 3D terrain walls: the color at the base (linear RGB), the base (k · height); walls on (x),
+    // path tracing bounces (y, 0: off)
     lwall: vec4<f32>,
     lwalli: vec4<u32>,
     // 3D terrain camera: the height of the point it orbits above the middle of the ground

@@ -609,10 +609,148 @@ fn l_occlusion(px: f32, py: f32, z0: f32, k: f32, radius: f32, strength: f32, tu
     return clamp(1.0 - strength * sum / 8.0, 0.0, 1.0);
 }
 
-// rfr_core::render::light::shade (normal from the slopes; shade.wgsl)
-fn l_shade(color: vec4<f32>, gx: f32, gy: f32, seen: array<f32, 4>, open: f32, v: vec3<f32>, pts: array<vec4<f32>, 4>) -> vec4<f32> {
+// rfr_core::render::light::Fields::light_at: shadows, ambient occlusion (`ao`; else no ambient
+// light, path tracing), then the light model, at point p (x, y, z = k · height) with normal n.
+fn l_light_at(color: vec4<f32>, p: vec3<f32>, n: vec3<f32>, view: vec3<f32>, rng: ptr<function, u32>, ao: bool) -> vec4<f32> {
     let k = U.light.y;
-    return l_shade_n(color, normalize(vec3<f32>(-k * gx, -k * gy, 1.0)), seen, open, v, pts);
+    let px = p.x;
+    let py = p.y;
+    let z0 = p.z;
+    var seen = array<f32, 4>(1.0, 1.0, 1.0, 1.0);
+    if U.lshadow.x > 0.0 {
+        for (var i = 0u; i < U.lighti.y; i = i + 1u) {
+            seen[i] = l_shadow(U.ldir[i].xyz, px, py, z0, k, U.lshadow.x, U.lshadow.y, l_rnd(rng));
+        }
+    }
+    // Point lights: the direction from here; shadows reach no farther than the light
+    // (light::point_dir).
+    var pts = array<vec4<f32>, 4>();
+    for (var i = 0u; i < u32(U.lenv.w); i = i + 1u) {
+        let d = vec3<f32>(U.lpos[i].x - px, py - U.lpos[i].y, U.lpos[i].z - z0);
+        let dir = normalize(d);
+        var sn = 1.0;
+        if U.lshadow.x > 0.0 {
+            sn = l_shadow(dir, px, py, z0, k, min(U.lshadow.x, length(d.xy)), U.lshadow.y, l_rnd(rng));
+        }
+        // light::falloff
+        let reach = U.lpos[i].w;
+        if reach > 0.0 {
+            sn = sn / (1.0 + dot(d, d) / (reach * reach));
+        }
+        pts[i] = vec4<f32>(dir, sn);
+    }
+    var open = 0.0;
+    if ao {
+        open = 1.0;
+        if U.lshadow.z > 0.0 && U.lshadow.w > 0.0 {
+            let turn = l_rnd(rng);
+            let jitter = l_rnd(rng);
+            open = l_occlusion(px, py, z0, k, U.lshadow.w, U.lshadow.z, turn, jitter);
+        }
+    }
+    return l_shade_n(color, n, seen, open, view, pts);
+}
+
+// rfr_core::render::light::Fields::wall: a terrain wall at (x, y) and height z with outward
+// normal n, seen from `view`.
+fn l_wall(x: f32, y: f32, z: f32, n: vec3<f32>, view: vec3<f32>) -> vec4<f32> {
+    let k = U.light.y;
+    let top = k * l_height_at(x, y);
+    let f = clamp((top - z) / max(top - U.lwall.w, 1e-6), 0.0, 1.0);
+    let edge = l_color_at(x, y);
+    let wc = vec4<f32>(mix(edge.xyz, U.lwall.xyz, f), 1.0);
+    var wpts = array<vec4<f32>, 4>();
+    for (var i = 0u; i < u32(U.lenv.w); i = i + 1u) {
+        let dl = vec3<f32>(U.lpos[i].x - x, y - U.lpos[i].y, U.lpos[i].z - z);
+        var sn = 1.0;
+        let reach = U.lpos[i].w;
+        if reach > 0.0 {
+            sn = sn / (1.0 + dot(dl, dl) / (reach * reach));
+        }
+        wpts[i] = vec4<f32>(normalize(dl), sn);
+    }
+    return l_shade_n(wc, n, array<f32, 4>(1.0, 1.0, 1.0, 1.0), 1.0, view, wpts);
+}
+
+// The outward normal of wall side `side` (l_trace) and the height where ray o + d·t meets it.
+fn l_wall_hit(hit: vec3<f32>, o: vec3<f32>, d: vec3<f32>) -> vec4<f32> {
+    let side = u32(hit.z - 2.0);
+    var t = (hit.y - o.y) / d.y;
+    if side < 2u {
+        t = (hit.x - o.x) / d.x;
+    }
+    var n = vec3<f32>(-1.0, 0.0, 0.0);
+    if side == 1u {
+        n = vec3<f32>(1.0, 0.0, 0.0);
+    } else if side == 2u {
+        n = vec3<f32>(0.0, 1.0, 0.0);
+    } else if side == 3u {
+        n = vec3<f32>(0.0, -1.0, 0.0);
+    }
+    return vec4<f32>(n, o.z + d.z * t);
+}
+
+// rfr_core::render::light::cosine_dir: a cosine-weighted direction around the unit normal n.
+fn l_cosine(n: vec3<f32>, u1: f32, u2: f32) -> vec3<f32> {
+    let r = sqrt(u1);
+    let a = 6.283185307179586 * u2;
+    let x = r * cos(a);
+    let y = r * sin(a);
+    let z = sqrt(max(1.0 - u1, 0.0));
+    var t = vec3<f32>(1.0, 0.0, 0.0);
+    if abs(n.z) < 0.999 {
+        t = normalize(vec3<f32>(-n.y, n.x, 0.0));
+    }
+    let b = vec3<f32>(n.y * t.z - n.z * t.y, n.z * t.x - n.x * t.z, n.x * t.y - n.y * t.x);
+    return normalize(t * x + b * y + n * z);
+}
+
+// rfr_core::render::light::Fields::path: path tracing a terrain from its surface point `hit`
+// (level-0 cells) seen from `view` (y up).
+fn l_path(hit: vec2<f32>, view0: vec3<f32>, rng: ptr<function, u32>) -> vec4<f32> {
+    let k = U.light.y;
+    var p = hit;
+    var v = view0;
+    var beta = vec3<f32>(1.0);
+    var out = vec3<f32>(0.0);
+    var alpha = 1.0;
+    let bounces = U.lwalli.y;
+    for (var b = 0u; b <= bounces; b = b + 1u) {
+        let gx = (l_height_at(p.x + 1.0, p.y) - l_height_at(p.x - 1.0, p.y)) * 0.5;
+        let gy = (l_height_at(p.x, p.y - 1.0) - l_height_at(p.x, p.y + 1.0)) * 0.5;
+        let n = normalize(vec3<f32>(-k * gx, -k * gy, 1.0));
+        let color = l_color_at(p.x, p.y);
+        if b == 0u {
+            alpha = color.w;
+        }
+        let z0 = k * l_height_at(p.x, p.y);
+        let c = l_light_at(color, vec3<f32>(p, z0), n, v, rng, false);
+        out = out + beta * c.xyz;
+        if b == bounces {
+            break;
+        }
+        beta = beta * color.xyz;
+        // The bounce (y up), and in the field's cells (y down).
+        let u1 = l_rnd(rng);
+        let u2 = l_rnd(rng);
+        let w = l_cosine(n, u1, u2);
+        let wf = vec3<f32>(w.x, -w.y, w.z);
+        let nf = vec3<f32>(n.x, -n.y, n.z);
+        let o = vec3<f32>(p, z0) + nf * 0.05;
+        let h = l_trace(o, wf, k);
+        if h.z == 0.0 {
+            out = out + beta * U.light.x * l_environment(w);
+            break;
+        }
+        if h.z >= 2.0 {
+            let wh = l_wall_hit(h, o, wf);
+            out = out + beta * l_wall(h.x, h.y, wh.w, wh.xyz, -w).xyz;
+            break;
+        }
+        p = h.xy;
+        v = -w;
+    }
+    return vec4<f32>(out, alpha);
 }
 
 @compute @workgroup_size(8, 8)
@@ -661,40 +799,17 @@ fn lit(@builtin(global_invocation_id) gid: vec3<u32>) {
             l_blend(gid, x, vec4<f32>(0.0));
             return;
         }
+        let d = ray[1];
+        view = vec3<f32>(-d.x, d.y, -d.z);
         if hit.z >= 2.0 {
-            // A wall (Fields::shade): the edge's color fading to the wall color toward the
-            // base, lit by every light, without occlusion.
-            let side = u32(hit.z - 2.0);
-            let d = ray[1];
-            let o = ray[0];
-            var t = (hit.y - o.y) / d.y;
-            if side < 2u {
-                t = (hit.x - o.x) / d.x;
-            }
-            let z = o.z + d.z * t;
-            var n = vec3<f32>(-1.0, 0.0, 0.0);
-            if side == 1u {
-                n = vec3<f32>(1.0, 0.0, 0.0);
-            } else if side == 2u {
-                n = vec3<f32>(0.0, 1.0, 0.0);
-            } else if side == 3u {
-                n = vec3<f32>(0.0, -1.0, 0.0);
-            }
-            let top = k * l_height_at(hit.x, hit.y);
-            let f = clamp((top - z) / max(top - U.lwall.w, 1e-6), 0.0, 1.0);
-            let edge = l_color_at(hit.x, hit.y);
-            let wc = vec4<f32>(mix(edge.xyz, U.lwall.xyz, f), 1.0);
-            var wpts = array<vec4<f32>, 4>();
-            for (var i = 0u; i < u32(U.lenv.w); i = i + 1u) {
-                let dl = vec3<f32>(U.lpos[i].x - hit.x, hit.y - U.lpos[i].y, U.lpos[i].z - z);
-                var sn = 1.0;
-                let reach = U.lpos[i].w;
-                if reach > 0.0 {
-                    sn = sn / (1.0 + dot(dl, dl) / (reach * reach));
-                }
-                wpts[i] = vec4<f32>(normalize(dl), sn);
-            }
-            l_blend(gid, x, l_shade_n(wc, n, array<f32, 4>(1.0, 1.0, 1.0, 1.0), 1.0, vec3<f32>(-d.x, d.y, -d.z), wpts));
+            // A wall (Fields::wall).
+            let wh = l_wall_hit(hit, ray[0], d);
+            l_blend(gid, x, l_wall(hit.x, hit.y, wh.w, wh.xyz, view));
+            return;
+        }
+        // Path tracing (Fields::path).
+        if U.lwalli.y > 0u {
+            l_blend(gid, x, l_path(hit.xy, view, &rng));
             return;
         }
         px = hit.x;
@@ -703,45 +818,12 @@ fn lit(@builtin(global_invocation_id) gid: vec3<u32>) {
         h0 = l_height_at(px, py);
         gx = (l_height_at(px + 1.0, py) - l_height_at(px - 1.0, py)) * 0.5;
         gy = (l_height_at(px, py - 1.0) - l_height_at(px, py + 1.0)) * 0.5;
-        let d = ray[1];
-        view = vec3<f32>(-d.x, d.y, -d.z);
     }
     // A lit layer is shaded (shadows and occlusion with the same random numbers as the CPU);
     // a layer with effects only keeps its colors.
     var col = color;
     if U.fx2.z > 0.5 || U.lighti.w != 0u {
-        // Shadows and ambient occlusion (the same random numbers as the CPU).
-        let z0 = k * h0;
-        var seen = array<f32, 4>(1.0, 1.0, 1.0, 1.0);
-        if U.lshadow.x > 0.0 {
-            for (var i = 0u; i < U.lighti.y; i = i + 1u) {
-                seen[i] = l_shadow(U.ldir[i].xyz, px, py, z0, k, U.lshadow.x, U.lshadow.y, l_rnd(&rng));
-            }
-        }
-        // Point lights: the direction from here; shadows reach no farther than the light
-        // (light::point_dir).
-        var pts = array<vec4<f32>, 4>();
-        for (var i = 0u; i < u32(U.lenv.w); i = i + 1u) {
-            let d = vec3<f32>(U.lpos[i].x - px, py - U.lpos[i].y, U.lpos[i].z - z0);
-            let dir = normalize(d);
-            var sn = 1.0;
-            if U.lshadow.x > 0.0 {
-                sn = l_shadow(dir, px, py, z0, k, min(U.lshadow.x, length(d.xy)), U.lshadow.y, l_rnd(&rng));
-            }
-            // light::falloff
-            let reach = U.lpos[i].w;
-            if reach > 0.0 {
-                sn = sn / (1.0 + dot(d, d) / (reach * reach));
-            }
-            pts[i] = vec4<f32>(dir, sn);
-        }
-        var open = 1.0;
-        if U.lshadow.z > 0.0 && U.lshadow.w > 0.0 {
-            let turn = l_rnd(&rng);
-            let jitter = l_rnd(&rng);
-            open = l_occlusion(px, py, z0, k, U.lshadow.w, U.lshadow.z, turn, jitter);
-        }
-        col = l_shade(color, gx, gy, seen, open, view, pts);
+        col = l_light_at(color, vec3<f32>(px, py, k * h0), normalize(vec3<f32>(-k * gx, -k * gy, 1.0)), view, &rng, true);
     }
     if U.lighti.w == 0u && U.fx2.w > 0.5 {
         col = l_effects(col, px, py, de, &rng);

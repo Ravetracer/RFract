@@ -1173,6 +1173,11 @@ pub struct Lighting {
     /// 3D terrain: the ground's size in views (1, 2, 4, 8 or 16): beyond the view it goes on in
     /// rings, each twice as wide and half as detailed as the one inside.
     pub ground: u32,
+    /// 3D terrain: path tracing: light bounces between the surfaces (`bounces` of them) and
+    /// the sky lights them, instead of the ambient light and occlusion; noisy, for the
+    /// denoiser.
+    pub path_tracing: bool,
+    pub bounces: u32,
     /// Renders the surface normals as colors instead of shading (the denoiser's normal
     /// image, `render::post::aux_documents`); never saved.
     #[serde(skip)]
@@ -1225,6 +1230,8 @@ impl Default for Lighting {
             camera: Camera::default(),
             walls: false,
             ground: 1,
+            path_tracing: false,
+            bounces: 2,
             wall_depth: 0.15,
             wall_color: [0.08, 0.07, 0.06],
             normal_output: false,

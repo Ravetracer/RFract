@@ -386,6 +386,8 @@ fn field_uni(plan: &Plan, lp: &LayerPlan) -> Uni {
         Some(((_, c), base)) => ([c[0], c[1], c[2], base], [1, 0, 0, 0]),
         None => ([0.0; 4], [0; 4]),
     };
+    // Path tracing: the bounces (0: off).
+    let lwalli = [lwalli[0], lp.light.as_ref().map_or(0, |l| l.path), 0, 0];
     let lift = lp.light.as_ref().map_or(0.0, |l| l.camera_target * g.far.height as f32);
     let rings = (1 + g.rings.len()) as f32;
     Uni {
