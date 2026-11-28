@@ -800,18 +800,21 @@ fn gpu_windows_are_the_whole_image_there() {
         plan
     };
     let (w, h, s) = (160u32, 90u32, 3);
-    for (name, mut doc) in [("layered", layered()), ("distance", de), ("object", object), ("lit", lit)] {
+    let mut terrain = lit.clone();
+    terrain.layers[0].light.terrain = true;
+    terrain.layers[0].effects = Default::default();
+    for (name, mut doc) in [("layered", layered()), ("distance", de), ("object", object), ("lit", lit), ("terrain", terrain)] {
         doc.image.adaptive = 0.0;
         let plan = small_fields(Plan::sized(&doc, w, h).unwrap());
         let whole = rfr_core::render::cpu::rgba8(&rfr_gpu::render_blocking(ctx.clone(), &plan, s, |_| true).unwrap());
-        if name == "lit" {
-            // The near and far fields on the GPU as on the CPU.
+        if name == "lit" || name == "terrain" {
+            // The near and far fields (a terrain's coarser field) on the GPU as on the CPU.
             let mut r = rfr_core::render::cpu::CpuRenderer::new(plan.clone());
             for _ in 0..s {
                 r.pass();
             }
             let d = mean_diff(&r.rgba8(), &whole);
-            assert!(d < 2.0, "lit with near and far fields: GPU vs CPU {d:.2}");
+            assert!(d < 2.0, "{name} with small fields: GPU vs CPU {d:.2}");
         }
         for win in [[0u32, 0, 64, 40], [57, 23, 103, 67], [159, 89, 1, 1]] {
             let plan = plan.clone().with_window(win);

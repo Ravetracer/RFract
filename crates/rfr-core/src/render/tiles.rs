@@ -3,9 +3,10 @@
 //! Tiled renders for posters larger than the graphics card holds: every tile is a window of
 //! the whole image (`Plan::with_window`), so its pixels are exactly the pixels of the whole
 //! image there: layers that color every pixel on their own (formulas, colorings,
-//! transformations, masks, groups), 3D objects (rays of the whole image's camera) and lit layers
-//! and layer effects (fields around the window, see `light::Grids`). 3D terrains and density
-//! layers depend on the whole image and are not tiled yet.
+//! transformations, masks, groups), 3D objects (rays of the whole image's camera), lit layers
+//! and layer effects (fields around the window, see `light::Grids`) and 3D terrains (the field
+//! of the whole view, rays of its camera). Density layers depend on the whole image and are
+//! not tiled yet.
 
 use crate::doc::{Document, Layer, LayerKind};
 
@@ -28,7 +29,6 @@ pub fn can_tile(doc: &Document) -> Result<(), String> {
             let why = match l.kind {
                 LayerKind::Density => Some("is a density layer"),
                 LayerKind::Object => None,
-                _ if l.light.enabled && l.light.terrain => Some("is a 3D terrain"),
                 _ => None,
             };
             if let Some(why) = why {
@@ -101,26 +101,34 @@ mod tests {
 
     #[test]
     fn lit_windows_are_the_whole_image_there() {
-        let doc = lit_doc();
+        // A flat lit layer (near and far fields) and a 3D terrain (a field coarser than the
+        // image).
+        let flat = lit_doc();
+        let mut terrain = lit_doc();
+        terrain.layers[0].light.terrain = true;
+        terrain.layers[0].effects = Default::default();
         let (w, h) = (90u32, 50u32);
-        let plan = lit_plan(&doc, w, h);
-        let g = plan.layers()[0].light.as_ref().unwrap().grids(w, h, plan.window);
-        assert!(g.far.step > 1 && g.near.is_some(), "{g:?}");
-        let render = |plan: Plan| {
-            let mut r = crate::render::cpu::CpuRenderer::new(plan);
-            for _ in 0..2 {
-                r.pass();
-            }
-            r.rgba8()
-        };
-        let whole = render(plan.clone());
-        for win in [[0u32, 0, 40, 20], [37, 11, 53, 39]] {
-            let part = render(plan.clone().with_window(win));
-            for j in 0..win[3] {
-                let a = ((win[1] + j) * w + win[0]) as usize * 4;
-                let b = (j * win[2]) as usize * 4;
-                let n = win[2] as usize * 4;
-                assert_eq!(&whole[a..a + n], &part[b..b + n], "window {win:?}, row {j}");
+        for (name, doc) in [("flat", flat), ("terrain", terrain)] {
+            let plan = lit_plan(&doc, w, h);
+            let g = plan.layers()[0].light.as_ref().unwrap().grids(w, h, plan.window);
+            assert!(g.far.step > 1, "{name}: {g:?}");
+            let render = |plan: Plan| {
+                let mut r = crate::render::cpu::CpuRenderer::new(plan);
+                for _ in 0..2 {
+                    r.pass();
+                }
+                r.rgba8()
+            };
+            let whole = render(plan.clone());
+            assert!(whole.chunks(4).filter(|p| p[3] > 0).count() > (w * h / 4) as usize, "{name}: the layer shows");
+            for win in [[0u32, 0, 40, 20], [37, 11, 53, 39]] {
+                let part = render(plan.clone().with_window(win));
+                for j in 0..win[3] {
+                    let a = ((win[1] + j) * w + win[0]) as usize * 4;
+                    let b = (j * win[2]) as usize * 4;
+                    let n = win[2] as usize * 4;
+                    assert_eq!(&whole[a..a + n], &part[b..b + n], "{name}: window {win:?}, row {j}");
+                }
             }
         }
     }
@@ -161,6 +169,8 @@ mod tests {
         doc.layers[0].light.enabled = true;
         assert!(can_tile(&doc).is_ok());
         doc.layers[0].light.terrain = true;
-        assert!(can_tile(&doc).unwrap_err().contains("3D terrain"));
+        assert!(can_tile(&doc).is_ok());
+        doc.layers[0].kind = LayerKind::Density;
+        assert!(can_tile(&doc).unwrap_err().contains("density"));
     }
 }

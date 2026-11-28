@@ -203,9 +203,10 @@ impl LightPlan {
                 .filter_map(|s| {
                     let (x, y) = crate::flare::pixel_of(doc, &s.position, w, h)?;
                     let k = s.intensity as f32;
-                    // Field cells: pixel centers (x + ½).
-                    let pos = [(x - 0.5) as f32, (y - 0.5) as f32, (s.height * h as f64) as f32];
-                    Some(((pos, s.color.map(|c| c * k)), (s.reach.max(0.0) * h as f64) as f32))
+                    // Field cells: pixel centers (x + ½); a terrain's cells span `step` pixels.
+                    let c = if self.camera.is_some() { self.terrain_step(w, h) as f64 } else { 1.0 };
+                    let pos = [((x - 0.5) / c) as f32, ((y - 0.5) / c) as f32, (s.height * h as f64 / c) as f32];
+                    Some(((pos, s.color.map(|c| c * k)), (s.reach.max(0.0) * h as f64 / c) as f32))
                 })
                 .take(crate::doc::MAX_LIGHTS)
                 .collect()
@@ -472,11 +473,18 @@ impl LightPlan {
         r
     }
 
+    /// A 3D terrain's field: image pixels per cell (more than one when the image's longest
+    /// side exceeds `far_side`: posters show the ground of a `far_side` field).
+    pub fn terrain_step(&self, w: u32, h: u32) -> u32 {
+        w.max(h).div_ceil(self.far_side.max(16)).max(1)
+    }
+
     /// The fields of `window` of a `w` × `h` image (see [`Grids`]).
     pub fn grids(&self, w: u32, h: u32, window: super::Window) -> Grids {
-        let whole = Grid { x: window.x as i32, y: window.y as i32, width: window.width, height: window.height, step: 1 };
         if self.camera.is_some() {
-            return Grids { near: None, far: whole };
+            // A terrain: the ground of the whole view, whatever the window shows.
+            let s = self.terrain_step(w, h);
+            return Grids { near: None, far: Grid { x: 0, y: 0, width: w.div_ceil(s), height: h.div_ceil(s), step: s } };
         }
         let [l, t, r, b] = self.reach(w, h).map(|v| v.ceil() as u32 + 2);
         let (fw, fh) = (w + l + r, h + t + b);
@@ -524,11 +532,18 @@ pub fn mip_size(width: u32, height: u32, level: usize) -> (u32, u32) {
 /// `height`: origin and unit direction in field units (pixels, y down, z up). The camera
 /// orbits the field's middle at height `zc`.
 pub fn camera_ray(cam: [f32; 4], width: u32, height: u32, zc: f32, x: f32, y: f32) -> ([f32; 3], [f32; 3]) {
-    let (w, h) = (width as f32, height as f32);
+    camera_ray_in(cam, (width, height), (width, height), zc, x, y)
+}
+
+/// [`camera_ray`] for a field of `field` cells seen in an image of `image` pixels: the ray
+/// through image point (x, y), in field cells.
+pub fn camera_ray_in(cam: [f32; 4], field: (u32, u32), image: (u32, u32), zc: f32, x: f32, y: f32) -> ([f32; 3], [f32; 3]) {
+    let (fw, fh) = (field.0 as f32, field.1 as f32);
+    let (w, h) = (image.0 as f32, image.1 as f32);
     let [yaw, pitch, dist, tan] = cam;
-    let target = [(w - 1.0) * 0.5, (h - 1.0) * 0.5, zc];
+    let target = [(fw - 1.0) * 0.5, (fh - 1.0) * 0.5, zc];
     let back = [yaw.sin() * pitch.cos(), yaw.cos() * pitch.cos(), pitch.sin()];
-    let o = [target[0] + back[0] * dist * h, target[1] + back[1] * dist * h, target[2] + back[2] * dist * h];
+    let o = [target[0] + back[0] * dist * fh, target[1] + back[1] * dist * fh, target[2] + back[2] * dist * fh];
     let f = [-back[0], -back[1], -back[2]];
     // Right on the screen (y down: looking north, right is +x), and up (z rising).
     let r = normalize([-f[1], f[0], 0.0]);
@@ -736,8 +751,13 @@ impl Field {
 pub struct Fields {
     pub near: Option<Field>,
     pub far: Field,
-    /// The image's height: lengths are shares of it.
+    /// The image's height: lengths are shares of it (a terrain: its field's height, lengths
+    /// in cells).
     pub image_height: u32,
+    /// The whole image's size (a terrain's camera).
+    pub image: (u32, u32),
+    /// Lookups are in the far field's cells (a terrain), not in image pixels.
+    pub cells: bool,
     /// Lookups this close to the shaded pixel read the near field.
     pub near_margin: u32,
 }
@@ -746,6 +766,10 @@ impl Fields {
     /// The field a lookup at image point (x, y) reads when shading pixel `p0`, and the point
     /// in its cells.
     fn pick(&self, x: f32, y: f32, p0: [f32; 2]) -> (&Field, f32, f32) {
+        // A terrain is shaded in its field's cells.
+        if self.cells {
+            return (&self.far, x, y);
+        }
         if let Some(n) = &self.near
             && (x - p0[0]).abs().max((y - p0[1]).abs()) <= self.near_margin as f32
         {
@@ -789,10 +813,10 @@ impl Fields {
         };
         let t = &self.far;
         let (u, v, _) = super::sample_offset(x, y, s);
-        let (o, d) = camera_ray(
+        let (o, d) = camera_ray_in(
             cam,
-            t.width,
-            t.height,
+            (t.width, t.height),
+            self.image,
             l.slope_scale(h_img) * t.height_at((t.width as f32 - 1.0) * 0.5, (t.height as f32 - 1.0) * 0.5),
             x as f32 + u as f32,
             y as f32 + v as f32,
@@ -955,7 +979,14 @@ mod tests {
     /// One full-resolution field over a `w` × `h` image.
     fn fields(w: u32, h: u32, data: Vec<[f32; 6]>) -> Fields {
         let grid = Grid { x: 0, y: 0, width: w, height: h, step: 1 };
-        Fields { near: None, far: Field { grid, width: w, height: h, data, mips: Vec::new() }, image_height: h, near_margin: NEAR_MARGIN }
+        Fields {
+            near: None,
+            far: Field { grid, width: w, height: h, data, mips: Vec::new() },
+            image_height: h,
+            image: (w, h),
+            cells: false,
+            near_margin: NEAR_MARGIN,
+        }
     }
 
     fn plan(model: SpecularModel) -> LightPlan {

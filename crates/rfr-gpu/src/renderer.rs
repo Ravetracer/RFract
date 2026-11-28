@@ -304,7 +304,7 @@ fn layer_uni(plan: &Plan, lp: &LayerPlan) -> Uni {
         densn: [0; 4],
         densx: [0; 4],
         densb: [0.0; 4],
-        light: light_of(lp).map_or([0.0; 4], |l| [l.ambient, l.slope_scale(f.height), l.specular, l.roughness]),
+        light: light_of(lp).map_or([0.0; 4], |l| [l.ambient, l.slope_scale(lit_height(plan, lp)), l.specular, l.roughness]),
         lighti: light_of(lp).map_or([0; 4], |l| {
             [l.source.index(), l.lights.len() as u32, (l.model == rfr_core::doc::SpecularModel::Ggx) as u32, l.camera.is_some() as u32]
         }),
@@ -312,7 +312,7 @@ fn layer_uni(plan: &Plan, lp: &LayerPlan) -> Uni {
         lrad: light_rows(lp, |(_, r)| *r),
         // Lit layers: lengths in pixels; 3D objects: shares of the bounding radius.
         lshadow: light_of(lp).map_or([0.0; 4], |l| {
-            let h = if lp.object.is_some() { 1.0 } else { f.height as f32 };
+            let h = if lp.object.is_some() { 1.0 } else { lit_height(plan, lp) as f32 };
             [l.shadow * h, l.softness, l.occlusion, l.occlusion_radius * h]
         }),
         // The environment image follows the layer's image parameters.
@@ -361,6 +361,14 @@ fn layer_uni(plan: &Plan, lp: &LayerPlan) -> Uni {
 /// The fields of a lit layer (`rfr_core::render::light::Grids`).
 fn grids(plan: &Plan, lp: &LayerPlan) -> Option<rfr_core::render::light::Grids> {
     lp.light.as_ref().map(|l| l.grids(plan.frame.width, plan.frame.height, plan.window))
+}
+
+/// The height lit layers measure lengths in: the image's pixels, a 3D terrain's field cells.
+fn lit_height(plan: &Plan, lp: &LayerPlan) -> u32 {
+    match grids(plan, lp) {
+        Some(g) if lp.light.as_ref().is_some_and(|l| l.camera.is_some()) => g.far.height,
+        _ => plan.frame.height,
+    }
 }
 
 /// A lit layer's field uniforms (kernel.wgsl `fnear`, `ffar`, `fstep`); the rest zero.

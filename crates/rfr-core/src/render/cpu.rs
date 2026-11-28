@@ -515,6 +515,9 @@ impl CpuRenderer {
             let (u, v, turn) = if l.camera.is_some() { (0.5, 0.5, 0.0) } else { (u, v, turn) };
             let plan = &self.plan;
             let proto = k.frames();
+            let grids = l.grids(w, h, plan.window);
+            // A terrain measures in its field's cells.
+            let lh = if l.camera.is_some() { grids.far.height } else { h };
             let field = |g: light::Grid| {
                 let mut data = vec![[0.0f32; 6]; g.cells()];
                 data.par_chunks_mut(g.width as usize).enumerate().for_each_init(
@@ -532,10 +535,16 @@ impl CpuRenderer {
                         }
                     },
                 );
-                light::Field::new(l, g, h, data)
+                light::Field::new(l, g, lh, data)
             };
-            let grids = l.grids(w, h, plan.window);
-            fields.push(Some(light::Fields { near: grids.near.map(&field), far: field(grids.far), image_height: h, near_margin: l.near_margin }));
+            fields.push(Some(light::Fields {
+                near: grids.near.map(&field),
+                far: field(grids.far),
+                image_height: lh,
+                image: (w, h),
+                cells: l.camera.is_some(),
+                near_margin: l.near_margin,
+            }));
         }
         self.fields = fields;
     }

@@ -27,8 +27,11 @@ fn l_far(x: f32, y: f32) -> bool {
     return U.fnear.z == 0 || max(abs(x - lp0.x), abs(y - lp0.y)) > f32(U.fstep.y);
 }
 
-// A point in the cells of the near or far grid.
+// A point in the cells of the near or far grid (a terrain is shaded in its cells).
 fn l_local(x: f32, y: f32, far: bool) -> vec2<f32> {
+    if U.lighti.w != 0u {
+        return vec2<f32>(x, y);
+    }
     if far {
         return vec2<f32>((x - f32(U.ffar.x)) / f32(U.fstep.x), (y - f32(U.ffar.y)) / f32(U.fstep.x));
     }
@@ -199,17 +202,20 @@ fn lmip(@builtin(global_invocation_id) gid: vec3<u32>) {
     field[m / 4u][m % 4u] = bitcast<u32>(v);
 }
 
-// rfr_core::render::light::camera_ray: origin and direction (field pixels, y down, z up).
+// rfr_core::render::light::camera_ray_in: origin and direction (field cells, y down, z up)
+// through image point (x, y) (whole-image pixels).
 fn l_camera_ray(zc: f32, x: f32, y: f32) -> array<vec3<f32>, 2> {
-    let w = f32(U.ffar.z);
-    let h = f32(U.ffar.w);
+    let fw = f32(U.ffar.z);
+    let fh = f32(U.ffar.w);
+    let w = f32(U.win.z);
+    let h = f32(U.win.w);
     let yaw = U.lcam.x;
     let pitch = U.lcam.y;
     let dist = U.lcam.z;
     let tn = U.lcam.w;
-    let target_ = vec3<f32>((w - 1.0) * 0.5, (h - 1.0) * 0.5, zc);
+    let target_ = vec3<f32>((fw - 1.0) * 0.5, (fh - 1.0) * 0.5, zc);
     let back = vec3<f32>(sin(yaw) * cos(pitch), cos(yaw) * cos(pitch), sin(pitch));
-    let o = target_ + back * dist * h;
+    let o = target_ + back * dist * fh;
     let f = -back;
     let r = normalize(vec3<f32>(-f.y, f.x, 0.0));
     let u = cross(f, r);
@@ -411,14 +417,14 @@ fn lit(@builtin(global_invocation_id) gid: vec3<u32>) {
         gy = (l_height_at(px, py - 1.0) - l_height_at(px, py + 1.0)) * 0.5;
         h0 = bitcast<f32>(c.z);
     } else {
-        // 3D terrain (a whole image): the camera ray through the pixel's sample position
-        // (render::sample_offset).
-        let ha = hash(x ^ hash(y + 0x68E31DA4u));
+        // 3D terrain: the camera ray through the pixel's sample position
+        // (render::sample_offset), the field the whole view's ground.
+        let ha = hash(u32(xi) ^ hash(u32(yi) + 0x68E31DA4u));
         let hb = hash(ha);
         let ju = f32(ha + U.size.z * 0xC13FA9A9u) / 4294967296.0;
         let jv = f32(hb + U.size.z * 0x91E10DA6u) / 4294967296.0;
         let zc = k * l_height_at((f32(U.ffar.z) - 1.0) * 0.5, (f32(U.ffar.w) - 1.0) * 0.5);
-        let ray = l_camera_ray(zc, f32(x) + ju, f32(y) + jv);
+        let ray = l_camera_ray(zc, f32(xi) + ju, f32(yi) + jv);
         let hit = l_trace(ray[0], ray[1], k);
         if hit.z == 0.0 {
             l_blend(gid, x, vec4<f32>(0.0));

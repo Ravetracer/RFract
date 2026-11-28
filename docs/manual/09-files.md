@@ -68,10 +68,12 @@ the denoiser works tile by tile with an overlap). Bloom, streaks, god rays and l
 come from a smaller render of the whole view (3840 pixels on the long side), so they look as
 in an image of that size.
 
-Formulas with their colorings, transformations, masks, groups, 3D objects, lit layers and
-layer effects all tile (a lit layer's heights are computed around each tile as far as its
-shadows and effects reach). 3D terrains and density layers depend on the whole image; a poster
-with one of them stops with a message that names the layer (render it at 8K or smaller). The command line (`rfr-cli render -W 20000 -H 11250 …`)
+Formulas with their colorings, transformations, masks, groups, 3D objects, lit layers, layer
+effects and 3D terrains all tile (a lit layer's heights are computed around each tile as far as
+its shadows and effects reach; a terrain's ground is the whole view, at most 4096 cells on its
+long side, so a poster shows the ground of a 4K render in finer pixels). Density layers depend
+on the whole image; a poster with one stops with a message that names the layer (render it at
+8K or smaller). The command line (`rfr-cli render -W 20000 -H 11250 …`)
 and the render queue make posters the same way.
 
 ## Command line

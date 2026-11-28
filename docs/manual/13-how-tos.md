@@ -33,8 +33,8 @@ renders with `rfr-cli animate zoom.rfr -o zoom.mp4`.
    time; the export window shows the tiles. A 20000 × 11250 poster with 4 samples takes about
    a minute on a laptop graphics card.
 
-Posters in tiles work with every kind of layer except 3D terrains and density layers, which
-stop with a message (render those at 8K or smaller). See
+Posters in tiles work with every kind of layer except density layers, which stop with a
+message (render those at 8K or smaller). See
 *Files › Posters*.
 
 ## A landscape fly-over

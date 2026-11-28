@@ -62,7 +62,9 @@ Open points of the earlier stages (their notes below stay for the details).
         window when the far one is coarse; lookups within `NEAR_MARGIN` of the pixel read the
         near one), so windows shade exactly like the whole image; shadows from beyond the
         border.
-  - [ ] Part 3: terrains (the field of the whole view, the camera's window).
+  - [x] Part 3: terrains: the field of the whole view (step `terrain_step`, at most
+        `far_side` cells on the long side, lookups in cells), camera rays of whole-image pixels
+        (`camera_ray_in`); lengths in field cells.
   - [ ] Part 4: density layers (counts of the window, normalization of the whole image).
 - [ ] Terrain: larger than the view, walls down to a base, optional path tracing into OIDN.
 - [ ] 3D objects: bicomplex Julia and more DE formulas, 3D formula programs, depth compositing
