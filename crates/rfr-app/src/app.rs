@@ -554,6 +554,12 @@ impl App {
             if !typing && i.consume_key(M::NONE, Key::F) {
                 self.viewport.fly = !self.viewport.fly;
             }
+            if !typing && i.consume_key(M::NONE, Key::O) {
+                self.viewport.show_orbit = !self.viewport.show_orbit;
+            }
+            if !typing && i.consume_key(M::NONE, Key::I) {
+                self.viewport.show_inset = !self.viewport.show_inset;
+            }
             None
         })
     }
@@ -667,6 +673,11 @@ impl App {
                     .on_hover_text("Saved locations of this document: go back to them, update, rename, reorder (Ctrl+B adds the current view)");
                 ui.checkbox(&mut self.viewport.show_lights, "Light gizmos")
                     .on_hover_text("Show the circles of the light sources in the view (drag one to move its light)");
+                ui.separator();
+                ui.add(egui::Checkbox::new(&mut self.viewport.show_orbit, "Orbit display  (O)"))
+                    .on_hover_text("Draw the orbit of the point under the cursor for the selected layer: the values of z the formula goes through");
+                ui.add(egui::Checkbox::new(&mut self.viewport.show_inset, "Julia preview  (I)"))
+                    .on_hover_text("A small Julia set of the point under the cursor in the corner of the view; click it to open that Julia set");
             });
             ui.menu_button("Help", |ui| {
                 ui.set_min_width(220.0);

@@ -10,6 +10,10 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
   occurs in the view, so every part of the gradient covers about as many pixels.
 - Post-transformations (layer section *Post-transformations*): transformation formulas
   applied to z as the coloring formulas see it, for new patterns on the same set.
+- Orbit display (*View › Orbit display*, O): the orbit of the point under the cursor, with
+  its iteration count and the period of orbits that stay inside.
+- Julia preview (*View › Julia preview*, I): a small Julia set of the point under the cursor
+  in the corner of the view; a click on it opens that Julia set.
 
 ### Fixed
 

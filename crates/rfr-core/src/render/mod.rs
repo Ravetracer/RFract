@@ -13,6 +13,7 @@ pub mod iterations;
 pub mod light;
 pub mod object;
 pub mod oidn;
+pub mod orbit;
 pub mod post;
 pub mod tiles;
 

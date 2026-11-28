@@ -16,6 +16,7 @@ mod explorer;
 mod export;
 mod help;
 mod icons;
+mod inset;
 mod inspector;
 mod layers;
 mod lights;

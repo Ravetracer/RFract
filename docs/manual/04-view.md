@@ -14,6 +14,8 @@
 | J | Julia set of the point under the cursor, or back |
 | Home | Back to the formula's suggested view |
 | F | Fly mode on or off |
+| O | Orbit display on or off |
+| I | Julia preview inset on or off |
 
 ### Fly mode
 
@@ -55,6 +57,29 @@ Switching back restores the view you left. The seed can also be typed or dragged
 inspector.
 
 ![Julia set of the seed (-0.8, 0.156)](images/example-julia.jpg)
+
+### Julia preview
+
+*View › Julia preview* (or **I**) shows a small Julia set of the point under the cursor in
+the lower right corner of the view while you move the mouse over the Mandelbrot mode of the
+selected layer. It renders in the background with at most 1000 iterations and follows the
+cursor; the view does not move or zoom under the inset. Click the inset to open that Julia
+set (like Alt+click).
+
+## Orbit display
+
+*View › Orbit display* (or **O**) draws the orbit of the point under the cursor for the
+selected layer: the point after the layer's transformations (the ring) and the values of *z*
+the formula goes through, joined by lines (the first 2000 values). The line at the top left
+tells whether the orbit escapes and after how many iterations, or that it stays inside, with
+the length of the cycle it settles into when there is one (period 1 in the main cardioid,
+2 in the large bulb on its left, and so on).
+
+![Orbit display: a point of a period-3 bulb settles into a triangle](images/orbit-display.png)
+
+!!! note
+    The orbit is computed in double precision without the early inside tests. Beyond double
+    precision it is the orbit of the nearest point double precision can hold.
 
 ## Precision
 

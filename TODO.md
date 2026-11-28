@@ -44,7 +44,9 @@ Open points of the earlier stages (their notes below stay for the details).
       coloring formulas see it, every value of the orbit once (`render::cpu` `PostZ`,
       `codegen` `post_tf`, `pz`/`pzp`/`psolid`); dropped from the plan without a coloring
       formula; deep zooms take no linear steps with them (`coloring_loops`).
-- [ ] Orbit display, Julia preview inset.
+- [x] Orbit display (`render::orbit::Tracer`, f64, period of inside orbits) and Julia preview
+      inset (`rfr-app` `inset.rs`, CPU render in the background, newest request only, at most
+      1000 iterations; a click opens the Julia set).
 - [ ] Distance estimation in double-float views (dual double-float) and perturbation views.
 - [ ] Windows of a larger frame: poster tiles with lit layers, effects, density layers and 3D
       objects; shadow field margin.

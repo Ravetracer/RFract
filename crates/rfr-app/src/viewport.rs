@@ -8,7 +8,8 @@
 //! holding the left button flies into the fractal toward the cursor, the right button flies
 //! out and the wheel sets the speed, which ramps up and down smoothly. While the user
 //! navigates, the preview renders at a lower resolution. A flight recording samples the view
-//! and the 3D cameras (timeline).
+//! and the 3D cameras (timeline). The orbit display draws the orbit of the point under the
+//! cursor; the Julia inset shows the Julia set of that point (a click on it opens it).
 
 use std::time::{Duration, Instant};
 
@@ -30,6 +31,11 @@ const NAVIGATE_HOLD: Duration = Duration::from_millis(250);
 const FLY_RAMP: f64 = 0.45;
 /// Flight recording: samples per second.
 const RECORD_RATE: f64 = 30.0;
+/// Orbit display: points drawn at most.
+const ORBIT_POINTS: usize = 2000;
+/// Julia inset: side in points, and at most in pixels.
+const INSET_SIDE: f32 = 200.0;
+const INSET_MAX_PX: u32 = 320;
 
 /// A flight being recorded: the view and the 3D cameras over time.
 pub struct Recording {
@@ -91,6 +97,14 @@ pub struct Viewport {
     /// Gizmos of the light sources (drag to move); the light being dragged.
     pub show_lights: bool,
     light_drag: Option<usize>,
+    /// Orbit display: on, and the layer compiled for it (with what it was compiled from).
+    pub show_orbit: bool,
+    tracer: Option<(String, Result<rfr_core::render::orbit::Tracer, String>)>,
+    /// Julia inset: on, its renderer and the seed it follows (the last point under the cursor
+    /// outside the inset).
+    pub show_inset: bool,
+    inset: crate::inset::JuliaInset,
+    inset_seed: Option<[f64; 2]>,
 }
 
 /// The largest rectangle with aspect `aspect` (width / height) centered in `avail`.
@@ -110,6 +124,20 @@ fn plane_at(view: &View, rect: Rect, p: Pos2) -> [f64; 2] {
     let r = view.radius.to_f64();
     let o = offset_at(view, rect, p);
     [c[0] + o[0] * r, c[1] + o[1] * r]
+}
+
+/// Screen position of plane point `p` (the inverse of [`plane_at`]; f64 offsets from the
+/// center, enough for orbits).
+fn screen_at(view: &View, rect: Rect, p: [f64; 2]) -> Pos2 {
+    let c = view.center_f64();
+    let r = view.radius.to_f64();
+    let (ox, oy) = ((p[0] - c[0]) / r, (p[1] - c[1]) / r);
+    let (sin, cos) = view.rotation.to_radians().sin_cos();
+    let (dx, dy) = (ox * cos + oy * sin, -ox * sin + oy * cos);
+    let s = rect.height() as f64 / 2.0;
+    // Far points stay far without overflowing the painter.
+    let clamp = |v: f64| v.clamp(-1e5, 1e5) as f32;
+    Pos2::new(rect.center().x + clamp(dx * s), rect.center().y - clamp(dy * s))
 }
 
 /// Offset of screen position `p` from the view center in units of the radius (rotation
@@ -163,6 +191,11 @@ impl Viewport {
             recording: None,
             show_lights: true,
             light_drag: None,
+            show_orbit: false,
+            tracer: None,
+            show_inset: false,
+            inset: Default::default(),
+            inset_seed: None,
         }
     }
 
@@ -252,7 +285,7 @@ impl Viewport {
                 }
                 layer.julia = true;
                 layer.seed = s;
-                doc.view = View { center: ["0".into(), "0".into()], radius: 1.6.into(), rotation: 0.0 };
+                doc.view = crate::inset::julia_view();
                 Some(format!("Julia set of ({:.6}, {:.6}) (J or Alt-click again goes back)", s[0], s[1]))
             }
             None => {
@@ -356,8 +389,22 @@ impl Viewport {
         self.object = target(doc, sel).is_some_and(|l| l.kind == rfr_core::doc::LayerKind::Object);
         self.terrain = !self.object && target(doc, sel).is_some_and(|l| l.light.enabled && l.light.terrain);
 
+        // Julia inset: in the lower right corner of the image; the view does not navigate
+        // under it.
+        let inset = (self.show_inset && target(doc, sel).is_some_and(crate::inset::applies)).then(|| {
+            let side = INSET_SIDE.min(rect.width() * 0.4).min(rect.height() * 0.6);
+            Rect::from_min_size(rect.right_bottom() - Vec2::splat(side + 10.0), Vec2::splat(side))
+        });
+        let over_inset = inset.is_some_and(|r| pointer.is_some_and(|p| r.contains(p)));
+        if !over_inset && let Some(h) = self.hover {
+            self.inset_seed = Some(h);
+        }
+        if over_inset {
+            self.hover = None;
+        }
+
         // Light gizmos: a press on a light's circle drags the light instead of the view.
-        let gizmo = self.show_lights && self.light_gizmos(ui, &resp, doc, rect);
+        let gizmo = (self.show_lights && self.light_gizmos(ui, &resp, doc, rect)) || over_inset;
 
         // 3D terrain: Ctrl-drag orbits the camera, Ctrl-wheel changes its distance; 3D objects
         // also without Ctrl.
@@ -395,6 +442,7 @@ impl Viewport {
         // Wheel: zoom around the cursor.
         if !orbit
             && !flying
+            && !over_inset
             && resp.hovered()
             && scroll != 0.0
             && let Some(p) = pointer
@@ -448,6 +496,14 @@ impl Viewport {
                 }
             }
             self.rotate_last = None;
+        }
+        // A click on the Julia inset opens its Julia set.
+        if over_inset
+            && resp.clicked()
+            && let Some(seed) = self.inset.shown_seed()
+        {
+            message = self.set_julia(doc, sel, Some(seed));
+            touched = true;
         }
         // Clicks: Julia pick (Alt or the pick mode), zoom in (double-click), out (right click).
         if let Some(p) = resp.interact_pointer_pos().filter(|p| rect.contains(*p) && !gizmo) {
@@ -513,6 +569,22 @@ impl Viewport {
         if let (Some(s), Some(p)) = (self.box_start, resp.interact_pointer_pos()) {
             painter.rect_stroke(Rect::from_two_pos(s, p), 0.0, Stroke::new(1.5, theme::ACCENT), egui::StrokeKind::Middle);
         }
+        let mut info_y = 10.0;
+        if self.show_orbit
+            && let Some(at) = self.hover
+            && !flying
+        {
+            let text = self.draw_orbit(&painter.with_clip_rect(rect), doc, sel, rect, at);
+            // On a dark backing: the image behind can be any color.
+            let galley = painter.layout_no_wrap(text, egui::FontId::proportional(theme::fs(12.5)), Color32::WHITE);
+            let at = rect.left_top() + Vec2::new(10.0, info_y);
+            painter.rect_filled(Rect::from_min_size(at, galley.size()).expand2(Vec2::new(6.0, 3.0)), 4.0, Color32::from_black_alpha(170));
+            info_y += galley.size().y + 12.0;
+            painter.galley(at, galley, Color32::WHITE);
+        }
+        if let Some(r) = inset {
+            self.draw_inset(ui, &painter, doc, sel, r, over_inset);
+        }
         if self.show_lights {
             let sel = crate::lights::selected(ui.ctx());
             for (i, l) in doc.lights.iter().enumerate() {
@@ -560,7 +632,7 @@ impl Viewport {
         }
         if self.picking_julia {
             painter.text(
-                rect.left_top() + Vec2::new(10.0, 10.0),
+                rect.left_top() + Vec2::new(10.0, info_y),
                 egui::Align2::LEFT_TOP,
                 "Click a point: its Julia set (Esc cancels)",
                 egui::FontId::proportional(theme::fs(13.0)),
@@ -572,6 +644,66 @@ impl Viewport {
         }
         self.hovered = resp.hovered();
         message
+    }
+
+    /// Draws the orbit of plane point `at` for the selected layer; returns the line that
+    /// describes it.
+    fn draw_orbit(&mut self, painter: &egui::Painter, doc: &Document, sel: &Selection, rect: Rect, at: [f64; 2]) -> String {
+        let Some(layer) = target(doc, sel) else { return "Orbit: select a layer".into() };
+        let key = format!("{:?}|{:?}", layer, doc.view);
+        if self.tracer.as_ref().is_none_or(|(k, _)| *k != key) {
+            self.tracer = Some((key, rfr_core::render::orbit::Tracer::new(doc, layer)));
+        }
+        let tracer = match &self.tracer {
+            Some((_, Ok(t))) => t,
+            Some((_, Err(e))) => return format!("Orbit: {e}"),
+            None => return String::new(),
+        };
+        let t = tracer.trace(at, ORBIT_POINTS);
+        if t.solid {
+            return format!("Orbit of ({:.6}, {:.6}): a transformation leaves this point transparent", at[0], at[1]);
+        }
+        let pts: Vec<Pos2> = t.points.iter().map(|p| screen_at(&doc.view, rect, *p)).collect();
+        painter.add(egui::Shape::line(pts.clone(), Stroke::new(3.0, Color32::from_black_alpha(120))));
+        painter.add(egui::Shape::line(pts.clone(), Stroke::new(1.2, theme::ACCENT.gamma_multiply(0.85))));
+        for p in pts.iter().skip(1).take(400) {
+            painter.circle_filled(*p, 2.2, Color32::WHITE);
+        }
+        if let Some(p) = pts.first() {
+            painter.circle_stroke(*p, 5.0, Stroke::new(1.5, Color32::WHITE));
+        }
+        let what = if t.escaped {
+            format!("escapes after {} iterations", t.iter)
+        } else {
+            match t.period {
+                Some(p) => format!("stays inside ({} iterations), period {p}", t.iter),
+                None => format!("stays inside ({} iterations)", t.iter),
+            }
+        };
+        let shown = if t.points.len() < t.iter as usize + 2 { format!(", first {} points shown", t.points.len()) } else { String::new() };
+        format!("Orbit of ({:.6}, {:.6}): {what}{shown}", at[0], at[1])
+    }
+
+    /// Draws the Julia inset in `r` (asks for a new image when the seed changed).
+    fn draw_inset(&mut self, ui: &Ui, painter: &egui::Painter, doc: &Document, sel: &Selection, r: Rect, hovered: bool) {
+        let (Some(layer), Some(seed)) = (target(doc, sel), self.inset_seed) else { return };
+        let px = ((r.width() * ui.ctx().pixels_per_point()).round() as u32).clamp(32, INSET_MAX_PX);
+        painter.rect_filled(r, 4.0, theme::CANVAS);
+        if let Some(tex) = self.inset.update(ui.ctx(), doc, layer, seed, px) {
+            painter.image(tex.id(), r, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+        }
+        let stroke = if hovered { Stroke::new(2.0, theme::ACCENT) } else { Stroke::new(1.0, theme::BORDER) };
+        painter.rect_stroke(r, 4.0, stroke, egui::StrokeKind::Outside);
+        let font = egui::FontId::proportional(theme::fs(11.0));
+        let label = match (&self.inset.error, self.inset.shown_seed()) {
+            (Some(e), _) => e.clone(),
+            (None, Some(s)) if hovered => format!("Click: open the Julia set of ({:.5}, {:.5})", s[0], s[1]),
+            (None, Some(s)) => format!("Julia ({:.5}, {:.5})", s[0], s[1]),
+            (None, None) => "Julia preview…".into(),
+        };
+        let at = r.left_top() + Vec2::new(0.0, -4.0);
+        painter.text(at + Vec2::new(1.0, 1.0), egui::Align2::LEFT_BOTTOM, &label, font.clone(), Color32::from_black_alpha(200));
+        painter.text(at, egui::Align2::LEFT_BOTTOM, &label, font, Color32::WHITE);
     }
 
     fn update_gpu(&mut self, frame: &eframe::Frame, doc: &Document, size: (u32, u32), fast: bool, prefs: &Prefs) -> Option<egui::TextureId> {
