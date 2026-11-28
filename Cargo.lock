@@ -2227,7 +2227,7 @@ dependencies = [
 
 [[package]]
 name = "rfr-app"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "eframe",
  "egui",
@@ -2247,7 +2247,7 @@ dependencies = [
 
 [[package]]
 name = "rfr-cli"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "naga",
  "rfr-core",
@@ -2258,7 +2258,7 @@ dependencies = [
 
 [[package]]
 name = "rfr-core"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "dashu-base",
  "dashu-float",
@@ -2273,7 +2273,7 @@ dependencies = [
 
 [[package]]
 name = "rfr-gpu"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "bytemuck",
  "naga",
@@ -2284,7 +2284,7 @@ dependencies = [
 
 [[package]]
 name = "rfr-net"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "png",
  "rfr-core",
@@ -2297,7 +2297,7 @@ dependencies = [
 
 [[package]]
 name = "rfr-script"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "mlua",
  "rfr-core",

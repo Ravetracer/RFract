@@ -4,6 +4,8 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-28
+
 ### Added
 
 - `rfr-cli bench`: renders a fixed set of documents (or given ones) and reports the median
