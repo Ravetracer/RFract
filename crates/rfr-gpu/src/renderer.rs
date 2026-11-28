@@ -110,6 +110,7 @@ struct Uni {
     fstep: [u32; 4],
     lwall: [f32; 4],
     lwalli: [u32; 4],
+    lcam2: [f32; 4],
 }
 
 /// The lighting a layer's shaders use: a lit layer's or a 3D object's.
@@ -385,7 +386,8 @@ fn field_uni(plan: &Plan, lp: &LayerPlan) -> Uni {
         Some(((_, c), base)) => ([c[0], c[1], c[2], base], [1, 0, 0, 0]),
         None => ([0.0; 4], [0; 4]),
     };
-    Uni { fnear: near, ffar: row(&g.far), fstep: [g.far.step, margin, near_cells, 0], lwall, lwalli, ..Uni::default() }
+    let lift = lp.light.as_ref().map_or(0.0, |l| l.camera_target * g.far.height as f32);
+    Uni { fnear: near, ffar: row(&g.far), fstep: [g.far.step, margin, near_cells, 0], lwall, lwalli, lcam2: [lift, 0.0, 0.0, 0.0], ..Uni::default() }
 }
 
 /// Per light one row of the lit layer's uniforms (direction or color).

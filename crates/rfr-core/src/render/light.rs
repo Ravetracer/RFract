@@ -52,8 +52,10 @@ pub struct LightPlan {
     pub horizon: [f32; 3],
     pub zenith: [f32; 3],
     /// 3D terrain: the camera's direction and pitch (radians), distance (image heights) and
-    /// tan(vertical field of view / 2).
+    /// tan(vertical field of view / 2); the height of the point it orbits above the middle of
+    /// the ground (image heights).
     pub camera: Option<[f32; 4]>,
+    pub camera_target: f32,
     /// 3D terrain: the height of the highest part (share of the image height) and the height
     /// value that reaches it (see [`LightPlan::set_height_range`]).
     pub terrain_height: f32,
@@ -157,6 +159,7 @@ impl LightPlan {
             fx: None,
             far_side: FAR_SIDE,
             near_margin: NEAR_MARGIN,
+            camera_target: l.camera.target as f32,
             camera: l.terrain.then(|| {
                 let c = &l.camera;
                 [
@@ -859,7 +862,7 @@ impl Fields {
             cam,
             (t.width, t.height),
             self.image,
-            l.slope_scale(h_img) * t.height_at((t.width as f32 - 1.0) * 0.5, (t.height as f32 - 1.0) * 0.5),
+            l.slope_scale(h_img) * t.height_at((t.width as f32 - 1.0) * 0.5, (t.height as f32 - 1.0) * 0.5) + l.camera_target * t.height as f32,
             x as f32 + u as f32,
             y as f32 + v as f32,
         );

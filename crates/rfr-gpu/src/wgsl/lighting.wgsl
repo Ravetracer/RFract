@@ -433,7 +433,7 @@ fn lit(@builtin(global_invocation_id) gid: vec3<u32>) {
         let hb = hash(ha);
         let ju = f32(ha + U.size.z * 0xC13FA9A9u) / 4294967296.0;
         let jv = f32(hb + U.size.z * 0x91E10DA6u) / 4294967296.0;
-        let zc = k * l_height_at((f32(U.ffar.z) - 1.0) * 0.5, (f32(U.ffar.w) - 1.0) * 0.5);
+        let zc = k * l_height_at((f32(U.ffar.z) - 1.0) * 0.5, (f32(U.ffar.w) - 1.0) * 0.5) + U.lcam2.x;
         let ray = l_camera_ray(zc, f32(xi) + ju, f32(yi) + jv);
         let hit = l_trace(ray[0], ray[1], k);
         if hit.z == 0.0 {

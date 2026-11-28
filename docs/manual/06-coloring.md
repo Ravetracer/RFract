@@ -158,11 +158,20 @@ shine on it from above. Switch on **Lit** and choose where the heights come from
 from straight above. The terrain is the part of the plane the 2D view shows, so moving and
 zooming the view moves and scales the landscape under the camera. *Camera direction* turns the
 camera around the middle of the terrain (0: from the bottom edge of the image), *Camera
-height* is its angle above the ground, *Camera distance* its distance in image heights and
-*Field of view* its opening angle. While the terrain layer is selected, **Ctrl-drag** in the
-view orbits the camera (left and right: direction, up and down: height) and **Ctrl-wheel**
-moves it closer or farther; plain dragging and the wheel still move and zoom the plane under
-it. Where no terrain is seen, the layer is transparent: the layers below and the background
+height* is its angle above the ground, *Camera distance* its distance in image heights,
+*Field of view* its opening angle and *Camera target height* the height of the point it orbits
+above the middle of the ground (image heights), which lifts or lowers the whole camera. While
+the terrain layer is selected:
+
+| Input | Action |
+|-------|--------|
+| Drag | Move over the terrain: the ground follows the mouse (sideways, forward and back as the camera looks) |
+| Wheel | Zoom the plane under the camera (the landscape grows or shrinks) |
+| Ctrl+drag | Orbit the camera (left and right: direction, up and down: height angle) |
+| Shift+Ctrl+drag | Move the camera up and down (*Camera target height*) |
+| Ctrl+wheel | Move the camera closer or farther |
+
+Where no terrain is seen, the layer is transparent: the layers below and the background
 show, for example a gradient fill layer as a sky.
 
 Without walls the terrain is an open sheet. **Walls** close it into a block: its sides go down

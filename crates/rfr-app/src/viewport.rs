@@ -140,6 +140,23 @@ fn screen_at(view: &View, rect: Rect, p: [f64; 2]) -> Pos2 {
     Pos2::new(rect.center().x + clamp(dx * s), rect.center().y - clamp(dy * s))
 }
 
+/// The 2D view's drag (in the preview's pixels, the ground's axes) that moves a terrain seen by
+/// `cam` the way the mouse moved by `d` on screen: right moves the ground right, down pulls it
+/// toward the camera, about as fast as the ground at the camera's target moves. Unit test:
+/// `terrain_drag_follows_the_camera`.
+fn terrain_drag(cam: &rfr_core::doc::Camera, d: Vec2) -> Vec2 {
+    let yaw = cam.yaw.to_radians() as f32;
+    let pitch = cam.pitch.clamp(1.0, 89.0).to_radians() as f32;
+    // Preview pixels of the ground per screen pixel at the target (the ground spans the preview's
+    // height in one image height).
+    let s = 2.0 * cam.distance as f32 * (cam.fov.clamp(1.0, 170.0).to_radians() as f32 * 0.5).tan();
+    // Screen right and the forward direction over the ground, in the ground's axes (y down).
+    let right = Vec2::new(yaw.cos(), -yaw.sin());
+    let forward = Vec2::new(-yaw.sin(), -yaw.cos());
+    // The ground moves with the mouse (at yaw 0 the plain 2D drag, scaled).
+    right * d.x * s - forward * d.y * s / pitch.sin().max(0.2)
+}
+
 /// Offset of screen position `p` from the view center in units of the radius (rotation
 /// applied): exact at any depth when added to the center with `View::pan`.
 fn offset_at(view: &View, rect: Rect, p: Pos2) -> [f64; 2] {
@@ -423,7 +440,13 @@ impl Viewport {
             }
             if resp.dragged() {
                 let d = resp.drag_delta();
-                if d != Vec2::ZERO {
+                if d != Vec2::ZERO && !object && mods.shift {
+                    // Shift+Ctrl-drag on a terrain: the point the camera orbits up and down
+                    // (image heights, about as fast as the ground moves at that distance).
+                    let per_px = 2.0 * cam.distance * (cam.fov.clamp(1.0, 170.0).to_radians() * 0.5).tan() / rect.height().max(1.0) as f64;
+                    cam.target = (cam.target - d.y as f64 * per_px).clamp(-5.0, 5.0);
+                    touched = true;
+                } else if d != Vec2::ZERO {
                     cam.yaw = (cam.yaw - d.x as f64 * 0.3 + 180.0).rem_euclid(360.0) - 180.0;
                     cam.pitch = (cam.pitch + d.y as f64 * 0.2).clamp(low, high);
                     touched = true;
@@ -453,7 +476,7 @@ impl Viewport {
             doc.view.zoom_at(at, f);
             touched = true;
         }
-        let boxing = !flying && (mods.shift || resp.dragged_by(egui::PointerButton::Secondary));
+        let boxing = !flying && !orbit && (mods.shift || resp.dragged_by(egui::PointerButton::Secondary));
         if resp.drag_started() {
             self.box_start = if boxing && !gizmo { resp.interact_pointer_pos() } else { None };
             self.rotate_last = None;
@@ -479,6 +502,12 @@ impl Viewport {
             } else if resp.dragged_by(egui::PointerButton::Primary) {
                 let d = resp.drag_delta();
                 if d != Vec2::ZERO {
+                    // A terrain: the camera moves along its own axes (sideways, and forward or
+                    // back over the ground), so the ground follows the mouse in the 3D view.
+                    let d = match target(doc, sel).filter(|_| self.terrain) {
+                        Some(l) => terrain_drag(&l.light.camera, d),
+                        None => d,
+                    };
                     let b = offset_at(&doc.view, rect, rect.center() + d);
                     doc.view.pan([-b[0], -b[1]]);
                     touched = true;
@@ -786,5 +815,21 @@ impl Viewport {
     /// More frames are needed (refining, compiling or navigating).
     pub fn busy(&self, prefs: &Prefs) -> bool {
         self.gpu.as_ref().is_some_and(|g| !self.paused && (g.compiling() || g.samples() < prefs.preview_samples.max(1))) || self.navigating()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn terrain_drag_follows_the_camera() {
+        let cam = |yaw: f64| rfr_core::doc::Camera { yaw, pitch: 90.0, distance: 1.0, fov: 2.0 * 26.565_05, target: 0.0 };
+        // From the bottom edge, looking straight down with s = 1: the plain 2D drag.
+        let d = terrain_drag(&cam(0.0), Vec2::new(3.0, 2.0));
+        assert!((d - Vec2::new(3.0, 2.0)).length() < 1e-3, "{d:?}");
+        // From the right edge (yaw 90°): screen right is the ground's −y (up the image).
+        let d = terrain_drag(&cam(90.0), Vec2::new(1.0, 0.0));
+        assert!((d - Vec2::new(0.0, -1.0)).length() < 1e-3, "{d:?}");
     }
 }

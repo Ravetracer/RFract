@@ -699,7 +699,7 @@ fn view3d(doc: &Document, w: u32, h: u32) -> Option<View3d> {
             v
         }
     };
-    Some(View3d::Terrain(Box::new(Terrain { cam, zc: k * h0, k, alone })))
+    Some(View3d::Terrain(Box::new(Terrain { cam, zc: k * h0 + lp.camera_target * h as f32, k, alone })))
 }
 
 impl View3d {

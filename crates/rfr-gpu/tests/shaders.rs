@@ -231,6 +231,10 @@ fn gpu_matches_the_cpu_renderer() {
         l.camera.yaw = 40.0;
         l.camera.pitch = 15.0;
         cases.push(("terrain walls".into(), walls));
+        // The camera lifted above the ground's middle.
+        let mut lifted = ter.clone();
+        lifted.layers[0].light.camera.target = 0.3;
+        cases.push(("terrain lifted camera".into(), lifted));
         // Point lights from the document's light sources, with shadows, flat and as a terrain.
         let light = |x: &str, y: &str, h: f64, color: [f32; 3]| rfr_core::doc::LightSource {
             position: [x.into(), y.into()],

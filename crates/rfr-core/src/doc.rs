@@ -446,7 +446,7 @@ impl Default for Object3D {
             iterations: 10,
             julia: false,
             seed: [-0.291, -0.399, 0.339, 0.437],
-            camera: Camera { yaw: 30.0, pitch: 25.0, distance: 3.0, fov: 40.0 },
+            camera: Camera { yaw: 30.0, pitch: 25.0, distance: 3.0, fov: 40.0, target: 0.0 },
             detail: 1.0,
         }
     }
@@ -1178,7 +1178,8 @@ pub struct Lighting {
 
 /// A camera orbiting the middle of a terrain: the direction it looks from (degrees, 0: from
 /// the bottom edge of the image, counterclockwise), its angle above the ground (degrees), its
-/// distance (image heights) and its vertical field of view (degrees).
+/// distance (image heights), its vertical field of view (degrees) and the height of the point
+/// it orbits above the middle of the ground (image heights; terrains only).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Camera {
@@ -1186,11 +1187,12 @@ pub struct Camera {
     pub pitch: f64,
     pub distance: f64,
     pub fov: f64,
+    pub target: f64,
 }
 
 impl Default for Camera {
     fn default() -> Self {
-        Camera { yaw: 0.0, pitch: 35.0, distance: 1.2, fov: 50.0 }
+        Camera { yaw: 0.0, pitch: 35.0, distance: 1.2, fov: 50.0, target: 0.0 }
     }
 }
 

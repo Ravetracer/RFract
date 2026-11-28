@@ -96,6 +96,9 @@ struct Uni {
     // 3D terrain walls: the color at the base (linear RGB), the base (k · height); walls on (x)
     lwall: vec4<f32>,
     lwalli: vec4<u32>,
+    // 3D terrain camera: the height of the point it orbits above the middle of the ground
+    // (field cells), unused…
+    lcam2: vec4<f32>,
 }
 
 struct Params {

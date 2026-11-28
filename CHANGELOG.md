@@ -23,9 +23,13 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
   render pixel for pixel.
 - Terrain walls (*Walls*, *Wall depth*, *Wall color*): a 3D terrain can be a closed block with
   sides down to a base.
+- 3D terrain camera: *Camera target height* (Shift+Ctrl-drag) moves the camera up and down;
+  keyframes and recorded flights include it.
 
 ### Changed
 
+- Dragging over a 3D terrain moves the ground the way the mouse goes in the 3D view
+  (sideways and forward or back as the camera looks), not along the image's axes.
 - Lit layers: shadows also come from parts of the relief just outside the image; large images
   read far heights at a coarser resolution.
 

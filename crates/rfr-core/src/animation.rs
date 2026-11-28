@@ -481,13 +481,15 @@ struct Path {
     /// Unwrapped view rotations.
     rotations: Vec<f64>,
     /// The 3D cameras of every keyframe (none when the keyframes differ in layers): yaw
-    /// (unwrapped), pitch, ln distance, field of view.
-    cams: Vec<Vec<[f64; 4]>>,
+    /// (unwrapped), pitch, ln distance, field of view, target height.
+    cams: Vec<Vec<CamCh>>,
 }
 
-/// A camera as path channels (yaw, pitch, ln distance, field of view).
-fn cam_channels(c: &Camera) -> [f64; 4] {
-    [c.yaw, c.pitch, c.distance.max(1e-300).ln(), c.fov]
+/// A camera as path channels: yaw, pitch, ln distance, field of view, target height.
+type CamCh = [f64; 5];
+
+fn cam_channels(c: &Camera) -> CamCh {
+    [c.yaw, c.pitch, c.distance.max(1e-300).ln(), c.fov, c.target]
 }
 
 impl Path {
@@ -497,7 +499,7 @@ impl Path {
             rotations[i] = unwrap(rotations[i - 1], rotations[i]);
         }
         let same = cams.iter().all(|c| c.len() == cams[0].len());
-        let mut cams: Vec<Vec<[f64; 4]>> =
+        let mut cams: Vec<Vec<CamCh>> =
             if same { cams.iter().map(|c| c.iter().map(cam_channels).collect()).collect() } else { vec![Vec::new(); views.len()] };
         for i in 1..cams.len() {
             let (a, b) = cams.split_at_mut(i);
@@ -557,7 +559,7 @@ impl Path {
     }
 
     /// The camera channels at keyframe position `u`.
-    fn cams_at(&self, u: f64) -> Vec<[f64; 4]> {
+    fn cams_at(&self, u: f64) -> Vec<CamCh> {
         if self.views.len() == 1 {
             return self.cams[0].clone();
         }
@@ -584,9 +586,14 @@ fn angle_diff(a: f64, b: f64) -> f64 {
 }
 
 /// How far apart two sets of camera channels look: turning and field of view in radians plus
-/// distance factors (ln).
-fn cam_diff(a: &[[f64; 4]], b: &[[f64; 4]]) -> f64 {
-    a.iter().zip(b).map(|(a, b)| (angle_diff(a[0], b[0]).abs() + (a[1] - b[1]).abs() + (a[3] - b[3]).abs()).to_radians() + (a[2] - b[2]).abs()).sum()
+/// distance factors (ln) and target heights (image heights).
+fn cam_diff(a: &[CamCh], b: &[CamCh]) -> f64 {
+    a.iter()
+        .zip(b)
+        .map(|(a, b)| {
+            (angle_diff(a[0], b[0]).abs() + (a[1] - b[1]).abs() + (a[3] - b[3]).abs()).to_radians() + (a[2] - b[2]).abs() + (a[4] - b[4]).abs()
+        })
+        .sum()
 }
 
 /// `v` at fractional index `x` (linear between the entries).
@@ -917,7 +924,7 @@ struct Channels {
     centers: Vec<[big::Big; 2]>,
     l: Vec<f64>,
     rot: Vec<f64>,
-    cams: Vec<Vec<[f64; 4]>>,
+    cams: Vec<Vec<CamCh>>,
 }
 
 impl Channels {
@@ -931,7 +938,7 @@ impl Channels {
             rot[i] = unwrap(rot[i - 1], rot[i]);
         }
         let same = samples.iter().all(|s| s.cameras.len() == samples[0].cameras.len());
-        let mut cams: Vec<Vec<[f64; 4]>> =
+        let mut cams: Vec<Vec<CamCh>> =
             samples.iter().map(|s| if same { s.cameras.iter().map(cam_channels).collect() } else { Vec::new() }).collect();
         for i in 1..cams.len() {
             let (a, b) = cams.split_at_mut(i);
@@ -966,7 +973,7 @@ pub fn smooth_flight(samples: &[FlightSample], seconds: f64) -> Vec<FlightSample
             }
             let (mut ws, mut wc) = (0.0, 0.0);
             let (mut l, mut rot) = (0.0, 0.0);
-            let mut cams = vec![[0.0; 4]; ch.cams[i].len()];
+            let mut cams = vec![[0.0; 5]; ch.cams[i].len()];
             let mut off = [Fx::ZERO, Fx::ZERO];
             let lo = samples.partition_point(|x| x.t < s.t - h);
             let hi = samples.partition_point(|x| x.t <= s.t + h);
@@ -977,7 +984,7 @@ pub fn smooth_flight(samples: &[FlightSample], seconds: f64) -> Vec<FlightSample
                 l += w * ch.l[j];
                 rot += w * ch.rot[j];
                 for (c, v) in cams.iter_mut().zip(&ch.cams[j]) {
-                    for k in 0..4 {
+                    for k in 0..5 {
                         c[k] += w * v[k];
                     }
                 }
@@ -995,7 +1002,7 @@ pub fn smooth_flight(samples: &[FlightSample], seconds: f64) -> Vec<FlightSample
             let center = std::array::from_fn(|c| big::add(&s.view.center[c], off[c] / wc.max(1e-300), scale));
             let cameras = cams
                 .iter()
-                .map(|c| Camera { yaw: angle_diff(c[0] / ws, 0.0), pitch: c[1] / ws, distance: (c[2] / ws).exp(), fov: c[3] / ws })
+                .map(|c| Camera { yaw: angle_diff(c[0] / ws, 0.0), pitch: c[1] / ws, distance: (c[2] / ws).exp(), fov: c[3] / ws, target: c[4] / ws })
                 .collect();
             FlightSample { t: s.t, view: View { center, radius, rotation: (rot / ws).rem_euclid(360.0) }, cameras }
         })
@@ -1061,7 +1068,7 @@ fn segment_error(path: &Path, seg: usize, keys: &[usize], ch: &Channels, samples
     if b <= a + 1 {
         return (0.0, a);
     }
-    let points: Vec<(f64, f64, f64, Vec<[f64; 4]>)> = (0..=PATH_STEPS)
+    let points: Vec<(f64, f64, f64, Vec<CamCh>)> = (0..=PATH_STEPS)
         .map(|j| {
             let u = seg as f64 + j as f64 / PATH_STEPS as f64;
             let (_, l, rot, k) = path.parts(u);

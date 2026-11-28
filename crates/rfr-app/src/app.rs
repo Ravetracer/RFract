@@ -733,7 +733,7 @@ impl App {
                 } else if self.viewport.fly {
                     "Fly mode (F): hold left: fly in toward the cursor · hold right: fly out · Wheel: speed · Ctrl-drag: orbit a terrain"
                 } else if self.viewport.terrain {
-                    "Drag: move the terrain · Wheel: zoom · Ctrl-drag: orbit the camera · Ctrl-wheel: camera distance · Alt-click: Julia"
+                    "Drag: move over the terrain · Wheel: zoom · Ctrl-drag: orbit the camera · Shift+Ctrl-drag: camera up and down · Ctrl-wheel: camera distance · Alt-click: Julia"
                 } else {
                     "Drag: move · Wheel: zoom · Shift/right-drag: box zoom · Ctrl-drag: rotate · Double-click: zoom in · Alt-click: Julia"
                 };

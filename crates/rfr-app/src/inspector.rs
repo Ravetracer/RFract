@@ -933,6 +933,14 @@ fn lighting_section(ui: &mut Ui, l: &mut Layer) {
                 5.0..=120.0,
                 c.fov,
             );
+            widgets::slider(
+                ui,
+                "Camera target height",
+                "Height of the point the camera orbits above the middle of the ground, in image heights: moves the camera up and down (Shift+Ctrl-drag in the view)",
+                &mut cam.target,
+                -2.0..=2.0,
+                c.target,
+            );
             widgets::checkbox(ui, "Walls", "Close the terrain into a block: walls down to a base below the lowest ground", &mut li.walls);
             if li.walls {
                 widgets::slider(
