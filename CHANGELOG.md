@@ -4,6 +4,8 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-28
+
 ### Added
 
 - Histogram coloring (*Transfer › Histogram*): the colors spread by how often each value
