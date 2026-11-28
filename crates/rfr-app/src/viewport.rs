@@ -6,7 +6,9 @@
 //! selected layer is a 3D terrain, Ctrl-drag orbits its camera and Ctrl-wheel moves it closer
 //! or farther; on a 3D object layer dragging and the wheel do that without Ctrl. In fly mode
 //! holding the left button flies into the fractal toward the cursor, the right button flies
-//! out and the wheel sets the speed, which ramps up and down smoothly. While the user
+//! out and the wheel sets the speed, which ramps up and down smoothly; over a 3D terrain the
+//! keys move the camera (W/A/S/D or the arrows, E/Q up and down) and dragging looks around.
+//! While the user
 //! navigates, the preview renders at a lower resolution. A flight recording samples the view
 //! and the 3D cameras (timeline). The orbit display draws the orbit of the point under the
 //! cursor; the Julia inset shows the Julia set of that point (a click on it opens it).
@@ -29,6 +31,8 @@ const NAVIGATE_HOLD: Duration = Duration::from_millis(250);
 /// Fly mode: seconds to reach the set speed after pressing a button and to stop after letting
 /// go (time constant).
 const FLY_RAMP: f64 = 0.45;
+/// Terrain fly mode: image heights per second at speed 1.
+const FLY_TERRAIN: f64 = 0.4;
 /// Flight recording: samples per second.
 const RECORD_RATE: f64 = 30.0;
 /// Orbit display: points drawn at most.
@@ -92,6 +96,8 @@ pub struct Viewport {
     fly_rate: f64,
     fly_tick: Option<Instant>,
     fly_at: Option<Pos2>,
+    /// Terrain fly mode: the camera's velocity (forward, right, up; image heights per second).
+    fly_vel: [f64; 3],
     /// The flight being recorded.
     pub recording: Option<Recording>,
     /// Gizmos of the light sources (drag to move); the light being dragged.
@@ -157,6 +163,31 @@ fn terrain_drag(cam: &rfr_core::doc::Camera, d: Vec2) -> Vec2 {
     right * d.x * s - forward * d.y * s / pitch.sin().max(0.2)
 }
 
+/// From the point a terrain camera orbits toward the camera (unit vector: ground x right,
+/// y down the image, z up) for `yaw` and `pitch` in degrees.
+fn camera_dir(yaw: f64, pitch: f64) -> [f64; 3] {
+    let (y, p) = (yaw.to_radians(), pitch.to_radians());
+    [p.cos() * y.sin(), p.cos() * y.cos(), p.sin()]
+}
+
+/// Terrain fly mode: how far the camera's orbit point moves (ground x, y in image heights,
+/// y down; height) when the camera turns to `yaw`, `pitch` about its own position. Unit test:
+/// `looking_around_keeps_the_camera_in_place`.
+fn look_shift(cam: &rfr_core::doc::Camera, yaw: f64, pitch: f64) -> ([f64; 2], f64) {
+    let (a, b) = (camera_dir(cam.yaw, cam.pitch), camera_dir(yaw, pitch));
+    let d = cam.distance;
+    ([(a[0] - b[0]) * d, (a[1] - b[1]) * d], (a[2] - b[2]) * d)
+}
+
+/// Terrain fly mode: the camera's move over `dt` seconds at velocity `vel` (forward, right,
+/// up) as the shift of its orbit point (ground x, y in image heights, y down; height).
+fn fly_shift(cam: &rfr_core::doc::Camera, vel: [f64; 3], dt: f64) -> ([f64; 2], f64) {
+    let y = cam.yaw.to_radians();
+    // The direction the camera looks over the ground, and its right (as in `terrain_drag`).
+    let (forward, right) = ([-y.sin(), -y.cos()], [y.cos(), -y.sin()]);
+    ([(forward[0] * vel[0] + right[0] * vel[1]) * dt, (forward[1] * vel[0] + right[1] * vel[1]) * dt], vel[2] * dt)
+}
+
 /// Offset of screen position `p` from the view center in units of the radius (rotation
 /// applied): exact at any depth when added to the center with `View::pan`.
 fn offset_at(view: &View, rect: Rect, p: Pos2) -> [f64; 2] {
@@ -205,6 +236,7 @@ impl Viewport {
             fly_rate: 0.0,
             fly_tick: None,
             fly_at: None,
+            fly_vel: [0.0; 3],
             recording: None,
             show_lights: true,
             light_drag: None,
@@ -285,6 +317,76 @@ impl Viewport {
         let at = offset_at(&doc.view, rect, self.fly_at.unwrap_or(rect.center()));
         doc.view.zoom_at(at, (-self.fly_rate * dt).exp2());
         dt > 0.0
+    }
+
+    /// Terrain fly mode: the keys move the camera (W/S or the up and down arrows forward and
+    /// back, A/D or left and right sideways, E/Q or Page Up/Down up and down, Shift faster) with
+    /// smooth ramps, dragging turns it about its own position, the wheel sets the speed. True
+    /// when the view or the camera moved.
+    fn terrain_fly(&mut self, ui: &Ui, resp: &egui::Response, doc: &mut Document, sel: &Selection, rect: Rect, scroll: f32) -> bool {
+        use egui::Key;
+        let now = Instant::now();
+        let dt = self.fly_tick.map_or(0.0, |t| now.duration_since(t).as_secs_f64().min(0.1));
+        if resp.hovered() && scroll != 0.0 {
+            self.fly_speed = (self.fly_speed * (scroll as f64 * 0.002).exp()).clamp(0.05, 20.0);
+        }
+        let typing = ui.ctx().egui_wants_keyboard_input();
+        let (keys, fast) = ui.input(|i| {
+            let k = |a: Key, b: Key| (i.key_down(a) || i.key_down(b)) as i32 as f64;
+            (
+                [
+                    k(Key::W, Key::ArrowUp) - k(Key::S, Key::ArrowDown),
+                    k(Key::D, Key::ArrowRight) - k(Key::A, Key::ArrowLeft),
+                    k(Key::E, Key::PageUp) - k(Key::Q, Key::PageDown),
+                ],
+                i.modifiers.shift,
+            )
+        });
+        let keys = if typing { [0.0; 3] } else { keys };
+        let speed = FLY_TERRAIN * self.fly_speed * if fast { 4.0 } else { 1.0 };
+        let a = 1.0 - (-dt / FLY_RAMP).exp();
+        for (v, k) in self.fly_vel.iter_mut().zip(keys) {
+            *v += (k * speed - *v) * a;
+        }
+        let held = keys.iter().any(|k| *k != 0.0);
+        let moving = self.fly_vel.iter().any(|v| v.abs() > 1e-4);
+        if held || moving {
+            self.fly_tick = Some(now);
+            ui.ctx().request_repaint();
+        } else {
+            self.fly_vel = [0.0; 3];
+            self.fly_tick = None;
+        }
+        let Some(l) = target_mut(doc, sel) else { return false };
+        let cam = &mut l.light.camera;
+        let (mut ground, mut up) = ([0.0f64; 2], 0.0f64);
+        // Looking around: the camera turns about its own position (its orbit point moves).
+        if resp.dragged_by(egui::PointerButton::Primary) {
+            let d = resp.drag_delta();
+            if d != Vec2::ZERO {
+                let yaw = (cam.yaw - d.x as f64 * 0.3 + 180.0).rem_euclid(360.0) - 180.0;
+                let pitch = (cam.pitch + d.y as f64 * 0.2).clamp(1.0, 89.0);
+                let (g, h) = look_shift(cam, yaw, pitch);
+                (ground, up) = (g, h);
+                cam.yaw = yaw;
+                cam.pitch = pitch;
+            }
+        }
+        if moving && dt > 0.0 {
+            let (g, h) = fly_shift(cam, self.fly_vel, dt);
+            ground = [ground[0] + g[0], ground[1] + g[1]];
+            up += h;
+        }
+        if ground == [0.0, 0.0] && up == 0.0 {
+            return false;
+        }
+        cam.target = (cam.target + up).clamp(-5.0, 5.0);
+        // The orbit point is the middle of the view: move the view (one image height is the
+        // preview's height).
+        let m = Vec2::new(ground[0] as f32, ground[1] as f32) * rect.height();
+        let b = offset_at(&doc.view, rect, rect.center() + m);
+        doc.view.pan(b);
+        true
     }
 
     /// Switches the active layer to Julia mode with `seed` (remembering the view) or back.
@@ -455,11 +557,15 @@ impl Viewport {
         }
 
         // Fly mode: the buttons fly in and out, the wheel sets the speed.
+        // Over a 3D terrain the keys move its camera instead.
         let flying = self.fly && !orbit && !gizmo;
-        if flying {
+        if flying && self.terrain {
+            touched |= self.terrain_fly(ui, &resp, doc, sel, rect, scroll);
+        } else if flying {
             touched |= self.fly_step(ui, &resp, doc, rect, pointer, scroll);
         } else {
             self.fly_rate = 0.0;
+            self.fly_vel = [0.0; 3];
             self.fly_tick = None;
         }
 
@@ -648,7 +754,18 @@ impl Viewport {
                 Color32::from_rgb(255, 120, 110),
             );
         }
-        if flying {
+        if flying && self.terrain {
+            painter.text(
+                rect.left_bottom() + Vec2::new(10.0, -10.0),
+                egui::Align2::LEFT_BOTTOM,
+                format!(
+                    "Fly: W/A/S/D or arrows move, E/Q up and down, Shift faster, drag looks around · {:.2} image heights per second (wheel)",
+                    FLY_TERRAIN * self.fly_speed
+                ),
+                font.clone(),
+                theme::ACCENT,
+            );
+        } else if flying {
             painter.text(
                 rect.left_bottom() + Vec2::new(10.0, -10.0),
                 egui::Align2::LEFT_BOTTOM,
@@ -821,6 +938,31 @@ impl Viewport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn looking_around_keeps_the_camera_in_place() {
+        let cam = rfr_core::doc::Camera { yaw: 30.0, pitch: 40.0, distance: 1.5, fov: 40.0, target: 0.1 };
+        let pos = |c: &rfr_core::doc::Camera, t: [f64; 3]| {
+            let u = camera_dir(c.yaw, c.pitch);
+            [t[0] + c.distance * u[0], t[1] + c.distance * u[1], t[2] + c.distance * u[2]]
+        };
+        let before = pos(&cam, [0.0, 0.0, cam.target]);
+        let (g, h) = look_shift(&cam, -20.0, 15.0);
+        let turned = rfr_core::doc::Camera { yaw: -20.0, pitch: 15.0, ..cam.clone() };
+        let after = pos(&turned, [g[0], g[1], cam.target + h]);
+        for k in 0..3 {
+            assert!((before[k] - after[k]).abs() < 1e-12, "{before:?} {after:?}");
+        }
+        // Forward moves the orbit point the way the camera looks (away from the camera).
+        let (g, h) = fly_shift(&cam, [1.0, 0.0, 0.0], 0.5);
+        let u = camera_dir(cam.yaw, cam.pitch);
+        assert!(g[0] * u[0] + g[1] * u[1] < 0.0 && h == 0.0);
+        assert!(((g[0] * g[0] + g[1] * g[1]).sqrt() - 0.5).abs() < 1e-12);
+        // Right is the screen's right: a quarter turn clockwise from forward (y down).
+        let (r, _) = fly_shift(&cam, [0.0, 1.0, 0.0], 1.0);
+        let (f, _) = fly_shift(&cam, [1.0, 0.0, 0.0], 1.0);
+        assert!((r[0] + f[1]).abs() < 1e-12 && (r[1] - f[0]).abs() < 1e-12);
+    }
 
     #[test]
     fn terrain_drag_follows_the_camera() {

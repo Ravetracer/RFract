@@ -172,6 +172,9 @@ the terrain layer is selected:
 | Shift+Ctrl+drag | Move the camera up and down (*Camera target height*) |
 | Ctrl+wheel | Move the camera closer or farther |
 
+In fly mode (F) the keys fly the camera through the landscape and dragging looks around (see
+*The view › Fly mode*).
+
 Where no terrain is seen, the layer is transparent: the layers below and the background
 show, for example a gradient fill layer as a sky.
 A 3D object layer above the terrain can stand in its landscape (see *Layers › 3D objects ›

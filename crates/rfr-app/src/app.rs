@@ -669,7 +669,8 @@ impl App {
                     action = Some(Action::ToggleJulia);
                 }
                 ui.add(egui::Checkbox::new(&mut self.viewport.fly, "Fly mode  (F)")).on_hover_text(
-                    "Hold the left mouse button to fly into the fractal toward the cursor, the right button to fly out; the wheel sets the speed",
+                    "Hold the left mouse button to fly into the fractal toward the cursor, the right button to fly out; the wheel sets the speed. \
+                     Over a 3D terrain: W/A/S/D or the arrow keys move the camera, E/Q up and down, Shift faster, dragging looks around",
                 );
                 ui.separator();
                 ui.checkbox(&mut self.viewport.cycling, "Cycle colors")
@@ -743,6 +744,8 @@ impl App {
             } else if self.viewport.hovered {
                 let hint = if self.viewport.object {
                     "Drag: orbit the camera · Wheel: camera distance"
+                } else if self.viewport.fly && self.viewport.terrain {
+                    "Fly mode (F): W/S forward and back · A/D sideways · E/Q up and down · Shift: faster · Drag: look around · Wheel: speed · Ctrl-drag: orbit"
                 } else if self.viewport.fly {
                     "Fly mode (F): hold left: fly in toward the cursor · hold right: fly out · Wheel: speed · Ctrl-drag: orbit a terrain"
                 } else if self.viewport.terrain {

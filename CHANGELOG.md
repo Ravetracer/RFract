@@ -37,6 +37,8 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
 - Deep zooms: linear steps (bilinear approximation) for formulas that carry more than `z`
   (values kept from `init`, Phoenix and other formulas with several changing variables), on
   the CPU and the GPU; such views at 10⁻³⁰ now skip most iterations.
+- Terrain fly mode: in fly mode over a 3D terrain, W/A/S/D or the arrow keys move the camera,
+  E/Q rise and sink, Shift is faster and dragging looks around; flight recording follows.
 - 3D objects in a terrain (*Place in terrain*): an object layer stands in the scene of the 3D
   terrain below it, seen through its camera and lit by its lights; the nearer surface hides
   the other and both cast shadows.

@@ -26,6 +26,21 @@ real drive. The mouse wheel sets the speed (zoom steps of two per second, shown 
 left of the view). Ctrl+drag still orbits the camera of a 3D terrain. The timeline can record
 a flight as an animation (see *Animation*).
 
+Over a 3D terrain (the selected layer), fly mode moves the camera through the landscape
+instead:
+
+| Input | Action |
+|-------|--------|
+| W / S or ↑ / ↓ | Fly forward and back, the way the camera looks |
+| A / D or ← / → | Fly sideways |
+| E / Q or Page Up / Page Down | Rise and sink |
+| Shift | Four times faster |
+| Drag | Look around (the camera turns where it is) |
+| Wheel | Speed (image heights per second) |
+
+The keys work while the view has the keyboard (not while you type in a field); the moves ramp
+up and down like the flight into the fractal, and a flight recording follows them.
+
 While you navigate, the preview renders at a lower resolution (Preferences › Preview › While
 navigating) and switches back to full resolution once you stop.
 

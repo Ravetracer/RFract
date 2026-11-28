@@ -79,8 +79,9 @@ Open points of the earlier stages (their notes below stay for the details).
         ground; walls lit without shadows, edge colors fading to the wall color).
 - [x] Terrain camera: camera-relative dragging (`viewport::terrain_drag`), target height
       (`Camera::target`, Shift+Ctrl-drag; a fifth camera path channel).
-- [ ] Terrain fly mode: move the camera freely (WASD or arrow keys, mouse look), with flight
-      recording.
+- [x] Terrain fly mode: move the camera freely (WASD or arrow keys, mouse look), with flight
+      recording (`viewport::terrain_fly`: keys move the orbit point along the camera's axes,
+      looking turns about the camera's position, `look_shift`/`fly_shift`).
 - [x] 3D objects: bicomplex Julia and more DE formulas, 3D formula programs, depth compositing
       with terrains.
   - [x] Bicomplex Julia/Mandelbrot (idempotent basis: the product of two complex sets, distance
