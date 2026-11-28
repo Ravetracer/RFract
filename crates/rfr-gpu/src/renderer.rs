@@ -104,6 +104,7 @@ struct Uni {
     fxc: [[f32; 4]; 4],
     lpos: [[f32; 4]; 4],
     lprad: [[f32; 4]; 4],
+    win: [i32; 4],
 }
 
 /// The lighting a layer's shaders use: a lit layer's or a 3D object's.
@@ -277,7 +278,9 @@ fn layer_uni(plan: &Plan, lp: &LayerPlan) -> Uni {
     let period = if lp.early.periodicity && single { rfr_core::render::period_tolerance(f.pixel_size(), PERIOD_FLOOR_F32) as f32 } else { 0.0 };
     let bulbs = if lp.early.bulbs && single { 1.0 } else { 0.0 };
     Uni {
-        size: [f.width, f.height, 0, 0],
+        // Buffers cover the window; positions refer to the whole image (`win`).
+        size: [plan.window.width, plan.window.height, 0, 0],
+        win: [plan.window.x as i32, plan.window.y as i32, f.width as i32, f.height as i32],
         view: [f.center[0] as f32, f.center[1] as f32, (f.radius / (f.height as f64 * 0.5)) as f32, plan.magn() as f32],
         rot: [f.cos as f32, f.sin as f32, f.pixel_size() as f32, 1.0],
         iter: [lp.max_iter, lp.julia as u32, o.method_index(), i.method_index()],
@@ -972,9 +975,9 @@ impl GpuRenderer {
                     device.create_buffer(&wgpu::BufferDescriptor {
                         label: Some("light field"),
                         // 3D terrain: the height maxima after the field, four per 16 bytes.
-                        size: (plan.frame.width as u64 * plan.frame.height as u64 * 16
+                        size: (plan.window.pixels() as u64 * 16
                             + if lp.light.as_ref().is_some_and(|l| l.camera.is_some()) {
-                                rfr_core::render::light::mip_sizes(plan.frame.width, plan.frame.height)
+                                rfr_core::render::light::mip_sizes(plan.window.width, plan.window.height)
                                     .iter()
                                     .map(|(w, h)| *w as u64 * *h as u64)
                                     .sum::<u64>()
@@ -1082,7 +1085,7 @@ impl GpuRenderer {
                 }),
             })
             .collect();
-        let (w, h) = (plan.frame.width, plan.frame.height);
+        let (w, h) = (plan.window.width, plan.window.height);
         if self.target.as_ref().is_none_or(|t| t.width != w || t.height != h) {
             self.target = Some(self.create_target(w, h));
         }

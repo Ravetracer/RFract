@@ -64,8 +64,7 @@ pub fn render_poster(
         }
         let m = post::margin(*tile, w, h, post) + if post.denoise { DENOISE_MARGIN } else { 0 };
         let region = tiles::with_margin(*tile, m, w, h);
-        let part = tiles::region_doc(doc, w, h, region);
-        let mut lin = renderer.render_plan(&Plan::region(&part, region[2], region[3], doc, w, h)?, samples)?;
+        let mut lin = renderer.render_plan(&Plan::sized(doc, w, h)?.with_window(region), samples)?;
         if post.denoise {
             note = Some(match post::denoise(&mut lin, region[2], region[3], post.denoise_blend, None) {
                 Ok(dev) => format!("denoised in tiles ({})", dev.label()),

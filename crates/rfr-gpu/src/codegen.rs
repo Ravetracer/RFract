@@ -111,12 +111,13 @@ impl Gen<'_> {
                 Sys::Center => "center".into(),
                 Sys::Magn => "magn".into(),
                 Sys::Z => if self.post { "pz" } else { "l0" }.into(),
-                Sys::X => "i32(x)".into(),
-                Sys::Y => "i32(y)".into(),
-                Sys::Width => "i32(U.size.x)".into(),
-                Sys::Height => "i32(U.size.y)".into(),
-                Sys::ScreenPixel => "c_f(f32(x), f32(y))".into(),
-                Sys::ScreenMax => "c_f(f32(U.size.x), f32(U.size.y))".into(),
+                // Screen values are of the whole image (a window renders part of it).
+                Sys::X => "i32(xf)".into(),
+                Sys::Y => "i32(yf)".into(),
+                Sys::Width => "U.win.z".into(),
+                Sys::Height => "U.win.w".into(),
+                Sys::ScreenPixel => "c_f(f32(xf), f32(yf))".into(),
+                Sys::ScreenMax => "c_f(f32(U.win.z), f32(U.win.w))".into(),
                 Sys::Angle => "s_c(atan2(U.rot.y, U.rot.x))".into(),
                 // WGSL evaluates arguments left to right, like the CPU's two draws.
                 Sys::Random => format!("c_f(rnd_step(&rng_{p}), rnd_step(&rng_{p}))", p = self.prefix),
@@ -815,7 +816,7 @@ pub fn kernel(lp: &LayerPlan, mode: Mode) -> String {
         format!(
             concat!(
                 "struct PostT {{\n    z: Cx,\n    solid: bool,\n}}\n\n",
-                "fn post_tf(pixel_in: Cx, x: u32, y: u32) -> PostT {{\n",
+                "fn post_tf(pixel_in: Cx, xf: u32, yf: u32) -> PostT {{\n",
                 "    let ismand = U.iter.y == 0u;\n",
                 "    let center = c_f(U.view.x, U.view.y);\n",
                 "    let magn = s_c(U.view.w);\n",
@@ -851,7 +852,7 @@ pub fn kernel(lp: &LayerPlan, mode: Mode) -> String {
     }
     // Every value of the orbit the colorings get goes through the post-transformations once
     // (render::cpu `PostZ`).
-    let push = |pad: &str| format!("{pad}pzp = pz;\n{pad}let pt = post_tf(l0, x, y);\n{pad}pz = pt.z;\n{pad}psolid = pt.solid;\n");
+    let push = |pad: &str| format!("{pad}pzp = pz;\n{pad}let pt = post_tf(l0, xf, yf);\n{pad}pz = pt.z;\n{pad}psolid = pt.solid;\n");
     let mut color_init = if has_post { format!("        {{\n{}        }}\n", push("            ")) } else { String::new() };
     let mut color_loop = if has_post { format!("            {{\n{}            }}\n", push("                ")) } else { String::new() };
     for g in outside.iter().chain(inside.iter()) {
@@ -909,7 +910,7 @@ pub fn kernel(lp: &LayerPlan, mode: Mode) -> String {
         .to_string(),
         // The offset from the reference point in pixels, scaled with an extended exponent.
         Mode::Pert => concat!(
-            "    let pxo = vec2<f32>(f32(x) + ju - w * 0.5, -(f32(y) + jv - h * 0.5));\n",
+            "    let pxo = vec2<f32>(f32(xf) + ju - w * 0.5, -(f32(yf) + jv - h * 0.5));\n",
             "    let pxr = vec2<f32>(pxo.x * U.rot.x - pxo.y * U.rot.y, pxo.x * U.rot.y + pxo.y * U.rot.x);\n",
             "    let dpix = cf_add(cf_make(pxr.x * U.pert.x, pxr.y * U.pert.x, U.perti.x), cf_make(U.pert.y, U.pert.z, U.perti.z));\n",
             "    let pcen = U.pref.xy;\n",

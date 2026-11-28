@@ -722,6 +722,7 @@ fn render_check(prog: rfr_core::formula::Program, kind: rfr_core::formula::Progr
             center_text: ["-0.5".into(), "0".into()],
             background: [0.0, 0.0, 0.0, 1.0],
             adaptive: 0.0,
+            window: rfr_core::render::Window::whole(4, 3),
             nodes: vec![rfr_core::render::Node::Layer {
                 layer: Box::new(lp),
                 blend: rfr_core::render::Blend { mode: Default::default(), opacity: 1.0 },

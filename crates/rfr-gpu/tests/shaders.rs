@@ -751,6 +751,36 @@ fn tiled_posters_match_whole_renders() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Windows of a render (poster tiles) are the whole render there, pixel for pixel: layers,
+/// transformations, distance estimation and 3D objects.
+#[test]
+fn gpu_windows_are_the_whole_image_there() {
+    let Ok(ctx) = rfr_gpu::GpuContext::new_headless() else {
+        eprintln!("no GPU: skipped");
+        return;
+    };
+    let mut de = Document::for_formula("rfract:Mandelbrot");
+    de.view.rotation = 25.0;
+    de.layers[0].outside_method = OutsideMethod::Distance;
+    let mut object = Document::default();
+    object.layers[0].kind = LayerKind::Object;
+    let (w, h, s) = (160u32, 90u32, 3);
+    for (name, mut doc) in [("layered", layered()), ("distance", de), ("object", object)] {
+        doc.image.adaptive = 0.0;
+        let whole = rfr_core::render::cpu::rgba8(&rfr_gpu::render_blocking(ctx.clone(), &Plan::sized(&doc, w, h).unwrap(), s, |_| true).unwrap());
+        for win in [[0u32, 0, 64, 40], [57, 23, 103, 67], [159, 89, 1, 1]] {
+            let plan = Plan::sized(&doc, w, h).unwrap().with_window(win);
+            let part = rfr_core::render::cpu::rgba8(&rfr_gpu::render_blocking(ctx.clone(), &plan, s, |_| true).unwrap());
+            for j in 0..win[3] {
+                let a = ((win[1] + j) * w + win[0]) as usize * 4;
+                let b = (j * win[2]) as usize * 4;
+                let n = win[2] as usize * 4;
+                assert_eq!(&whole[a..a + n], &part[b..b + n], "{name}: window {win:?}, row {j}");
+            }
+        }
+    }
+}
+
 /// Adaptive sampling on the GPU gives the image of the CPU renderer (and of full sampling).
 #[test]
 fn adaptive_sampling_matches_the_cpu() {

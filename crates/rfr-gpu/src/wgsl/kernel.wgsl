@@ -7,7 +7,7 @@
 // codegen.rs fills the //@ markers.
 
 struct Uni {
-    // width, height, sample index, first row of the band
+    // width, height (of the window: the buffers), sample index, first row of the band
     size: vec4<u32>,
     // center x, center y, plane units per pixel (radius / (height / 2)), magnification
     view: vec4<f32>,
@@ -84,6 +84,9 @@ struct Uni {
     // distance where they fall to half (0: no falloff); color times intensity
     lpos: array<vec4<f32>, 4>,
     lprad: array<vec4<f32>, 4>,
+    // the window's origin in the whole image (x, y) and the whole image's width and height
+    // (rfr_core::render::Window): positions, jitter and random streams use whole-image pixels
+    win: vec4<i32>,
 }
 
 struct Params {
@@ -441,12 +444,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
     let s = U.size.z;
-    let rng_base = hash(x ^ hash(y ^ hash(s + 0x9E3779B9u)));
+    // The pixel in the whole image (the window lies inside it).
+    let xf = u32(i32(x) + U.win.x);
+    let yf = u32(i32(y) + U.win.y);
+    let rng_base = hash(xf ^ hash(yf ^ hash(s + 0x9E3779B9u)));
 //@MODE_INIT
     // Sample position inside the pixel (R2 sequence in 32-bit fixed point) and derivative direction;
     // a lit layer's field takes pixel (0, 0)'s for all pixels (a regular grid).
-    var jx = x;
-    var jy = y;
+    var jx = xf;
+    var jy = yf;
     if U.band.y == 2u {
         jx = 0u;
         jy = 0u;
@@ -463,10 +469,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         jv = 0.5;
         turn = 0.0;
     }
-    let w = f32(U.size.x);
-    let h = f32(U.size.y);
-    let dx = (f32(x) + ju - w * 0.5) * U.view.z;
-    let dy = -(f32(y) + jv - h * 0.5) * U.view.z;
+    let w = f32(U.win.z);
+    let h = f32(U.win.w);
+    let dx = (f32(xf) + ju - w * 0.5) * U.view.z;
+    let dy = -(f32(yf) + jv - h * 0.5) * U.view.z;
     let off = vec2<f32>(dx * U.rot.x - dy * U.rot.y, dx * U.rot.y + dy * U.rot.x);
     let pr = U.view.xy + off;
 //@PIXEL

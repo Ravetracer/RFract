@@ -392,7 +392,11 @@ pub enum Node {
 
 #[derive(Clone, Debug)]
 pub struct Plan {
+    /// The whole image: every position, length and random stream refers to it.
     pub frame: ViewFrame,
+    /// The part of the image the renderers compute (the whole image unless a poster renders
+    /// in tiles).
+    pub window: Window,
     /// The view center as exact decimal text (reference orbits for deep zooms).
     pub center_text: [String; 2],
     /// Linear RGB and alpha below all layers.
@@ -401,6 +405,34 @@ pub struct Plan {
     pub adaptive: f32,
     /// Bottom first.
     pub nodes: Vec<Node>,
+}
+
+/// A rectangle of the whole image in pixels: what a render computes. Pixel (x, y) of the
+/// render is pixel (x + `x`, y + `y`) of the image, so the pixels of a window are the pixels of
+/// the whole image there (same sample positions, same random streams).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Window {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl Window {
+    /// The whole `width` × `height` image.
+    pub fn whole(width: u32, height: u32) -> Window {
+        Window { x: 0, y: 0, width: width.max(1), height: height.max(1) }
+    }
+
+    /// The window `[x, y, width, height]`.
+    pub fn of(r: [u32; 4]) -> Window {
+        Window { x: r[0], y: r[1], width: r[2].max(1), height: r[3].max(1) }
+    }
+
+    /// Number of pixels.
+    pub fn pixels(&self) -> usize {
+        self.width as usize * self.height as usize
+    }
 }
 
 /// The document and image size the histogram tables of a plan come from (none: no tables).
@@ -457,15 +489,10 @@ impl Plan {
         Plan::build(doc, width, height, Some((doc, width, height)))
     }
 
-    /// The plan of a part of a larger image (`tiles::region_doc`): histogram tables come from
-    /// `full`, the document of the whole image at `w` × `h`.
-    pub fn region(part: &Document, width: u32, height: u32, full: &Document, w: u32, h: u32) -> Result<Plan, String> {
-        Plan::build(part, width, height, Some((full, w, h)))
-    }
-
     fn build(doc: &Document, width: u32, height: u32, probe: Probe) -> Result<Plan, String> {
         let mut plan = Plan {
             frame: ViewFrame::of(doc, width, height),
+            window: Window::whole(width, height),
             center_text: doc.view.center.clone(),
             background: doc.image.background,
             adaptive: 0.0,
@@ -497,6 +524,15 @@ impl Plan {
         let (w, h) = (plan.frame.width, plan.frame.height);
         walk(&mut plan.nodes, doc, w, h);
         Ok(plan)
+    }
+
+    /// The plan rendering only `window` (`[x, y, width, height]`, inside the image) of the
+    /// image.
+    pub fn with_window(mut self, window: [u32; 4]) -> Plan {
+        let w = Window::of(window);
+        debug_assert!(w.x + w.width <= self.frame.width && w.y + w.height <= self.frame.height, "window outside the image");
+        self.window = w;
+        self
     }
 
     /// The plan with adaptive sampling at noise tolerance `tolerance` (0: off; never with

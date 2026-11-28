@@ -380,7 +380,10 @@ struct Ctx<'a> {
     /// The sample's offset from the view center (deep zooms).
     d: Cfx,
     turn: f64,
+    /// The pixel in the whole image and the sample index.
     pix: (u32, u32, u32),
+    /// The pixel in the window (lit layers' fields cover the window).
+    local: (u32, u32),
     /// Every layer evaluated so far stayed inside (see [`LayerK::eval`]).
     inside: bool,
 }
@@ -391,7 +394,7 @@ impl Ctx<'_> {
         self.next += 1;
         if let (Some(field), Some(l)) = (&self.fields[i], &lp.light) {
             self.inside = false;
-            return field.shade(l, self.pix.0, self.pix.1, self.pix.2);
+            return field.shade(l, self.local.0, self.local.1, self.pix.2);
         }
         let (c, _, inside) = self.kernels[i].eval(&mut self.frames[i], lp, self.plan, (self.p, self.d), self.turn, self.pix);
         self.inside &= inside;
@@ -422,7 +425,7 @@ fn composite_nodes(nodes: &[Node], below: [f32; 4], ctx: &mut Ctx) -> [f32; 4] {
 impl CpuRenderer {
     pub fn new(plan: Plan) -> CpuRenderer {
         let kernels: Vec<Kernel> = plan.layers().iter().map(|l| Kernel::new(l, &plan)).collect();
-        let n = (plan.frame.width * plan.frame.height) as usize;
+        let n = plan.window.pixels();
         let fields = kernels.iter().map(|_| None).collect();
         CpuRenderer {
             plan,
@@ -445,14 +448,27 @@ impl CpuRenderer {
         self.samples
     }
 
-    /// Color (linear RGB, straight alpha) of the sample `s` of pixel (x, y), and whether every
-    /// layer stayed inside there.
+    /// Color (linear RGB, straight alpha) of the sample `s` of pixel (x, y) of the window, and
+    /// whether every layer stayed inside there.
     fn sample(&self, frames: &mut [KernelF], x: u32, y: u32, s: u32) -> ([f32; 4], bool) {
-        let (u, v, turn) = sample_offset(x, y, s);
-        let (px, py) = (x as f64 + u, y as f64 + v);
+        // Positions and random streams of the pixel in the whole image.
+        let (ix, iy) = (x + self.plan.window.x, y + self.plan.window.y);
+        let (u, v, turn) = sample_offset(ix, iy, s);
+        let (px, py) = (ix as f64 + u, iy as f64 + v);
         let (p, d) = (self.plan.frame.plane(px, py), self.plan.frame.offset_fx(px, py));
-        let mut ctx =
-            Ctx { kernels: &self.kernels, fields: &self.fields, frames, next: 0, plan: &self.plan, p, d, turn, pix: (x, y, s), inside: true };
+        let mut ctx = Ctx {
+            kernels: &self.kernels,
+            fields: &self.fields,
+            frames,
+            next: 0,
+            plan: &self.plan,
+            p,
+            d,
+            turn,
+            pix: (ix, iy, s),
+            local: (x, y),
+            inside: true,
+        };
         let c = composite_nodes(&self.plan.nodes, self.plan.background, &mut ctx);
         (c, ctx.inside)
     }
@@ -501,7 +517,8 @@ impl CpuRenderer {
     fn light_pass(&mut self) {
         let s = self.samples;
         let (u, v, turn) = sample_offset(0, 0, s);
-        let (w, h) = (self.plan.frame.width, self.plan.frame.height);
+        let win = self.plan.window;
+        let (w, h) = (win.width, win.height);
         let layers = self.plan.layers();
         let mut fields: Vec<Option<light::Field>> = Vec::with_capacity(layers.len());
         for (k, lp) in self.kernels.iter().zip(&layers) {
@@ -517,9 +534,10 @@ impl CpuRenderer {
                 || proto.clone(),
                 |f, (y, row)| {
                     for (x, out) in row.iter_mut().enumerate() {
-                        let (px, py) = (x as f64 + u, y as f64 + v);
+                        let (ix, iy) = (x as u32 + win.x, y as u32 + win.y);
+                        let (px, py) = (ix as f64 + u, iy as f64 + v);
                         let at = (plan.frame.plane(px, py), plan.frame.offset_fx(px, py));
-                        let (c, [hgt, de], _) = k.eval(f, lp, plan, at, turn, (x as u32, y as u32, s));
+                        let (c, [hgt, de], _) = k.eval(f, lp, plan, at, turn, (ix, iy, s));
                         // Colors from 0 to 1 (the GPU keeps them in 16-bit fixed point).
                         let k = |v: f32| v.clamp(0.0, 1.0);
                         *out = [k(c[0]), k(c[1]), k(c[2]), k(c[3]), hgt, de];
@@ -535,7 +553,7 @@ impl CpuRenderer {
     pub fn pass(&mut self) {
         self.density_pass();
         self.light_pass();
-        let w = self.plan.frame.width as usize;
+        let w = self.plan.window.width as usize;
         let s = self.samples;
         let proto: Vec<KernelF> = self.kernels.iter().map(|k| k.frames()).collect();
         let mut accum = std::mem::take(&mut self.accum);
@@ -544,7 +562,7 @@ impl CpuRenderer {
         let tolerance = self.plan.adaptive;
         // The neighbours as they were before this pass.
         let before = if tolerance > 0.0 { stats.clone() } else { Vec::new() };
-        let h = self.plan.frame.height as usize;
+        let h = self.plan.window.height as usize;
         let around = |x: usize, y: usize| {
             if before.is_empty() {
                 return [[0.0; 4]; 4];
@@ -559,15 +577,28 @@ impl CpuRenderer {
             super::adaptive_update(acc, st, premultiply(c), tolerance, around(x, y));
         };
         if self.guesses() {
-            // Guessing: tiles of GUESS_TILE rows, each tile subdivided (see `guess_tile`).
-            let rows = GUESS_TILE * w;
-            accum.par_chunks_mut(rows).zip(stats.par_chunks_mut(rows)).enumerate().for_each_init(
+            // Guessing: tiles of GUESS_TILE pixels on the whole image's grid (a window guesses
+            // like the whole image), each tile subdivided (see `guess_tile`).
+            let win = self.plan.window;
+            let (gx, gy) = (win.x as usize % GUESS_TILE, win.y as usize % GUESS_TILE);
+            let mut bands = Vec::new();
+            let (mut acc_rest, mut st_rest) = (&mut accum[..], &mut stats[..]);
+            let mut y0 = 0;
+            while y0 < h {
+                let th = (GUESS_TILE - if y0 == 0 { gy } else { 0 }).min(h - y0);
+                let (a, ar) = std::mem::take(&mut acc_rest).split_at_mut(th * w);
+                let (b, br) = std::mem::take(&mut st_rest).split_at_mut(th * w);
+                bands.push((y0, a, b));
+                (acc_rest, st_rest) = (ar, br);
+                y0 += th;
+            }
+            let starts: Vec<usize> = std::iter::once(0).chain((GUESS_TILE - gx..w).step_by(GUESS_TILE).filter(|&x| x > 0)).collect();
+            bands.into_par_iter().for_each_init(
                 || (proto.clone(), Vec::new()),
-                |(frames, cells), (ty, (acc_rows, st_rows))| {
-                    let y0 = ty * GUESS_TILE;
+                |(frames, cells), (y0, acc_rows, st_rows)| {
                     let th = acc_rows.len() / w;
-                    for x0 in (0..w).step_by(GUESS_TILE) {
-                        let tw = GUESS_TILE.min(w - x0);
+                    for (k, &x0) in starts.iter().enumerate() {
+                        let tw = starts.get(k + 1).copied().unwrap_or(w) - x0;
                         let at = |lx: usize, ly: usize| ly * w + x0 + lx;
                         cells.clear();
                         for ly in 0..th {

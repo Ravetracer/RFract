@@ -54,6 +54,13 @@ Open points of the earlier stages (their notes below stay for the details).
       (`OrbitResult::dz`). The CPU reference is slow there (no BLA, `Cfx` per operation).
 - [ ] Windows of a larger frame: poster tiles with lit layers, effects, density layers and 3D
       objects; shadow field margin.
+  - [x] Part 1: `Plan::window` (`Window`), both renderers compute positions, jitter and random
+        streams in whole-image pixels; posters render windows (pixel-identical to the whole
+        render, CPU guessing on the whole image's grid); 3D objects tile.
+  - [ ] Part 2: flat lit layers and layer effects (fields over the window plus a margin; the
+        margin also brings shadows from beyond the image border).
+  - [ ] Part 3: terrains (the field of the whole view, the camera's window).
+  - [ ] Part 4: density layers (counts of the window, normalization of the whole image).
 - [ ] Terrain: larger than the view, walls down to a base, optional path tracing into OIDN.
 - [ ] 3D objects: bicomplex Julia and more DE formulas, 3D formula programs, depth compositing
       with terrains.
