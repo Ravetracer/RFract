@@ -22,7 +22,12 @@ Laptop, shared with other work: compare medians of the same run only).
       plain f32 while every delta's exponent is within ±60; the extended exponent only for
       tiny deltas. 1e-40 example (4000 iterations, 22 % stepped one by one, the rest linear
       steps): 1.05 → 0.50 s. Distance estimation keeps floatexp; the CPU keeps Fx (f64).
-- [ ] Ideas: terrain path tracing (2.1 s at 960 × 540, 64 spp); coloring-heavy layers.
+- [x] Terrains: `l_trace_in` tracked the height-maxima base per level in a 32-entry array
+      filled with an O(levels²) setup on every ray; now the base follows the level (one size
+      per step). Terrains got their own entry point (`lit_ter`; `lit` for flat lit layers),
+      since the bigger terrain code slowed flat lit layers by 18 % through register use.
+      Terrain 1.00 → 0.81 s, path tracing 2.2 → 1.35 s, flat lit layers unchanged.
+- [ ] Ideas: coloring-heavy layers (traps 2.5 s, layers 3.1 s).
 
 ## Stage 11 – Network rendering and scripting
 

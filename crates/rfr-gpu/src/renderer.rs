@@ -587,6 +587,14 @@ fn dmax_key(sig: u64) -> u64 {
 fn lit_key(sig: u64) -> u64 {
     sig ^ 0x7117_0000_0000_0003
 }
+/// Cache key of a 3D terrain's `lit_ter` pipeline.
+fn lit_ter_key(sig: u64) -> u64 {
+    sig ^ 0x7E44_0000_0000_0006
+}
+/// The lighting pipeline of a lit layer: its own entry point for a 3D terrain (`lighti.w`).
+fn lighting_key(uni: &Uni, sig: u64) -> u64 {
+    if uni.lighti[3] != 0 { lit_ter_key(sig) } else { lit_key(sig) }
+}
 fn lmip_key(sig: u64) -> u64 {
     sig ^ 0x3A1B_0000_0000_0004
 }
@@ -1461,6 +1469,7 @@ impl GpuRenderer {
             }
             if lit {
                 built.push((lit_key(sig), compile(&device, &layout, &lit_source, "lit")));
+                built.push((lit_ter_key(sig), compile(&device, &layout, &lit_source, "lit_ter")));
                 built.push((lmip_key(sig), compile(&device, &layout, &lit_source, "lmip")));
                 built.push((lblend_key(sig), compile(&device, &layout, &lit_source, "lblend")));
             }
@@ -1488,7 +1497,7 @@ impl GpuRenderer {
                 keys.extend([scatter_key(l.signature), dmax_key(l.signature)]);
             }
             if l.light.is_some() {
-                keys.extend([lit_key(l.signature), lmip_key(l.signature)]);
+                keys.extend([lit_key(l.signature), lit_ter_key(l.signature), lmip_key(l.signature)]);
             }
             for k in keys {
                 match self.pipeline(k) {
@@ -1571,7 +1580,7 @@ impl GpuRenderer {
             match &op.kind {
                 OpKind::Layer { layer, .. } => {
                     let l = &self.layers[*layer];
-                    let key = if l.light.is_some() { lit_key(l.signature) } else { l.signature };
+                    let key = if l.light.is_some() { lighting_key(&l.uni, l.signature) } else { l.signature };
                     let Some(Ok(p)) = self.pipeline(key) else { return false };
                     let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
                         label: Some("layer"),

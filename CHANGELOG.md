@@ -26,6 +26,9 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
 - Deep zooms on the GPU about twice as fast: perturbation steps and the rebasing check run in
   plain f32 while the deltas are well inside its range (the extended exponent only for tiny
   deltas).
+- 3D terrains about 20 % faster, path-traced terrains about 40 %: the ray march finds the
+  height maxima without recomputing their layout for every ray, and terrains have their own
+  lighting entry point on the GPU.
 
 ## [0.12.0] - 2026-11-28
 

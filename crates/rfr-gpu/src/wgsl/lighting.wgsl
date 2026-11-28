@@ -352,9 +352,13 @@ fn l_above(o: vec3<f32>, d: vec3<f32>, k: f32, t: f32, ring: u32) -> f32 {
 fn l_trace_in(o: vec3<f32>, d: vec3<f32>, k: f32, ring: u32, tmin: f32, tmax: f32, entry_hit: bool, walls: bool, wbase: f32) -> vec3<f32> {
     let levels = l_mip_levels();
     let top = levels - 1u;
-    var bases: array<u32, 32>;
-    for (var l = 0u; l < levels; l = l + 1u) {
-        bases[l] = l_mip_base(l, ring);
+    // The first word of the top level (the base of the current level follows the level as it
+    // goes up and down: one level's size each step).
+    let base0 = l_mip_base(0u, ring);
+    var top_base = base0;
+    for (var l = 0u; l < top; l = l + 1u) {
+        let n = l_mip_size(l);
+        top_base = top_base + n.x * n.y;
     }
     let xmax = max(f32(U.ffar.z) - 1.0, 0.0);
     let ymax = max(f32(U.ffar.w) - 1.0, 0.0);
@@ -385,7 +389,7 @@ fn l_trace_in(o: vec3<f32>, d: vec3<f32>, k: f32, ring: u32, tmin: f32, tmax: f3
     }
     t1 = min(t1, tmax);
     let t_side = t0;
-    let zt = l_mip_get(bases[top], top, 0, 0);
+    let zt = l_mip_get(top_base, top, 0, 0);
     if o.z > zt {
         if d.z >= 0.0 {
             return vec3<f32>(0.0);
@@ -408,6 +412,7 @@ fn l_trace_in(o: vec3<f32>, d: vec3<f32>, k: f32, ring: u32, tmin: f32, tmax: f3
     }
     var t = t0;
     var level = top;
+    var base = top_base;
     let steps = 4u * u32(U.ffar.z + U.ffar.w) + 64u;
     for (var it = 0u; it < steps; it = it + 1u) {
         if t > t1 {
@@ -425,14 +430,20 @@ fn l_trace_in(o: vec3<f32>, d: vec3<f32>, k: f32, ring: u32, tmin: f32, tmax: f3
             }
         }
         te = max(te, t);
-        let zmax = l_mip_get(bases[level], level, i32(c.x), i32(c.y));
+        let zmax = l_mip_get(base, level, i32(c.x), i32(c.y));
         if min(o.z + d.z * t, o.z + d.z * te) > zmax {
             t = te + 1e-3;
-            level = min(level + 1u, top);
+            if level < top {
+                let n = l_mip_size(level);
+                base = base + n.x * n.y;
+                level = level + 1u;
+            }
             continue;
         }
         if level > 0u {
             level = level - 1u;
+            let n = l_mip_size(level);
+            base = base - n.x * n.y;
             continue;
         }
         if l_above(o, d, k, t, ring) <= 0.0 {
@@ -457,7 +468,11 @@ fn l_trace_in(o: vec3<f32>, d: vec3<f32>, k: f32, ring: u32, tmin: f32, tmax: f3
             a = b;
         }
         t = te + 1e-3;
-        level = min(1u, top);
+        if top >= 1u {
+            level = 1u;
+            let n = l_mip_size(0u);
+            base = base0 + n.x * n.y;
+        }
     }
     // Out of steps: the ray skims the surface here.
     if t <= t1 {
@@ -890,8 +905,19 @@ fn l_path(hit: vec2<f32>, view0: vec3<f32>, rng: ptr<function, u32>) -> vec4<f32
     return vec4<f32>(out, alpha);
 }
 
+// The lighting pass: flat lit layers (`lit`) and 3D terrains (`lit_ter`) as separate entry
+// points, so each gets the registers it needs (terrain tracing would slow flat layers down).
 @compute @workgroup_size(8, 8)
 fn lit(@builtin(global_invocation_id) gid: vec3<u32>) {
+    lit_main(gid, false);
+}
+
+@compute @workgroup_size(8, 8)
+fn lit_ter(@builtin(global_invocation_id) gid: vec3<u32>) {
+    lit_main(gid, true);
+}
+
+fn lit_main(gid: vec3<u32>, terrain: bool) {
     let x = gid.x;
     let y = gid.y + U.size.w;
     if x >= U.size.x || gid.y >= U.band.x || y >= U.size.y {
@@ -911,7 +937,7 @@ fn lit(@builtin(global_invocation_id) gid: vec3<u32>) {
     var gy: f32;
     var view = vec3<f32>(0.0, 0.0, 1.0);
     var de = 3.0e38;
-    if U.lighti.w == 0u {
+    if !terrain {
         px = lp0.x;
         py = lp0.y;
         let far = l_far(px, py);
@@ -974,10 +1000,10 @@ fn lit(@builtin(global_invocation_id) gid: vec3<u32>) {
     // A lit layer is shaded (shadows and occlusion with the same random numbers as the CPU);
     // a layer with effects only keeps its colors.
     var col = color;
-    if U.fx2.z > 0.5 || U.lighti.w != 0u {
+    if U.fx2.z > 0.5 || terrain {
         col = l_light_at(color, vec3<f32>(px, py, k * h0), normalize(vec3<f32>(-k * gx, -k * gy, 1.0)), view, &rng, true);
     }
-    if U.lighti.w == 0u && U.fx2.w > 0.5 {
+    if !terrain && U.fx2.w > 0.5 {
         col = l_effects(col, px, py, de, &rng);
     }
     l_blend(gid, x, col);
