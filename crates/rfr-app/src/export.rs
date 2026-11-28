@@ -56,8 +56,6 @@ impl Export {
         let samples = doc.image.samples.max(1);
         let (w, h) = (doc.image.width.max(1), doc.image.height.max(1));
         if rfr_core::render::tiles::needs_tiles(w, h) {
-            rfr_core::render::tiles::can_tile(doc)
-                .map_err(|e| format!("{w} × {h} renders in tiles, but {e}; render it smaller or change the layer"))?;
             let (tx, rx) = channel();
             let progress = Arc::new(AtomicU32::new(0));
             let cancel = Arc::new(AtomicBool::new(false));

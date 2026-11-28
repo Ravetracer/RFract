@@ -526,6 +526,9 @@ struct DensityRes {
     uniform: wgpu::Buffer,
     orbits: u32,
     pixels: u32,
+    channels: u32,
+    /// Windows of a poster: the largest counts of the whole image per pass.
+    max: Option<Arc<Vec<[u32; 3]>>>,
 }
 
 /// Cache keys of a density layer's `scatter` and `dmax` pipelines (derived from its signature).
@@ -976,12 +979,12 @@ impl GpuRenderer {
             let (hist, density) = match &lp.density {
                 Some(d) => {
                     let channels = rfr_core::render::density::channels(d) as u32;
-                    let pixels = plan.frame.width * plan.frame.height;
+                    let pixels = plan.window.pixels() as u32;
                     let hist = device.create_buffer(&wgpu::BufferDescriptor {
                         label: Some("density counts"),
                         // Metropolis: four words per chain after the counts and maxima.
                         size: ((channels * pixels + 4 + if rfr_core::render::density::metropolis(d) { 4 * d.orbits.max(1) } else { 0 }) as u64) * 4,
-                        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
                         mapped_at_creation: false,
                     });
                     uni.dens = d.region.map(|v| v as f32);
@@ -995,7 +998,7 @@ impl GpuRenderer {
                         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                         mapped_at_creation: false,
                     });
-                    (hist, Some(DensityRes { uniform, orbits: d.orbits.max(1), pixels }))
+                    (hist, Some(DensityRes { uniform, orbits: d.orbits.max(1), pixels, channels, max: lp.density_max.clone() }))
                 }
                 // Lit layers: the near and far fields, 16 bytes per cell.
                 None if let Some(g) = grids(plan, lp) => (
@@ -1224,6 +1227,62 @@ impl GpuRenderer {
         }
         self.ctx.queue.submit(Some(enc.finish()));
         let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        // Windows of a poster: the largest counts of the whole image (after the counts).
+        for l in &self.layers {
+            if let Some(d) = &l.density
+                && let Some(m) = d.max.as_ref().and_then(|m| m.get(self.density_passes as usize))
+            {
+                self.ctx.queue.write_buffer(&l.hist, (d.channels * d.pixels) as u64 * 4, bytemuck::cast_slice(&m[..d.channels as usize]));
+            }
+        }
+    }
+
+    /// Density layers: `passes` passes of their orbits only (no image); the largest counts per
+    /// channel after every pass, per density layer in plan order (see
+    /// `rfr_core::render::cpu::CpuRenderer::density_maxima`).
+    pub fn density_maxima(&mut self, passes: u32) -> Result<Vec<Vec<[u32; 3]>>, String> {
+        self.wait_for_pipeline()?;
+        let Some((scratch, _)) = self.scratch.clone() else { return Err("no render target".into()) };
+        let n = self.layers.iter().filter(|l| l.density.is_some()).count();
+        let mut out = vec![Vec::with_capacity(passes as usize); n];
+        self.density_passes = 0;
+        for _ in 0..passes {
+            self.density_pass(&scratch);
+            self.density_passes += 1;
+            for (o, l) in out.iter_mut().zip(self.layers.iter().filter(|l| l.density.is_some())) {
+                let d = l.density.as_ref().unwrap();
+                let words =
+                    self.read_words(&l.hist, (d.channels * d.pixels) as u64 * 4, d.channels as u64).ok_or("could not read the counts back")?;
+                o.push(std::array::from_fn(|c| words.get(c).copied().unwrap_or(0)));
+            }
+        }
+        Ok(out)
+    }
+
+    /// `count` words of `buf` from byte `offset` (read back).
+    fn read_words(&self, buf: &wgpu::Buffer, offset: u64, count: u64) -> Option<Vec<u32>> {
+        let size = (count * 4).next_multiple_of(4).max(4);
+        let staging = self.ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("readback"),
+            size,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut enc = self.ctx.device.create_command_encoder(&Default::default());
+        enc.copy_buffer_to_buffer(buf, offset, &staging, 0, size);
+        self.ctx.queue.submit(Some(enc.finish()));
+        let slice = staging.slice(..);
+        let (tx, rx) = channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        let _ = self.ctx.device.poll(wgpu::PollType::wait_indefinitely());
+        rx.recv().ok()?.ok()?;
+        let data = slice.get_mapped_range().ok()?;
+        let out = bytemuck::cast_slice::<u8, u32>(&data[..]).to_vec();
+        drop(data);
+        staging.unmap();
+        Some(out)
     }
 
     /// Lit layers: their fields for the current sample (kernel `main`, operation 2), in bands

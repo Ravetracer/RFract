@@ -13,9 +13,12 @@ use crate::doc::{Density, DensityMode};
 use crate::formula::cpu::{Compiled, Frame, Hook};
 use crate::math::complex::{C64, Cx};
 
-/// Counts per pixel and channel (1, or 3 for Nebulabrot) and the largest count per channel
-/// (updated after every pass); with Metropolis sampling the state of every orbit's chain.
+/// Counts per pixel and channel (1, or 3 for Nebulabrot) of the render's window (pixel
+/// (`x0` + x, `y0` + y) of the image) and the largest count per channel (updated after every
+/// pass); with Metropolis sampling the state of every orbit's chain.
 pub struct Histogram {
+    pub x0: u32,
+    pub y0: u32,
     pub width: u32,
     pub height: u32,
     pub channels: usize,
@@ -36,9 +39,13 @@ pub struct Chain {
 }
 
 impl Histogram {
-    /// `chains`: the orbits per pass when the layer samples with Metropolis chains, else 0.
-    pub fn new(width: u32, height: u32, channels: usize, chains: usize) -> Histogram {
+    /// The counts of `window`; `chains`: the orbits per pass when the layer samples with
+    /// Metropolis chains, else 0.
+    pub fn new(window: super::Window, channels: usize, chains: usize) -> Histogram {
+        let (width, height) = (window.width, window.height);
         Histogram {
+            x0: window.x,
+            y0: window.y,
             width,
             height,
             channels,
@@ -58,8 +65,25 @@ impl Histogram {
         }
     }
 
+    /// The count of image pixel (x, y) (in the window).
     pub fn count(&self, ch: usize, x: u32, y: u32) -> u32 {
+        let (x, y) = (x - self.x0, y - self.y0);
         self.counts[ch * (self.width * self.height) as usize + (y * self.width + x) as usize].load(Ordering::Relaxed)
+    }
+
+    /// Adds `weight` to image pixel (x, y) in the channels of `mask`, when it lies in the window.
+    pub fn add(&self, x: u32, y: u32, mask: u32, weight: u32) {
+        let (Some(lx), Some(ly)) = (x.checked_sub(self.x0), y.checked_sub(self.y0)) else { return };
+        if lx >= self.width || ly >= self.height {
+            return;
+        }
+        let at = (ly * self.width + lx) as usize;
+        let plane = (self.width * self.height) as usize;
+        for c in 0..self.channels {
+            if mask & (1 << c) != 0 {
+                self.counts[c * plane + at].fetch_add(weight, Ordering::Relaxed);
+            }
+        }
     }
 }
 
@@ -284,7 +308,6 @@ fn ifs_orbit(s: &Scatter, i: u32) {
     let start = start_point(d, s.pass, i);
     let (mut x, mut y) = (start.re, start.im);
     let mut rnd = hash(i ^ hash(s.pass ^ 0xA511_E9B3));
-    let plane = (s.hist.width * s.hist.height) as usize;
     for it in 0..s.lp.max_iter {
         rnd = hash(rnd);
         let u = rnd as f64 / 4294967296.0 * total;
@@ -301,7 +324,7 @@ fn ifs_orbit(s: &Scatter, i: u32) {
         if it >= d.warmup
             && let Some((px, py)) = pixel_of(s.frame, C64::new(x, y))
         {
-            s.hist.counts[(py * s.hist.width + px) as usize % plane].fetch_add(1, Ordering::Relaxed);
+            s.hist.add(px, py, 1, 1);
         }
     }
 }
@@ -315,7 +338,6 @@ fn kleinian_orbit(s: &Scatter, i: u32) {
     let mut z = start;
     let mut rnd = hash(i ^ hash(s.pass ^ 0x7F4A_7C15));
     let mut prev = 4usize;
-    let plane = (s.hist.width * s.hist.height) as usize;
     for it in 0..s.lp.max_iter {
         rnd = hash(rnd);
         let pick = (rnd >> 8) % 3;
@@ -342,7 +364,7 @@ fn kleinian_orbit(s: &Scatter, i: u32) {
         if it >= d.warmup
             && let Some((px, py)) = pixel_of(s.frame, z)
         {
-            s.hist.counts[(py * s.hist.width + px) as usize % plane].fetch_add(1, Ordering::Relaxed);
+            s.hist.add(px, py, 1, 1);
         }
     }
 }
@@ -368,7 +390,6 @@ fn lsystem_orbit(s: &Scatter, i: u32) {
     }
     let w = s.density.lsystem.width;
     let mut rnd = hash(i ^ hash(s.pass ^ 0x3C6E_F372));
-    let plane = (s.hist.width * s.hist.height) as usize;
     for _ in 0..s.lp.max_iter {
         rnd = hash(rnd);
         let u = rnd as f64 / 4294967296.0;
@@ -388,7 +409,7 @@ fn lsystem_orbit(s: &Scatter, i: u32) {
         let (nx, ny) = (-dy / len, dx / len);
         let p = C64::new(g[0] + dx * t + nx * v * w, g[1] + dy * t + ny * v * w);
         if let Some((px, py)) = pixel_of(s.frame, p) {
-            s.hist.counts[(py * s.hist.width + px) as usize % plane].fetch_add(1, Ordering::Relaxed);
+            s.hist.add(px, py, 1, 1);
         }
     }
 }
@@ -419,13 +440,7 @@ fn scatter_orbit(s: &Scatter, f: &mut Frame<f64>, i: u32) {
                 && it > skip
                 && let Some((x, y)) = pixel_of(frame, C64::new(z.re, z.im))
             {
-                let at = (y * hist.width + x) as usize;
-                let plane = (hist.width * hist.height) as usize;
-                for c in 0..hist.channels {
-                    if mask & (1 << c) != 0 {
-                        hist.counts[c * plane + at].fetch_add(weight, Ordering::Relaxed);
-                    }
-                }
+                hist.add(x, y, mask, weight);
             }
         });
     };
@@ -587,7 +602,7 @@ mod render_tests {
         let lp = plan.layers()[0];
         let d = lp.density.as_ref().unwrap();
         let k = Compiled::<f64>::new(&lp.fractal.program, &lp.fractal.values);
-        let hist = Histogram::new(w, h, 1, if metropolis(d) { d.orbits as usize } else { 0 });
+        let hist = Histogram::new(crate::render::Window::whole(w, h), 1, if metropolis(d) { d.orbits as usize } else { 0 });
         let strokes = Strokes::new(d);
         let mut f = k.frame();
         for pass in 0..passes {

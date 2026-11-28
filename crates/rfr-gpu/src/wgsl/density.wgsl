@@ -8,19 +8,35 @@
 // Counts per channel and pixel, then the largest count per channel.
 @group(0) @binding(7) var<storage, read_write> hist: array<atomic<u32>>;
 
-// The pixel index of a plane point, or 0xffffffff outside the image.
-fn d_pixel(z: Cx) -> u32 {
+// The image position of a plane point (whole-image pixels, rfr_core::render::density::pixel_of).
+fn d_pos(z: Cx) -> vec2<f32> {
     let s = U.view.z;
     let dx = s_v(z.re) - U.view.x;
     let dy = s_v(z.im) - U.view.y;
     let u = (dx * U.rot.x + dy * U.rot.y) / s;
     let v = (-dx * U.rot.y + dy * U.rot.x) / s;
-    let px = u + f32(U.size.x) * 0.5;
-    let py = f32(U.size.y) * 0.5 - v;
-    if !(px >= 0.0 && py >= 0.0 && px < f32(U.size.x) && py < f32(U.size.y)) {
+    return vec2<f32>(u + f32(U.win.z) * 0.5, f32(U.win.w) * 0.5 - v);
+}
+
+// Whether a plane point falls into the image (Metropolis scores count the whole image).
+fn d_in_view(z: Cx) -> bool {
+    let p = d_pos(z);
+    return p.x >= 0.0 && p.y >= 0.0 && p.x < f32(U.win.z) && p.y < f32(U.win.w);
+}
+
+// The index of a plane point's pixel in the window's counts (Histogram::add), or 0xffffffff
+// outside the window.
+fn d_pixel(z: Cx) -> u32 {
+    if !d_in_view(z) {
         return 0xffffffffu;
     }
-    return u32(py) * U.size.x + u32(px);
+    let p = d_pos(z);
+    let x = i32(u32(p.x)) - U.win.x;
+    let y = i32(u32(p.y)) - U.win.y;
+    if x < 0 || y < 0 || x >= i32(U.size.x) || y >= i32(U.size.y) {
+        return 0xffffffffu;
+    }
+    return u32(y) * U.size.x + u32(x);
 }
 
 // Adds `w` to the pixel of z in the channels of `mask`.
@@ -265,7 +281,7 @@ fn scatter(@builtin(global_invocation_id) gid: vec3<u32>) {
                 escaped = true;
                 break;
             }
-            if mh && d_pixel(l0) != 0xffffffffu {
+            if mh && d_in_view(l0) {
                 score = score + 1u;
             }
         }

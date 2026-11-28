@@ -282,12 +282,7 @@ impl Kernel {
             let channels = density::channels(d);
             return Kernel::Density(Box::new(DensityK {
                 fractal: Compiled::new(&lp.fractal.program, &lp.fractal.values),
-                hist: density::Histogram::new(
-                    plan.frame.width,
-                    plan.frame.height,
-                    channels,
-                    if density::metropolis(d) { d.orbits as usize } else { 0 },
-                ),
+                hist: density::Histogram::new(plan.window, channels, if density::metropolis(d) { d.orbits as usize } else { 0 }),
                 strokes: density::Strokes::new(d),
             }));
         }
@@ -487,6 +482,12 @@ impl CpuRenderer {
             };
             (0..d.orbits).into_par_iter().for_each_init(|| dk.fractal.frame(), |f, i| s.orbit(f, i));
             dk.hist.update_max();
+            // Windows of a poster: the largest counts of the whole image.
+            if let Some(m) = lp.density_max.as_ref().and_then(|m| m.get(self.density_passes as usize)) {
+                for (c, v) in m.iter().enumerate() {
+                    dk.hist.max[c].store(*v, Ordering::Relaxed);
+                }
+            }
         }
         if any {
             self.density_passes += 1;
@@ -496,6 +497,25 @@ impl CpuRenderer {
                 self.samples = 0;
             }
         }
+    }
+
+    /// Density layers: `passes` passes of their orbits only (no image); the largest counts
+    /// per channel after every pass, per density layer in `plan.layers()` order. The windows of
+    /// a poster take the largest of these over all windows (`Plan::with_density_max`).
+    pub fn density_maxima(&mut self, passes: u32) -> Vec<Vec<[u32; 3]>> {
+        let n = self.kernels.iter().filter(|k| matches!(k, Kernel::Density(_))).count();
+        let mut out = vec![Vec::with_capacity(passes as usize); n];
+        for _ in 0..passes {
+            self.density_pass();
+            let dens = self.kernels.iter().filter_map(|k| match k {
+                Kernel::Density(d) => Some(d),
+                _ => None,
+            });
+            for (o, d) in out.iter_mut().zip(dens) {
+                o.push(std::array::from_fn(|c| d.hist.max[c].load(Ordering::Relaxed)));
+            }
+        }
+        out
     }
 
     /// Lit layers: their fields for this pass (see [`light::Grids`]), every cell at the pass's

@@ -33,9 +33,27 @@ pub fn render_poster(
     cancel: &AtomicBool,
     mut progress: impl FnMut(f32),
 ) -> Result<Option<String>, String> {
-    tiles::can_tile(doc).map_err(|e| format!("{w} × {h} renders in tiles, but {e}; render it smaller or change the layer"))?;
     let post = &doc.post;
     let mut renderer = FrameRenderer::new(gpu);
+    let all = tiles::tiles(w, h);
+    let whole = Plan::sized(doc, w, h)?;
+    // Density layers: a first sweep finds the largest counts of the whole image per pass.
+    let density = whole.layers().iter().any(|l| l.density.is_some());
+    let steps = all.len() * if density { 2 } else { 1 };
+    let mut done = 0;
+    let mut maxima: Vec<Vec<[u32; 3]>> = Vec::new();
+    if density {
+        for tile in &all {
+            if cancel.load(Ordering::Relaxed) {
+                return Err("cancelled".into());
+            }
+            let m = renderer.density_maxima(&whole.clone().with_window(*tile), samples)?;
+            maxima = if maxima.is_empty() { m } else { tiles::merge_maxima(&maxima, &m) };
+            done += 1;
+            progress(done as f32 / steps as f32);
+        }
+    }
+    let whole = whole.with_density_max(&maxima);
     // The glow from a smaller render of the whole view, the light sources at that size.
     let lights = rfr_core::flare::any(doc);
     let k = (GLOW_SIDE as f64 / w.max(h) as f64).min(1.0);
@@ -50,11 +68,10 @@ pub fn render_poster(
     let mut saved = doc.clone();
     (saved.image.width, saved.image.height, saved.image.samples) = (w, h, samples);
     let mut png = rfr_core::io::png::RowWriter::new(path, w, h, Some(&saved))?;
-    let all = tiles::tiles(w, h);
     let mut note = None;
     let mut band: Vec<u8> = Vec::new();
     let mut band_y = 0;
-    for (n, tile) in all.iter().enumerate() {
+    for tile in &all {
         if cancel.load(Ordering::Relaxed) {
             return Err("cancelled".into());
         }
@@ -64,7 +81,7 @@ pub fn render_poster(
         }
         let m = post::margin(*tile, w, h, post) + if post.denoise { DENOISE_MARGIN } else { 0 };
         let region = tiles::with_margin(*tile, m, w, h);
-        let mut lin = renderer.render_plan(&Plan::sized(doc, w, h)?.with_window(region), samples)?;
+        let mut lin = renderer.render_plan(&whole.clone().with_window(region), samples)?;
         if post.denoise {
             note = Some(match post::denoise(&mut lin, region[2], region[3], post.denoise_blend, None) {
                 Ok(dev) => format!("denoised in tiles ({})", dev.label()),
@@ -93,7 +110,8 @@ pub fn render_poster(
         if tile[0] + tile[2] == w {
             png.write_rows(&band)?;
         }
-        progress((n + 1) as f32 / all.len() as f32);
+        done += 1;
+        progress(done as f32 / steps as f32);
     }
     png.finish()?;
     Ok(note)

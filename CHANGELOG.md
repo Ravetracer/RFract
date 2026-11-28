@@ -16,8 +16,9 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
   in the corner of the view; a click on it opens that Julia set.
 - Distance estimation in deep views: double-float views and perturbation views (beyond
   10⁻¹⁵) color by distance instead of falling back to the smooth iteration count.
-- Posters in tiles with 3D objects, lit layers, layer effects and 3D terrains (the ground of
-  a terrain has at most 4096 cells on its long side). Tiles are now parts of the whole image
+- Posters in tiles with every kind of layer: 3D objects, lit layers, layer effects, 3D
+  terrains (the ground of a terrain has at most 4096 cells on its long side) and density layers
+  (a first sweep over the tiles finds the largest counts for the tone curve). Tiles are now parts of the whole image
   (same sample positions and noise), so a tiled poster is the whole render pixel for pixel.
 
 ### Changed

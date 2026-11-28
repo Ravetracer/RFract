@@ -4,11 +4,10 @@
 //! the whole image (`Plan::with_window`), so its pixels are exactly the pixels of the whole
 //! image there: layers that color every pixel on their own (formulas, colorings,
 //! transformations, masks, groups), 3D objects (rays of the whole image's camera), lit layers
-//! and layer effects (fields around the window, see `light::Grids`) and 3D terrains (the field
-//! of the whole view, rays of its camera). Density layers depend on the whole image and are
-//! not tiled yet.
-
-use crate::doc::{Document, Layer, LayerKind};
+//! and layer effects (fields around the window, see `light::Grids`), 3D terrains (the field of
+//! the whole view, rays of its camera) and density layers (the window's counts, tone-mapped
+//! with the largest counts of the whole image: a first sweep over the tiles finds them, see
+//! [`merge_maxima`]).
 
 /// Images with more pixels than this render in tiles (above about 8K UHD).
 pub const TILED_PIXELS: u64 = 7680 * 4320;
@@ -21,27 +20,10 @@ pub fn needs_tiles(w: u32, h: u32) -> bool {
     w as u64 * h as u64 > TILED_PIXELS
 }
 
-/// Ok when the document can render in tiles, else why not (the layer that needs the whole
-/// image).
-pub fn can_tile(doc: &Document) -> Result<(), String> {
-    fn check(layers: &[Layer]) -> Result<(), String> {
-        for l in layers.iter().filter(|l| l.visible && l.opacity > 0.0) {
-            let why = match l.kind {
-                LayerKind::Density => Some("is a density layer"),
-                LayerKind::Object => None,
-                _ => None,
-            };
-            if let Some(why) = why {
-                return Err(format!("layer \"{}\" {why}", l.name));
-            }
-            check(&l.children)?;
-            if let Some(m) = l.mask.as_ref().filter(|m| m.enabled) {
-                check(std::slice::from_ref(&m.layer))?;
-            }
-        }
-        Ok(())
-    }
-    check(&doc.layers)
+/// The largest density counts of two sets of windows (`CpuRenderer::density_maxima`), per
+/// layer, pass and channel.
+pub fn merge_maxima(a: &[Vec<[u32; 3]>], b: &[Vec<[u32; 3]>]) -> Vec<Vec<[u32; 3]>> {
+    a.iter().zip(b).map(|(x, y)| x.iter().zip(y).map(|(p, q)| std::array::from_fn(|c| p[c].max(q[c]))).collect()).collect()
 }
 
 /// The tiles of a `w` × `h` image, row by row.
@@ -65,6 +47,7 @@ pub fn with_margin(tile: [u32; 4], m: u32, w: u32, h: u32) -> [u32; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::doc::{Document, LayerKind};
     use crate::render::Plan;
 
     #[test]
@@ -134,6 +117,49 @@ mod tests {
     }
 
     #[test]
+    fn density_windows_are_the_whole_image_there() {
+        // A Buddhabrot and a Nebulabrot with Metropolis chains: every window counts its own
+        // points and tone-maps with the largest counts of the whole image.
+        let (w, h, passes) = (90u32, 50u32, 3u32);
+        for (name, nebula, metropolis) in [("buddhabrot", false, false), ("nebulabrot", true, true)] {
+            let mut doc = Document::for_formula("rfract:Mandelbrot");
+            let l = &mut doc.layers[0];
+            l.kind = LayerKind::Density;
+            l.max_iter = 300;
+            l.density.orbits = 4000;
+            l.density.nebula = nebula;
+            l.density.metropolis = metropolis;
+            let plan = Plan::sized(&doc, w, h).unwrap();
+            let render = |plan: Plan| {
+                let mut r = crate::render::cpu::CpuRenderer::new(plan);
+                r.target_samples = passes;
+                for _ in 0..passes {
+                    r.pass();
+                }
+                r.rgba8()
+            };
+            let whole = render(plan.clone());
+            assert!(whole.chunks(4).filter(|p| p[3] > 0).count() > 50, "{name}: points show");
+            // The first sweep: the largest counts of every tile, per pass.
+            let tiles = [[0u32, 0, 45, 50], [45, 0, 45, 50]];
+            let mut max = Vec::new();
+            for t in tiles {
+                let m = crate::render::cpu::CpuRenderer::new(plan.clone().with_window(t)).density_maxima(passes);
+                max = if max.is_empty() { m } else { merge_maxima(&max, &m) };
+            }
+            for win in [[0u32, 0, 45, 50], [37, 11, 53, 39]] {
+                let part = render(plan.clone().with_window(win).with_density_max(&max));
+                for j in 0..win[3] {
+                    let a = ((win[1] + j) * w + win[0]) as usize * 4;
+                    let b = (j * win[2]) as usize * 4;
+                    let n = win[2] as usize * 4;
+                    assert_eq!(&whole[a..a + n], &part[b..b + n], "{name}: window {win:?}, row {j}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn windows_are_the_whole_image_there() {
         // Rotated, with a coloring formula and a transformation: the windows of a render put
         // together are the whole render, pixel for pixel.
@@ -160,17 +186,5 @@ mod tests {
                 assert_eq!(&whole[a..a + n], &part[b..b + n], "window {win:?}, row {j}");
             }
         }
-    }
-
-    #[test]
-    fn only_plain_layers_tile() {
-        let mut doc = Document::default();
-        assert!(can_tile(&doc).is_ok());
-        doc.layers[0].light.enabled = true;
-        assert!(can_tile(&doc).is_ok());
-        doc.layers[0].light.terrain = true;
-        assert!(can_tile(&doc).is_ok());
-        doc.layers[0].kind = LayerKind::Density;
-        assert!(can_tile(&doc).unwrap_err().contains("density"));
     }
 }

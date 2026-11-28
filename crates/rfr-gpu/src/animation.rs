@@ -50,6 +50,21 @@ impl FrameRenderer {
         }
     }
 
+    /// Density layers of `plan`: their largest counts after each of `passes` passes, per
+    /// density layer (the first sweep of a tiled poster).
+    pub(crate) fn density_maxima(&mut self, plan: &Plan, passes: u32) -> Result<Vec<Vec<[u32; 3]>>, String> {
+        match &mut self.gpu {
+            Some(r) => {
+                r.set_plan(plan);
+                if let Some(e) = r.error() {
+                    return Err(e.to_string());
+                }
+                r.density_maxima(passes)
+            }
+            None => Ok(rfr_core::render::cpu::CpuRenderer::new(plan.clone()).density_maxima(passes)),
+        }
+    }
+
     /// Frame `frame` of `anim` at `width` × `height` with `samples` samples (spread over the
     /// shutter for motion blur): linear, straight alpha, before the effects; and the document
     /// of the frame (its effects finish the image).

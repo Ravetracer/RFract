@@ -52,7 +52,7 @@ Open points of the earlier stages (their notes below stay for the details).
       of the full values with an extended exponent, `Perturbation::eval_deriv`, codegen
       `PertGen::dexpr`; no linear steps then). Derivatives are per pixel everywhere
       (`OrbitResult::dz`). The CPU reference is slow there (no BLA, `Cfx` per operation).
-- [ ] Windows of a larger frame: poster tiles with lit layers, effects, density layers and 3D
+- [x] Windows of a larger frame: poster tiles with lit layers, effects, density layers and 3D
       objects; shadow field margin.
   - [x] Part 1: `Plan::window` (`Window`), both renderers compute positions, jitter and random
         streams in whole-image pixels; posters render windows (pixel-identical to the whole
@@ -65,7 +65,9 @@ Open points of the earlier stages (their notes below stay for the details).
   - [x] Part 3: terrains: the field of the whole view (step `terrain_step`, at most
         `far_side` cells on the long side, lookups in cells), camera rays of whole-image pixels
         (`camera_ray_in`); lengths in field cells.
-  - [ ] Part 4: density layers (counts of the window, normalization of the whole image).
+  - [x] Part 4: density layers: `Histogram` of the window (whole-image pixels in, the rest
+        dropped; Metropolis scores on the whole image), `density_maxima` (first sweep over the
+        tiles), `Plan::with_density_max` (the whole image's largest counts per pass).
 - [ ] Terrain: larger than the view, walls down to a base, optional path tracing into OIDN.
 - [ ] 3D objects: bicomplex Julia and more DE formulas, 3D formula programs, depth compositing
       with terrains.

@@ -260,6 +260,9 @@ pub struct LayerPlan {
     pub inside: ColorPlan,
     /// Density layers: the orbits are counted per pixel instead of colored per pixel.
     pub density: Option<crate::doc::Density>,
+    /// Density layers in a window of a poster: the largest counts of the whole image after
+    /// every pass (else the window's own).
+    pub density_max: Option<std::sync::Arc<Vec<[u32; 3]>>>,
     /// Lit layers: their colors are shaded as a height field (see [`light`]).
     pub light: Option<light::LightPlan>,
     /// 3D object layers: the raymarched shape with its own lighting (see [`object`]).
@@ -337,6 +340,7 @@ impl LayerPlan {
             outside,
             inside,
             density: (l.kind == LayerKind::Density).then(|| l.density.clone()),
+            density_max: None,
             // A layer gets a field when it is lit or has effects (effects only in 2D).
             light: (l.kind == LayerKind::Fractal && (l.light.enabled || l.effects.active())).then(|| {
                 let mut p = light::LightPlan::new(&l.light);
@@ -532,6 +536,35 @@ impl Plan {
         let w = Window::of(window);
         debug_assert!(w.x + w.width <= self.frame.width && w.y + w.height <= self.frame.height, "window outside the image");
         self.window = w;
+        self
+    }
+
+    /// The plan with the largest density counts of the whole image (per density layer in
+    /// `layers()` order, per pass), for windows of a poster.
+    pub fn with_density_max(mut self, maxima: &[Vec<[u32; 3]>]) -> Plan {
+        fn walk<'a>(list: &'a mut [Node], out: &mut Vec<&'a mut LayerPlan>) {
+            for n in list {
+                match n {
+                    Node::Layer { layer, mask, .. } => {
+                        if let Some(m) = mask {
+                            out.push(&mut m.layer);
+                        }
+                        out.push(layer);
+                    }
+                    Node::Group { children, mask, .. } => {
+                        if let Some(m) = mask {
+                            out.push(&mut m.layer);
+                        }
+                        walk(children, out);
+                    }
+                }
+            }
+        }
+        let mut layers = Vec::new();
+        walk(&mut self.nodes, &mut layers);
+        for (lp, m) in layers.into_iter().filter(|l| l.density.is_some()).zip(maxima) {
+            lp.density_max = Some(std::sync::Arc::new(m.clone()));
+        }
         self
     }
 

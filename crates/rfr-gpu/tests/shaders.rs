@@ -758,9 +758,20 @@ fn tiled_posters_match_whole_renders() {
     let never = std::sync::atomic::AtomicBool::new(false);
     rfr_gpu::poster::render_poster(&lit, (w, h, s), Some(ctx.clone()), &path, &never, |_| {}).unwrap();
     let (_, _, tiled) = rfr_core::io::png::read_rgba8(&path).unwrap();
-    let (whole, _) = rfr_gpu::animation::FrameRenderer::new(Some(ctx)).still(&lit, w, h, s).unwrap();
+    let (whole, _) = rfr_gpu::animation::FrameRenderer::new(Some(ctx.clone())).still(&lit, w, h, s).unwrap();
     let diff = mean_diff(&tiled, &whole);
     assert!(diff < 0.5, "lit poster: tiled vs whole {diff:.3}");
+    // A density layer: two sweeps over the tiles (the largest counts first).
+    let mut dens = Document::for_formula("rfract:Mandelbrot");
+    dens.layers[0].kind = LayerKind::Density;
+    dens.layers[0].max_iter = 300;
+    dens.image.adaptive = 0.0;
+    rfr_gpu::poster::render_poster(&dens, (w, h, s), Some(ctx.clone()), &path, &never, |_| {}).unwrap();
+    let (_, _, tiled) = rfr_core::io::png::read_rgba8(&path).unwrap();
+    let (whole, _) = rfr_gpu::animation::FrameRenderer::new(Some(ctx)).still(&dens, w, h, s).unwrap();
+    assert!(tiled.chunks(4).filter(|p| p[3] > 0).count() > 1000, "the density shows");
+    let diff = mean_diff(&tiled, &whole);
+    assert!(diff < 0.01, "density poster: tiled vs whole {diff:.3}");
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -819,6 +830,46 @@ fn gpu_windows_are_the_whole_image_there() {
         for win in [[0u32, 0, 64, 40], [57, 23, 103, 67], [159, 89, 1, 1]] {
             let plan = plan.clone().with_window(win);
             let part = rfr_core::render::cpu::rgba8(&rfr_gpu::render_blocking(ctx.clone(), &plan, s, |_| true).unwrap());
+            for j in 0..win[3] {
+                let a = ((win[1] + j) * w + win[0]) as usize * 4;
+                let b = (j * win[2]) as usize * 4;
+                let n = win[2] as usize * 4;
+                assert_eq!(&whole[a..a + n], &part[b..b + n], "{name}: window {win:?}, row {j}");
+            }
+        }
+    }
+}
+
+/// Density layers in windows: every window counts its own points and tone-maps them with
+/// the largest counts of the whole image (found by a first sweep over the tiles).
+#[test]
+fn gpu_density_windows_are_the_whole_image_there() {
+    let Ok(ctx) = rfr_gpu::GpuContext::new_headless() else {
+        eprintln!("no GPU: skipped");
+        return;
+    };
+    let (w, h, s) = (160u32, 90u32, 3u32);
+    for (name, nebula, metropolis) in [("buddhabrot", false, false), ("nebulabrot", true, true)] {
+        let mut doc = Document::for_formula("rfract:Mandelbrot");
+        let l = &mut doc.layers[0];
+        l.kind = LayerKind::Density;
+        l.max_iter = 300;
+        l.density.orbits = 20000;
+        l.density.nebula = nebula;
+        l.density.metropolis = metropolis;
+        let plan = Plan::sized(&doc, w, h).unwrap();
+        let whole = rfr_core::render::cpu::rgba8(&rfr_gpu::render_blocking(ctx.clone(), &plan, s, |_| true).unwrap());
+        assert!(whole.chunks(4).filter(|p| p[3] > 0).count() > 100, "{name}: points show");
+        let mut r = rfr_gpu::renderer::GpuRenderer::new(ctx.clone());
+        let mut max: Vec<Vec<[u32; 3]>> = Vec::new();
+        for t in [[0u32, 0, 80, 90], [80, 0, 80, 90]] {
+            r.set_plan(&plan.clone().with_window(t));
+            let m = r.density_maxima(s).unwrap();
+            max = if max.is_empty() { m } else { rfr_core::render::tiles::merge_maxima(&max, &m) };
+        }
+        for win in [[0u32, 0, 80, 90], [57, 23, 103, 67]] {
+            let p = plan.clone().with_window(win).with_density_max(&max);
+            let part = rfr_core::render::cpu::rgba8(&rfr_gpu::render_blocking(ctx.clone(), &p, s, |_| true).unwrap());
             for j in 0..win[3] {
                 let a = ((win[1] + j) * w + win[0]) as usize * 4;
                 let b = (j * win[2]) as usize * 4;
