@@ -52,6 +52,9 @@ struct Gen<'a> {
     img_base: usize,
     /// Index of this program's first parameter in `P`.
     base: usize,
+    /// A coloring of a layer with post-transformations: `#z` and `#zprev` are the
+    /// transformed values (`pz`, `pzp`).
+    post: bool,
 }
 
 /// A WGSL float literal that fits f32 (WGSL rejects literals outside its range).
@@ -98,14 +101,14 @@ impl Gen<'_> {
             Kind::Sys(s) => match s {
                 Sys::Pixel => "pixel".into(),
                 Sys::C => "cval".into(),
-                Sys::ZPrev => "zprev".into(),
+                Sys::ZPrev => if self.post { "pzp" } else { "zprev" }.into(),
                 Sys::LastSqr => "lastsqr".into(),
                 Sys::MaxIt => "i32(maxit)".into(),
                 Sys::NumIter => "numiter".into(),
                 Sys::IsMand => "ismand".into(),
                 Sys::Center => "center".into(),
                 Sys::Magn => "magn".into(),
-                Sys::Z => "l0".into(),
+                Sys::Z => if self.post { "pz" } else { "l0" }.into(),
                 Sys::X => "i32(x)".into(),
                 Sys::Y => "i32(y)".into(),
                 Sys::Width => "i32(U.size.x)".into(),
@@ -392,13 +395,36 @@ pub fn func_choices(prog: &Program, values: &[ParamValue]) -> Vec<Option<Func>> 
 }
 
 /// The programs of a layer in the order their parameters fill `P`: fractal, transformations,
-/// outside coloring, inside coloring.
+/// outside coloring, inside coloring, post-transformations.
 pub fn param_programs(lp: &LayerPlan) -> Vec<&Prog> {
     let mut v = vec![&lp.fractal];
     v.extend(lp.transforms.iter());
     v.extend(lp.outside.formula());
     v.extend(lp.inside.formula());
+    v.extend(lp.post_transforms.iter());
     v
+}
+
+/// A chain of transformations on `pixel`: each one runs only when the ones before left the
+/// point alive (`tsolid`); `depth` is the indentation of the chain.
+fn transform_chain(gens: &[Gen], depth: usize, counter: &mut usize) -> String {
+    let mut tr = String::new();
+    for (k, g) in gens.iter().enumerate() {
+        let d = depth + k;
+        let pad = "    ".repeat(d);
+        if k > 0 {
+            let _ = writeln!(tr, "{}if !tsolid {{", "    ".repeat(d - 1));
+        }
+        locals(g, &mut tr, &pad, Some("pixel"));
+        g.stmts(&g.prog.init, &mut tr, d, counter);
+        g.stmts(&g.prog.body, &mut tr, d, counter);
+        let solid = g.prog.solid_slot.map_or("false".to_string(), |s| format!("{}{s}", g.prefix));
+        let _ = writeln!(tr, "{pad}if {solid} {{ tsolid = true; }} else {{ pixel = {}0; }}", g.prefix);
+    }
+    for k in (1..gens.len()).rev() {
+        let _ = writeln!(tr, "{}}}", "    ".repeat(depth + k - 1));
+    }
+    tr
 }
 
 /// The image parameter values of a layer in slot order (programs as in `param_programs`).
@@ -639,6 +665,7 @@ pub fn density_kernel(lp: &LayerPlan) -> String {
         prefix: "l".into(),
         base: 0,
         img_base: 0,
+        post: false,
     };
     let mut counter = 0;
     let mut loc = String::new();
@@ -673,8 +700,15 @@ pub fn kernel(lp: &LayerPlan, mode: Mode) -> String {
         return density_kernel(lp);
     }
     fn gen_for<'a>(prog: &'a Prog, prefix: String, base: &mut usize, img: &mut usize) -> Gen<'a> {
-        let g =
-            Gen { prog: &prog.program, values: &prog.values, funcs: func_choices(&prog.program, &prog.values), prefix, base: *base, img_base: *img };
+        let g = Gen {
+            prog: &prog.program,
+            values: &prog.values,
+            funcs: func_choices(&prog.program, &prog.values),
+            prefix,
+            base: *base,
+            img_base: *img,
+            post: false,
+        };
         *base += prog.program.params.len();
         *img += prog.program.params.iter().filter(|p| p.kind == ParamKind::Image).count();
         g
@@ -682,31 +716,42 @@ pub fn kernel(lp: &LayerPlan, mode: Mode) -> String {
     let (mut base, mut img) = (0, 0);
     let fractal = gen_for(&lp.fractal, "l".into(), &mut base, &mut img);
     let transforms: Vec<Gen> = lp.transforms.iter().enumerate().map(|(k, t)| gen_for(t, format!("t{k}_"), &mut base, &mut img)).collect();
-    let outside = lp.outside.formula().map(|p| gen_for(p, "ko".into(), &mut base, &mut img));
-    let inside = lp.inside.formula().map(|p| gen_for(p, "ki".into(), &mut base, &mut img));
+    let has_post = !lp.post_transforms.is_empty();
+    let outside = lp.outside.formula().map(|p| Gen { post: has_post, ..gen_for(p, "ko".into(), &mut base, &mut img) });
+    let inside = lp.inside.formula().map(|p| Gen { post: has_post, ..gen_for(p, "ki".into(), &mut base, &mut img) });
+    let post: Vec<Gen> = lp.post_transforms.iter().enumerate().map(|(k, t)| gen_for(t, format!("q{k}_"), &mut base, &mut img)).collect();
     let mut counter = 0;
 
-    // Transformations: each one runs only when the ones before left the point alive.
-    let mut tr = String::new();
-    for (k, g) in transforms.iter().enumerate() {
-        let pad = "    ".repeat(k + 1);
-        if k > 0 {
-            let _ = writeln!(tr, "{}if !tsolid {{", "    ".repeat(k));
-        }
-        locals(g, &mut tr, &pad, Some("pixel"));
-        g.stmts(&g.prog.init, &mut tr, k + 1, &mut counter);
-        g.stmts(&g.prog.body, &mut tr, k + 1, &mut counter);
-        let solid = g.prog.solid_slot.map_or("false".to_string(), |s| format!("{}{s}", g.prefix));
-        let _ = writeln!(tr, "{pad}if {solid} {{ tsolid = true; }} else {{ pixel = {}0; }}", g.prefix);
-    }
-    for k in (1..transforms.len()).rev() {
-        let _ = writeln!(tr, "{}}}", "    ".repeat(k));
-    }
+    let tr = transform_chain(&transforms, 1, &mut counter);
+    // Post-transformations: a function from `z` to `z` as the colorings see it, with the
+    // values transformations may read (as in the kernel's main).
+    let post_fn = if has_post {
+        format!(
+            concat!(
+                "struct PostT {{\n    z: Cx,\n    solid: bool,\n}}\n\n",
+                "fn post_tf(pixel_in: Cx, x: u32, y: u32) -> PostT {{\n",
+                "    let ismand = U.iter.y == 0u;\n",
+                "    let center = c_f(U.view.x, U.view.y);\n",
+                "    let magn = s_c(U.view.w);\n",
+                "    let maxit = U.iter.x;\n",
+                "    var pixel = pixel_in;\n",
+                "    var tsolid = false;\n",
+                "{}",
+                "    return PostT(pixel, tsolid);\n}}\n"
+            ),
+            transform_chain(&post, 1, &mut counter)
+        )
+    } else {
+        String::new()
+    };
 
     let mut loc = String::new();
     locals(&fractal, &mut loc, "        ", None);
     for g in outside.iter().chain(inside.iter()) {
         locals(g, &mut loc, "        ", None);
+    }
+    if has_post {
+        loc.push_str("        var pz = c_f(0.0, 0.0);\n        var pzp = c_f(0.0, 0.0);\n        var psolid = false;\n");
     }
     let mut init = String::new();
     let mut body = String::new();
@@ -718,14 +763,21 @@ pub fn kernel(lp: &LayerPlan, mode: Mode) -> String {
             fractal.stmts(&fractal.prog.body, &mut body, 3, &mut counter);
         }
     }
-    let mut color_init = String::new();
-    let mut color_loop = String::new();
+    // Every value of the orbit the colorings get goes through the post-transformations once
+    // (render::cpu `PostZ`).
+    let push = |pad: &str| format!("{pad}pzp = pz;\n{pad}let pt = post_tf(l0, x, y);\n{pad}pz = pt.z;\n{pad}psolid = pt.solid;\n");
+    let mut color_init = if has_post { format!("        {{\n{}        }}\n", push("            ")) } else { String::new() };
+    let mut color_loop = if has_post { format!("            {{\n{}            }}\n", push("                ")) } else { String::new() };
     for g in outside.iter().chain(inside.iter()) {
         g.stmts(&g.prog.init, &mut color_init, 2, &mut counter);
         g.stmts(&g.prog.body, &mut color_loop, 3, &mut counter);
     }
     let mut fin = String::new();
     fractal.stmts(&fractal.prog.fin, &mut fin, 2, &mut counter);
+    // The step that escaped ran no coloring loop.
+    if has_post {
+        let _ = write!(fin, "        if escaped {{\n{}        }}\n", push("            "));
+    }
     let final_of = |g: &Option<Gen>, inside: bool, counter: &mut usize| -> String {
         let mut out = String::new();
         match g {
@@ -733,6 +785,7 @@ pub fn kernel(lp: &LayerPlan, mode: Mode) -> String {
                 g.stmts(&g.prog.fin, &mut out, 4, counter);
                 let idx = g.prog.index_slot.map_or("0.0".to_string(), |s| format!("s_v({}{s})", g.prefix));
                 let solid = g.prog.solid_slot.map_or("false".to_string(), |s| format!("{}{s}", g.prefix));
+                let solid = if g.post { format!("({solid} || psolid)") } else { solid };
                 match g.prog.color_slot.filter(|_| g.prog.direct) {
                     Some(k) => {
                         let _ = writeln!(
@@ -778,11 +831,13 @@ pub fn kernel(lp: &LayerPlan, mode: Mode) -> String {
         .chain(transforms.iter().enumerate().map(|(k, g)| (g.prefix.as_str(), 2 + k as u32)))
         .chain(outside.iter().map(|g| (g.prefix.as_str(), 100)))
         .chain(inside.iter().map(|g| (g.prefix.as_str(), 101)))
+        .chain(post.iter().enumerate().map(|(k, g)| (g.prefix.as_str(), 200 + k as u32)))
         .collect();
     for (p, tag) in streams {
         let _ = writeln!(rng_decl, "var<private> rng_{p}: u32;");
         let _ = writeln!(mode_init, "    rng_{p} = hash(rng_base ^ {tag}u);");
     }
+    rng_decl.push_str(&post_fn);
     let kernel = KERNEL
         .replace("//@MODE_INIT", &mode_init)
         .replace("//@RNG_DECL", &rng_decl)
@@ -867,6 +922,7 @@ pub fn signature(lp: &LayerPlan, mode: Mode) -> u64 {
     lp.outside.formula().is_some().hash(&mut h);
     lp.inside.formula().is_some().hash(&mut h);
     lp.transforms.len().hash(&mut h);
+    lp.post_transforms.len().hash(&mut h);
     lp.density.is_some().hash(&mut h);
     lp.light.is_some().hash(&mut h);
     lp.object.is_some().hash(&mut h);

@@ -40,7 +40,10 @@ Open points of the earlier stages (their notes below stay for the details).
       view (`render/histogram.rs`, 128² px CPU probe, cached; 257 quantiles per region in
       the layer's gradient buffer, `kernel.wgsl` `hist_cdf`); posters take the whole
       view's tables (`Plan::region`).
-- [ ] Post-transformations.
+- [x] Post-transformations: `Layer::post_transforms` (transformation formulas) on z as the
+      coloring formulas see it, every value of the orbit once (`render::cpu` `PostZ`,
+      `codegen` `post_tf`, `pz`/`pzp`/`psolid`); dropped from the plan without a coloring
+      formula; deep zooms take no linear steps with them (`coloring_loops`).
 - [ ] Orbit display, Julia preview inset.
 - [ ] Distance estimation in double-float views (dual double-float) and perturbation views.
 - [ ] Windows of a larger frame: poster tiles with lit layers, effects, density layers and 3D
@@ -196,7 +199,7 @@ Open points of the earlier stages (their notes below stay for the details).
 ## Open points from stage 2
 
 - Histogram coloring is missing (needs a pass over the whole image).
-- Post-transformations (on z after the iteration) are not there yet.
+- Post-transformations: done in stage 10.
 
 ## Open points from stage 1
 

@@ -27,6 +27,7 @@ struct LayerK<S> {
     /// (when no coloring needs every iteration).
     pert: Option<(Perturbation, RefOrbit, Option<BlaTable>)>,
     transforms: Vec<Compiled<S>>,
+    post: Vec<Compiled<S>>,
     outside: Option<Compiled<S>>,
     inside: Option<Compiled<S>>,
 }
@@ -36,6 +37,7 @@ struct LayerK<S> {
 struct LayerF<S> {
     fractal: Frame<S>,
     transforms: Vec<Frame<S>>,
+    post: Vec<Frame<S>>,
     outside: Option<Frame<S>>,
     inside: Option<Frame<S>>,
 }
@@ -47,6 +49,7 @@ impl<S: Scalar + Send + Sync + 'static> LayerK<S> {
             fractal: Compiled::new(&lp.fractal.program, &lp.fractal.values),
             pert: None,
             transforms: lp.transforms.iter().map(|t| Compiled::new(&t.program, &t.values)).collect(),
+            post: lp.post_transforms.iter().map(|t| Compiled::new(&t.program, &t.values)).collect(),
             outside: coloring(&lp.outside),
             inside: coloring(&lp.inside),
         }
@@ -56,6 +59,7 @@ impl<S: Scalar + Send + Sync + 'static> LayerK<S> {
         LayerF {
             fractal: self.fractal.frame(),
             transforms: self.transforms.iter().map(|t| t.frame()).collect(),
+            post: self.post.iter().map(|t| t.frame()).collect(),
             outside: self.outside.as_ref().map(|c| c.frame()),
             inside: self.inside.as_ref().map(|c| c.frame()),
         }
@@ -65,14 +69,14 @@ impl<S: Scalar + Send + Sync + 'static> LayerK<S> {
     /// (x, y, sample index), its height when the layer is lit (else 0), and whether the orbit
     /// stayed inside for at least [`GUESS_MIN_ITER`] iterations (see [`guess_tile`]).
     fn eval(&self, f: &mut LayerF<S>, lp: &LayerPlan, plan: &Plan, p: Cx<S>, d: Cfx, pix: (u32, u32, u32)) -> ([f32; 4], [f32; 2], bool) {
-        let Some(o) = self.orbit(f, lp, plan, p, d, pix) else {
+        let Some((o, post)) = self.orbit(f, lp, plan, p, d, pix) else {
             return ([0.0; 4], [0.0, 3.0e38], false);
         };
         let maxit = lp.max_iter;
         let region = if o.escaped { &lp.outside } else { &lp.inside };
         let r = Self::result(&o);
         // The color and the gradient position before the offset (lit layers' heights).
-        let (color, raw) = self.shade(f, lp, plan, &o, &r);
+        let (color, raw) = self.shade(f, lp, plan, &o, &post, &r);
         let value = raw.map_or(0.0, |v| region.position(v));
         // Lit layers and layers with effects: the height and the distance to the set in pixels.
         let field = lp.light.as_ref().map_or([0.0, 3.0e38], |l| {
@@ -88,17 +92,32 @@ impl<S: Scalar + Send + Sync + 'static> LayerK<S> {
         OrbitResult { z: o.z.v(), zprev: o.zprev.v(), zprev2: o.zprev2.v(), iter: o.iter, escaped: o.escaped, dz }
     }
 
+    /// Applies the post-transformations to `z` in order (each one only while the ones
+    /// before left the point alive); returns the result and whether one made it solid.
+    fn post_z(post: &[Compiled<S>], frames: &mut [Frame<S>], mut z: Cx<S>) -> (Cx<S>, bool) {
+        for (t, tf) in post.iter().zip(frames.iter_mut()) {
+            let (q, solid) = t.transform(tf, z);
+            if solid {
+                return (z, true);
+            }
+            z = q;
+        }
+        (z, false)
+    }
+
     /// The color of an orbit by its region's coloring and the coloring value (before the
     /// transfer; none for solid colors and formulas that set the color directly).
-    fn shade(&self, f: &mut LayerF<S>, lp: &LayerPlan, plan: &Plan, o: &Orbit<S>, r: &OrbitResult) -> ([f32; 4], Option<f64>) {
+    fn shade(&self, f: &mut LayerF<S>, lp: &LayerPlan, plan: &Plan, o: &Orbit<S>, post: &PostZ<S>, r: &OrbitResult) -> ([f32; 4], Option<f64>) {
         let region = if o.escaped { &lp.outside } else { &lp.inside };
         match region.method {
             ColorMethod::Formula(_) => {
                 let (k, fr) = if o.escaped { (self.outside.as_ref(), f.outside.as_mut()) } else { (self.inside.as_ref(), f.inside.as_mut()) };
                 match (k, fr) {
                     (Some(k), Some(fr)) => {
-                        fr.zcur = o.z;
-                        let (index, solid) = k.color_final(fr, o.iter, o.zprev);
+                        let (z, zprev) = if post.on { (post.z, post.zprev) } else { (o.z, o.zprev) };
+                        fr.zcur = z;
+                        let (index, solid) = k.color_final(fr, o.iter, zprev);
+                        let solid = solid || post.solid;
                         let direct = k.direct_color(fr);
                         let value = (!solid && direct.is_none()).then(|| index.v());
                         (shade_formula(region, index.v(), solid, direct), value)
@@ -111,8 +130,9 @@ impl<S: Scalar + Send + Sync + 'static> LayerK<S> {
     }
 
     /// The orbit of the sample at plane point `p` of pixel `pix` (its transformations, the
-    /// fractal with the colorings' hooks); none when a transformation makes it solid.
-    fn orbit(&self, f: &mut LayerF<S>, lp: &LayerPlan, plan: &Plan, mut p: Cx<S>, d: Cfx, pix: (u32, u32, u32)) -> Option<Orbit<S>> {
+    /// fractal with the colorings' hooks) and `z` as the colorings see it at the end; none
+    /// when a transformation makes it solid.
+    fn orbit(&self, f: &mut LayerF<S>, lp: &LayerPlan, plan: &Plan, mut p: Cx<S>, d: Cfx, pix: (u32, u32, u32)) -> Option<(Orbit<S>, PostZ<S>)> {
         // Screen values and one random stream per program (kernel.wgsl seeds the same way).
         let base = super::hash(pix.0 ^ super::hash(pix.1 ^ super::hash(pix.2.wrapping_add(0x9E37_79B9))));
         let screen = |fr: &mut Frame<S>, tag: u32| {
@@ -126,6 +146,9 @@ impl<S: Scalar + Send + Sync + 'static> LayerK<S> {
         screen(&mut f.fractal, 1);
         for (k, tf) in f.transforms.iter_mut().enumerate() {
             screen(tf, 2 + k as u32);
+        }
+        for (k, tf) in f.post.iter_mut().enumerate() {
+            screen(tf, 200 + k as u32);
         }
         if let Some(fr) = f.outside.as_mut() {
             screen(fr, 100);
@@ -156,7 +179,20 @@ impl<S: Scalar + Send + Sync + 'static> LayerK<S> {
         f.fractal.period =
             if lp.early.periodicity && self.pert.is_none() { super::period_tolerance(plan.frame.pixel_size(), PERIOD_FLOOR) } else { 0.0 };
         let bulb = lp.early.bulbs && self.pert.is_none() && crate::formula::period::in_main_bulbs(c.re.v(), c.im.v());
+        // `z` as the colorings see it: every value of the orbit they get goes through the
+        // post-transformations once (kernel.wgsl `pz`, `pzp`, `psolid`).
+        let mut post = PostZ { on: !self.post.is_empty(), z: Cx::zero(), zprev: Cx::zero(), solid: false };
+        let post_k = &self.post;
+        let post_f = &mut f.post;
+        let mut push = |post: &mut PostZ<S>, z: Cx<S>| {
+            if post.on {
+                post.zprev = post.z;
+                (post.z, post.solid) = Self::post_z(post_k, post_f, z);
+            }
+        };
         let o = if bulb {
+            // The kernel's colorings start after the fractal's init (z = 0 here).
+            push(&mut post, Cx::zero());
             Orbit { z: Cx::zero(), zprev: Cx::zero(), zprev2: Cx::zero(), iter: maxit, escaped: false }
         } else {
             let pairs = [(self.outside.as_ref(), f.outside.as_mut()), (self.inside.as_ref(), f.inside.as_mut())];
@@ -166,12 +202,16 @@ impl<S: Scalar + Send + Sync + 'static> LayerK<S> {
             }
             let hook = |h: Hook<S>| match h {
                 Hook::Init(z) => {
+                    push(&mut post, z);
+                    let z = if post.on { post.z } else { z };
                     for (k, fr) in colorings.iter_mut() {
                         fr.zcur = z;
                         k.color_init(fr, maxit);
                     }
                 }
                 Hook::Iter(it, z, zp) => {
+                    push(&mut post, z);
+                    let (z, zp) = if post.on { (post.z, post.zprev) } else { (z, zp) };
                     for (k, fr) in colorings.iter_mut() {
                         fr.zcur = z;
                         k.color_loop(fr, it, zp);
@@ -183,8 +223,22 @@ impl<S: Scalar + Send + Sync + 'static> LayerK<S> {
                 None => self.fractal.run_with(&mut f.fractal, maxit, hook),
             }
         };
-        Some(o)
+        // The step that escaped ran no hook.
+        if o.escaped {
+            push(&mut post, o.z);
+        }
+        Some((o, post))
     }
+}
+
+/// `z` and the `z` before it as the coloring formulas see them after the post-transformations
+/// (`on`: the layer has some), and whether one of them made the last value solid.
+#[derive(Clone, Copy)]
+struct PostZ<S> {
+    on: bool,
+    z: Cx<S>,
+    zprev: Cx<S>,
+    solid: bool,
 }
 
 /// A layer compiled plain or with derivatives (distance estimation), or a density layer.
@@ -699,9 +753,9 @@ pub fn coloring_values(plan: &Plan) -> Vec<Option<(bool, f64)>> {
                 for (x, out) in row.iter_mut().enumerate() {
                     let (px, py) = (x as f64 + 0.5, y as f64 + 0.5);
                     let (p, d) = (plan.frame.plane(px, py), plan.frame.offset_fx(px, py));
-                    *out = k.orbit(f, lp, plan, lift(p), d, (x as u32, y as u32, 0)).and_then(|o| {
+                    *out = k.orbit(f, lp, plan, lift(p), d, (x as u32, y as u32, 0)).and_then(|(o, post)| {
                         let r = LayerK::<S>::result(&o);
-                        k.shade(f, lp, plan, &o, &r).1.filter(|v| v.is_finite()).map(|v| (!o.escaped, v))
+                        k.shade(f, lp, plan, &o, &post, &r).1.filter(|v| v.is_finite()).map(|v| (!o.escaped, v))
                     });
                 }
             },
@@ -730,7 +784,7 @@ pub fn iteration_counts(plan: &Plan) -> Vec<Option<u32>> {
                 for (x, o) in row.iter_mut().enumerate() {
                     let (px, py) = (x as f64 + 0.5, y as f64 + 0.5);
                     let (p, d) = (plan.frame.plane(px, py), plan.frame.offset_fx(px, py));
-                    *o = k.orbit(f, lp, plan, lift(p), d, (x as u32, y as u32, 0)).filter(|o| o.escaped).map(|o| o.iter);
+                    *o = k.orbit(f, lp, plan, lift(p), d, (x as u32, y as u32, 0)).filter(|(o, _)| o.escaped).map(|(o, _)| o.iter);
                 }
             },
         );
@@ -782,6 +836,27 @@ mod tests {
         let i = (18 * 64 + 32) * 4;
         assert_eq!(&img[i..i + 4], &[0, 0, 0, 255]);
         assert!(img[0..3].iter().any(|&v| v > 0));
+    }
+
+    #[test]
+    fn post_transformations_change_only_coloring_formulas() {
+        let mut doc = Document::default();
+        doc.layers[0].outside_method = OutsideMethod::Formula;
+        doc.layers[0].outside.formula = "rfract-coloring:StripeAverage".into();
+        let plain = render(&doc, 48, 27, 1).unwrap().rgba8();
+        let mut post = doc.clone();
+        post.layers[0].post_transforms.push(TransformRef { formula: "rfract-transform:Twirl".into(), ..TransformRef::default() });
+        let changed = render(&post, 48, 27, 1).unwrap().rgba8();
+        assert_ne!(plain, changed, "the coloring sees the transformed z");
+        // The set stays the same: inside pixels are where they were.
+        let inside = |img: &[u8]| img.chunks(4).map(|p| p[..3] == [0, 0, 0]).collect::<Vec<_>>();
+        assert_eq!(inside(&plain), inside(&changed));
+        // Native colorings ignore them (and the plan drops them).
+        let mut native = post.clone();
+        native.layers[0].outside_method = OutsideMethod::Smooth;
+        assert!(LayerPlan::new(&native.layers[0]).unwrap().post_transforms.is_empty());
+        doc.layers[0].outside_method = OutsideMethod::Smooth;
+        assert_eq!(render(&doc, 48, 27, 1).unwrap().rgba8(), render(&native, 48, 27, 1).unwrap().rgba8());
     }
 
     #[test]

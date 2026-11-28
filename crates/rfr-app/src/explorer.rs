@@ -41,6 +41,7 @@ const PRESETS: &[(&str, &str)] = &[
     ("Orbit traps", include_str!("../../../docs/manual/examples/traps.rfr")),
     ("Kaleidoscope", include_str!("../../../docs/manual/examples/kaleidoscope.rfr")),
     ("Droste spiral", include_str!("../../../docs/manual/examples/droste.rfr")),
+    ("Post-transformation", include_str!("../../../docs/manual/examples/post-tiling.rfr")),
     ("Layers", include_str!("../../../docs/manual/examples/layers.rfr")),
     ("Landscape", include_str!("../../../docs/manual/examples/flyover.rfr")),
     ("Deep zoom target", include_str!("../../../docs/manual/examples/deep-zoom.rfr")),

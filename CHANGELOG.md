@@ -8,6 +8,13 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
 
 - Histogram coloring (*Transfer › Histogram*): the colors spread by how often each value
   occurs in the view, so every part of the gradient covers about as many pixels.
+- Post-transformations (layer section *Post-transformations*): transformation formulas
+  applied to z as the coloring formulas see it, for new patterns on the same set.
+
+### Fixed
+
+- The parameter fields and checkboxes of transformations were hard to see (same color as
+  their frame).
 
 ## [0.11.0] - 2026-11-27
 

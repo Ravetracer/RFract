@@ -961,6 +961,9 @@ pub struct Layer {
     pub mask: Option<Mask>,
     /// Transformations of the points before the fractal, applied in order.
     pub transforms: Vec<TransformRef>,
+    /// Post-transformations: applied in order to `z` as the coloring formulas see it (at
+    /// their init, every iteration and the end); the orbit itself does not change.
+    pub post_transforms: Vec<TransformRef>,
     /// Formula id in the library (`rfract:Mandelbrot`, `fractalpark:<id>`).
     pub formula: String,
     /// Parameter values by name; missing ones use the formula's defaults.
@@ -1050,6 +1053,7 @@ impl Default for Layer {
             opacity: 1.0,
             mask: None,
             transforms: Vec::new(),
+            post_transforms: Vec::new(),
             formula: "rfract:Mandelbrot".into(),
             params: BTreeMap::new(),
             max_iter: 500,

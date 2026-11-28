@@ -63,6 +63,18 @@ fn every_library_program_gives_valid_wgsl() {
         d.layers[0].transforms.push(TransformRef { formula: e.id.clone(), ..TransformRef::default() });
         d.layers[0].transforms.push(TransformRef { formula: "rfract-transform:Twirl".into(), ..TransformRef::default() });
         check(&e.title, &d, &all);
+        // As a post-transformation of both colorings, chained.
+        let mut d = Document::default();
+        d.layers[0].outside_method = OutsideMethod::Formula;
+        d.layers[0].outside.formula = "rfract-coloring:OrbitTrap".into();
+        d.layers[0].inside_method = InsideMethod::Formula;
+        d.layers[0].inside.formula = "rfract-coloring:TriangleInequality".into();
+        d.layers[0].post_transforms.push(TransformRef { formula: e.id.clone(), ..TransformRef::default() });
+        d.layers[0].post_transforms.push(TransformRef { formula: "rfract-transform:Twirl".into(), ..TransformRef::default() });
+        check(&format!("post {}", e.title), &d, &all);
+        if codegen::perturbation(&first_layer(&d)).is_some() {
+            check(&format!("post {}", e.title), &d, &[Mode::Pert]);
+        }
     }
     assert!(validate(&codegen::composite_shader()).is_ok(), "composite shader");
     assert!(failures.is_empty(), "{} shaders fail:\n{}", failures.len(), failures.iter().take(4).cloned().collect::<Vec<_>>().join("\n\n"));
@@ -318,6 +330,16 @@ fn gpu_matches_the_cpu_renderer() {
         let mut d = Document::for_formula("rfract:Mandelbrot");
         d.layers[0].transforms.push(TransformRef { formula: e.id.clone(), ..TransformRef::default() });
         cases.push((format!("transform {}", e.title), d));
+        // Post-transformations: the colorings see the transformed z.
+        let mut d = Document::for_formula("rfract:Mandelbrot");
+        d.layers[0].outside_method = OutsideMethod::Formula;
+        d.layers[0].outside.formula = "rfract-coloring:StripeAverage".into();
+        d.layers[0].outside.transfer = rfr_core::doc::Transfer::Linear;
+        d.layers[0].outside.density = 1.0;
+        d.layers[0].inside_method = InsideMethod::Formula;
+        d.layers[0].inside.formula = "rfract-coloring:GaussianInteger".into();
+        d.layers[0].post_transforms.push(TransformRef { formula: e.id.clone(), ..TransformRef::default() });
+        cases.push((format!("post-transform {}", e.title), d));
     }
     // Image parameters: a small generated image, looked up by the final z and tiled by pixel.
     let img_path = std::env::temp_dir().join(format!("rfr-test-image-{}.png", std::process::id()));
@@ -391,10 +413,22 @@ fn gpu_perturbation_matches_the_cpu() {
     let plan = Plan::sized(&d, w, h).unwrap();
     assert_eq!(rfr_gpu::renderer::renderer_mode(&plan), Mode::Pert);
     let cpu = rfr_core::render::cpu::render(&d, w, h, s).unwrap().rgba8();
-    let gpu = rfr_core::render::cpu::rgba8(&rfr_gpu::render_blocking(ctx, &plan, s, |_| true).unwrap());
+    let gpu = rfr_core::render::cpu::rgba8(&rfr_gpu::render_blocking(ctx.clone(), &plan, s, |_| true).unwrap());
     assert!(cpu.chunks(4).any(|p| p[0] > 100) && cpu.chunks(4).any(|p| p[0] < 30), "the view shows structure");
     let diff = block_diff(&cpu, &gpu, w as usize, h as usize);
     assert!(diff < 4.0, "perturbation: block difference {diff:.2} of 255");
+
+    // A coloring formula behind a post-transformation (every iteration, no linear steps).
+    let mut post = d.clone();
+    post.layers[0].outside_method = OutsideMethod::Formula;
+    post.layers[0].outside.formula = "rfract-coloring:StripeAverage".into();
+    post.layers[0].post_transforms.push(TransformRef { formula: "rfract-transform:Twirl".into(), ..TransformRef::default() });
+    let plan_post = Plan::sized(&post, w, h).unwrap();
+    assert!(plan_post.layers()[0].coloring_loops());
+    let cpu = rfr_core::render::cpu::render(&post, w, h, s).unwrap().rgba8();
+    let gpu = rfr_core::render::cpu::rgba8(&rfr_gpu::render_blocking(ctx.clone(), &plan_post, s, |_| true).unwrap());
+    let diff = block_diff(&cpu, &gpu, w as usize, h as usize);
+    assert!(diff < 4.0, "perturbation with a post-transformation: block difference {diff:.2} of 255");
 
     // Moving the view keeps the reference orbit (the samples add the offset); the image
     // matches a render with a fresh orbit at the new center.

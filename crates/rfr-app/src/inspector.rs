@@ -357,12 +357,51 @@ fn transforms_ui(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
     if l.transforms.is_empty() {
         ui.label(RichText::new("None: the points go to the formula unchanged.").size(theme::fs(11.5)).color(theme::TEXT_MUTED));
     }
+    transform_list(
+        ui,
+        "transform",
+        &mut l.transforms,
+        "Changes the points before the formula runs; transformations apply in order",
+        "Bend, mirror or repeat the plane before the fractal is computed",
+        actions,
+    );
+}
+
+/// Post-transformations: the transformation formulas applied to z as the coloring formulas
+/// see it.
+fn post_transforms_ui(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
+    let sec = widgets::section(ui, "Post-transformations", false);
+    if !sec.open {
+        return;
+    }
+    let formula = l.outside_method == OutsideMethod::Formula || l.inside_method == InsideMethod::Formula;
+    let note = if l.post_transforms.is_empty() {
+        "None: coloring formulas see z as the fractal computes it."
+    } else if !formula {
+        "Only coloring formulas see post-transformations: choose Formula for the outside or the inside."
+    } else {
+        "Coloring formulas see the transformed z; the shape of the set does not change."
+    };
+    ui.label(RichText::new(note).size(theme::fs(11.5)).color(theme::TEXT_MUTED));
+    transform_list(
+        ui,
+        "post-transform",
+        &mut l.post_transforms,
+        "Changes z as the coloring formulas see it (after every iteration and at the end); the orbit itself stays the same",
+        "Bend, mirror or repeat z for the coloring formulas: new patterns on the same set",
+        actions,
+    );
+}
+
+/// The editor of a list of transformations: enable, order, remove, parameters, add.
+fn transform_list(ui: &mut Ui, id: &str, list: &mut Vec<TransformRef>, add_hint: &str, menu_hint: &str, actions: &mut Vec<Action>) {
     let mut remove = None;
     let mut swap = None;
-    let n = l.transforms.len();
-    for (k, t) in l.transforms.iter_mut().enumerate() {
+    let n = list.len();
+    for (k, t) in list.iter_mut().enumerate() {
         let title = library().get(&t.formula).map(|e| e.title.clone()).unwrap_or_else(|| t.formula.clone());
-        egui::Frame::new().fill(theme::SURFACE).corner_radius(6).inner_margin(6).show(ui, |ui| {
+        // Panel color with a border: the parameter widgets inside are drawn in the surface color.
+        egui::Frame::new().fill(theme::PANEL).stroke(egui::Stroke::new(1.0, theme::BORDER)).corner_radius(6).inner_margin(6).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.checkbox(&mut t.enabled, RichText::new(&title).strong()).on_hover_text("Apply this transformation");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -378,21 +417,23 @@ fn transforms_ui(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
                 });
             });
             if let Some(p) = library().get(&t.formula).and_then(|e| e.program_with(&t.params).or_else(|_| e.program()).ok()) {
-                params_ui(ui, &format!("transform-{k}"), &p, &mut t.params);
+                params_ui(ui, &format!("{id}-{k}"), &p, &mut t.params);
             }
         });
     }
     if let Some(k) = remove {
-        l.transforms.remove(k);
+        let t = list.remove(k);
+        let title = library().get(&t.formula).map(|e| e.title.clone()).unwrap_or(t.formula);
+        actions.push(Action::Message(format!("Removed the transformation {title}")));
     }
     if let Some((a, b)) = swap {
-        l.transforms.swap(a, b);
+        list.swap(a, b);
     }
     ui.menu_button(format!("{}  Add a transformation", icons::PLUS), |ui| {
         let lib = library();
         let mut add = |ui: &mut Ui, e: &Entry| {
-            if ui.button(&e.title).on_hover_text("Changes the points before the formula runs; transformations apply in order").clicked() {
-                l.transforms.push(TransformRef { formula: e.id.clone(), ..TransformRef::default() });
+            if ui.button(&e.title).on_hover_text(add_hint).clicked() {
+                list.push(TransformRef { formula: e.id.clone(), ..TransformRef::default() });
                 actions.push(Action::Message(format!("Added the transformation {}", e.title)));
                 ui.close();
             }
@@ -411,7 +452,7 @@ fn transforms_ui(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
         }
     })
     .response
-    .on_hover_text("Bend, mirror or repeat the plane before the fractal is computed");
+    .on_hover_text(menu_hint);
 }
 
 /// A 3D object layer: shape, parameters, camera, colors and lighting.
@@ -678,6 +719,7 @@ fn fractal_sections(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
             }
         });
     }
+    post_transforms_ui(ui, l, actions);
     lighting_section(ui, l);
     layer_effects_section(ui, l);
 }

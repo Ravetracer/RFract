@@ -252,6 +252,9 @@ pub struct LayerPlan {
     pub julia: bool,
     pub seed: [f64; 2],
     pub transforms: Vec<Prog>,
+    /// Post-transformations of `z` for the coloring formulas (empty when no region uses a
+    /// coloring formula).
+    pub post_transforms: Vec<Prog>,
     pub outside: ColorPlan,
     pub inside: ColorPlan,
     /// Density layers: the orbits are counted per pixel instead of colored per pixel.
@@ -298,28 +301,34 @@ pub fn period_tolerance(pixel_size: f64, floor: f64) -> f64 {
 }
 
 impl LayerPlan {
-    /// A coloring formula runs code after every iteration (orbit traps and the like): deep
-    /// zooms cannot skip iterations for it.
+    /// A coloring formula runs code after every iteration (orbit traps and the like), or
+    /// post-transformations follow every iteration: deep zooms cannot skip iterations for it.
     pub fn coloring_loops(&self) -> bool {
-        [&self.outside, &self.inside].iter().any(|c| c.formula().is_some_and(|p| !p.program.body.is_empty()))
+        !self.post_transforms.is_empty() || [&self.outside, &self.inside].iter().any(|c| c.formula().is_some_and(|p| !p.program.body.is_empty()))
     }
 
     pub fn new(l: &Layer) -> Result<LayerPlan, String> {
         let fractal = Prog::resolve(&l.formula, &l.params, ProgramKind::Fractal).map_err(|e| format!("{}: {e}", l.name))?;
-        let transforms = l
-            .transforms
-            .iter()
-            .filter(|t| t.enabled)
-            .map(|t| Prog::resolve(&t.formula, &t.params, ProgramKind::Transform))
-            .collect::<Result<_, _>>()
-            .map_err(|e| format!("{}: {e}", l.name))?;
+        let resolve = |list: &[crate::doc::TransformRef]| {
+            list.iter()
+                .filter(|t| t.enabled)
+                .map(|t| Prog::resolve(&t.formula, &t.params, ProgramKind::Transform))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("{}: {e}", l.name))
+        };
+        let transforms = resolve(&l.transforms)?;
+        let outside = ColorPlan::outside(l.outside_method, &l.outside).map_err(|e| format!("{}: {e}", l.name))?;
+        let inside = ColorPlan::inside(l.inside_method, &l.inside).map_err(|e| format!("{}: {e}", l.name))?;
+        // Post-transformations only change what coloring formulas see.
+        let post_transforms = if outside.formula().is_some() || inside.formula().is_some() { resolve(&l.post_transforms)? } else { Vec::new() };
         Ok(LayerPlan {
             max_iter: l.max_iter.max(1),
             julia: l.julia && fractal.program.has_julia,
             seed: l.seed,
             transforms,
-            outside: ColorPlan::outside(l.outside_method, &l.outside).map_err(|e| format!("{}: {e}", l.name))?,
-            inside: ColorPlan::inside(l.inside_method, &l.inside).map_err(|e| format!("{}: {e}", l.name))?,
+            post_transforms,
+            outside,
+            inside,
             density: (l.kind == LayerKind::Density).then(|| l.density.clone()),
             // A layer gets a field when it is lit or has effects (effects only in 2D).
             light: (l.kind == LayerKind::Fractal && (l.light.enabled || l.effects.active())).then(|| {
