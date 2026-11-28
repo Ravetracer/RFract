@@ -9,6 +9,7 @@ use std::time::Instant;
 use rfr_core::doc::Document;
 use rfr_core::formula::library::library;
 
+mod bench;
 mod net;
 mod script;
 
@@ -78,6 +79,14 @@ Commands:
   formulas --check <path>…   Compile formula files (.ufm, .ucl, .uxf, .frm) or folders and report
   params --check <path>… [--thumbs <dir>] [--notes]
                              Convert parameter files (.upr, .par) and report what does not carry over
+  bench [documents…] [options]
+                             Render a fixed set of documents (or the given ones at their
+                             size and samples) and report the median times
+                             (for comparing builds on one machine)
+      --cases <a,b>          Only these cases (--list shows them)
+      --repeat <n>           Timed runs per case (default 3)
+      --scale <f>            Image size factor (default 1: mostly 1920 × 1080)
+      --cpu                  The CPU reference renderer
   info                       Program version, GPU, denoiser and settings folders
   help                       This text
 
@@ -852,6 +861,7 @@ fn main() -> ExitCode {
         Some("net-render") => net::render(rest),
         Some("net-clients") => net::list(rest),
         Some("script") => script::run(rest),
+        Some("bench") => bench::run(rest),
         Some("params" | "upr") if rest.first().map(String::as_str) == Some("--check") => check_upr(&rest[1..]),
         Some("formulas") if rest.first().map(String::as_str) == Some("--check") => check_formulas(&rest[1..]),
         Some("formulas") => {

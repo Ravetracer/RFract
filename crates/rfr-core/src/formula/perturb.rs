@@ -1177,18 +1177,24 @@ impl Perturbation {
             dz = dz + st.delta[l].norm();
         }
         let tz = if st.m == 0 { table.levels.len() as u32 } else { st.m.trailing_zeros() };
-        for k in (1..=tz.min(table.levels.len() as u32 - 1)).rev() {
+        // From the shortest step up: a step from the same start that is twice as long reaches no
+        // farther (its radius is at most its first half's), so the first that does not fit
+        // ends the search.
+        let mut take = None;
+        for k in 1..=tz.min(table.levels.len() as u32 - 1) {
             let len = 1u32 << k;
-            if len > left {
-                continue;
-            }
             let level = &table.levels[k as usize];
             let i = st.m >> k;
-            if i >= level.len() {
-                continue;
+            if len > left || i >= level.len() || dz >= level.r[i] * level.r[i] {
+                break;
             }
-            let r = level.r[i];
-            if dz < r * r {
+            take = Some(k);
+        }
+        if let Some(k) = take {
+            let len = 1u32 << k;
+            let level = &table.levels[k as usize];
+            let i = st.m >> k;
+            {
                 let b = &level.blocks[i * nb..(i + 1) * nb];
                 let mut x = [Cfx::ZERO; BLA_DYNAMIC];
                 let mut v = [Cfx::ZERO; BLA_INPUTS];

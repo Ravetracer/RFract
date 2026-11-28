@@ -3,6 +3,24 @@
 The stages and their scope are in PLAN.md. This file holds the next concrete steps and wishes
 that come up along the way.
 
+## Speed work (before 1.0.0)
+
+`rfr-cli bench` (14 cases + julia, minibrot; 1080p) on the development laptop (RTX A2000
+Laptop, shared with other work: compare medians of the same run only).
+
+- [x] `c_powi` / `Cx::powi` without loops for n = 2, 3, 4 and by squaring otherwise (same
+      products): seahorse 1.34 → 0.80 s, distance 1.82 → 0.96 s; total 19.97 → 14.33 s.
+- [x] Periodicity check every 8th iteration (z saved at the powers of two from 8): checking
+      every iteration cost more than it saved where the bulb test takes the inside (seahorse
+      0.78 → 0.66 s, minibrot 0.43 → 0.36 s, julia 0.38 → 0.33 s).
+- [x] Linear steps searched from the shortest up (radii shrink with the length): same steps,
+      one check where none applies; no measurable change at 1e-40.
+- Tried and dropped: periodicity for inside coloring formulas once their state settles
+  (orbit traps); the traps rarely settle before the iteration limit (the minimum keeps
+  shrinking while the orbit converges), so the check made renders 20 % slower.
+- [ ] Ideas: deep zooms with scaled f32 deltas instead of floatexp where the exponent range
+      allows; terrain path tracing (2.1 s at 960 × 540, 64 spp); coloring-heavy layers.
+
 ## Stage 11 – Network rendering and scripting
 
 - [x] Network rendering (`rfr-net`, port of `rmb-net`): frames and poster tiles on render nodes.

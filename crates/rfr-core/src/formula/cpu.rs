@@ -41,8 +41,8 @@ pub struct Frame<S> {
     pub rng: RngState,
     /// Periodicity checking (fractals whose loop is a map of z alone, see
     /// [`super::period`]): an orbit that comes back within this distance (per part) of the
-    /// `z` saved at the last power-of-two iteration ends as inside at the iteration limit;
-    /// 0: off.
+    /// `z` saved at the last power-of-two iteration (from 8 on; checked every 8th iteration)
+    /// ends as inside at the iteration limit; 0: off.
     pub period: f64,
     /// 3D objects: the point (`#px`, `#py`, `#pz`) and the constant (`#cx`, `#cy`, `#cz`).
     pub p3: [S; 3],
@@ -1089,7 +1089,9 @@ impl<S: Scalar + Send + Sync + 'static> Compiled<S> {
         let mut escaped = false;
         let mut iter = 0;
         let mut zprev2 = Cx::zero();
-        let (mut saved, mut save_at) = (f.cx[z], 1);
+        // Periodicity: checked every 8th iteration against the z saved at the powers of two
+        // from 8 on (as kernel.wgsl; checking every iteration costs more than it saves).
+        let (mut saved, mut save_at) = (f.cx[z], 8);
         while iter < maxit {
             zprev2 = f.zprev;
             f.zprev = f.cx[z];
@@ -1102,7 +1104,7 @@ impl<S: Scalar + Send + Sync + 'static> Compiled<S> {
                 break;
             }
             hook(Hook::Iter(iter, f.cx[z], f.zprev));
-            if f.period > 0.0 {
+            if f.period > 0.0 && iter & 7 == 0 {
                 let zc = f.cx[z];
                 if (zc.re.v() - saved.re.v()).abs() < f.period && (zc.im.v() - saved.im.v()).abs() < f.period {
                     iter = maxit;

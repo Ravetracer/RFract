@@ -103,6 +103,11 @@ that way; `--no-guess` (before the command, for all of them) computes every pixe
 
 `--bookmark <name>` renders the view of one of the document's bookmarks (see *View*).
 
+`rfr-cli bench` renders a fixed set of documents (deep zooms, terrains, 3D objects, density
+layers, coloring formulas) and prints the median time of each, for comparing versions or
+settings on one computer; `rfr-cli bench picture.rfr` times your own documents at their
+size and samples.
+
 `render` also takes a `.upr` file; `--entry <name>` picks its image (default: the first),
 and the notes of the conversion go to the terminal.
 

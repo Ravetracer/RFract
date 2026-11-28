@@ -6,6 +6,9 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
 
 ### Added
 
+- `rfr-cli bench`: renders a fixed set of documents (or given ones) and reports the median
+  render times, for comparing builds on one machine.
+
 - Lua scripting (*File › Scripts…*, `rfr-cli script`): scripts change the document (a Lua
   table with the fields of an `.rfr` file), render images and animations, fill the render
   queue and list formulas and their parameters; parameters declared in the script header
@@ -14,6 +17,12 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
   animation or tiles of an image; *File › Network render…* and `rfr-cli net-render` send the
   document with its images and formula files and put the results together (`net-clients`
   lists the clients).
+
+### Changed
+
+- Faster rendering: whole-number powers of z without loops (z², z³, z⁴ directly) and the
+  periodicity check every 8th iteration instead of every one; on the benchmark set the GPU
+  renders about 30 % faster overall (seahorse valley about 2×, distance estimation 2.2×).
 
 ## [0.12.0] - 2026-11-28
 

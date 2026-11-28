@@ -110,15 +110,32 @@ impl<S: Scalar> Cx<S> {
         (w * self.log()).exp()
     }
     /// Integer power by repeated multiplication (exponent between -64 and 64).
+    /// `self^n` by squaring: the low zero bits of `n` square first, the result starts at the
+    /// first set bit (z² is one squaring). The same steps as `c_powi` in cstd.wgsl.
     pub fn powi(self, n: i32) -> Self {
-        let mut r = Cx::from_f64(1.0, 0.0);
-        let mut b = self;
+        // The common powers without loops (the same products as below).
+        match n {
+            2 => return self.sqr(),
+            3 => return self * self.sqr(),
+            4 => return self.sqr().sqr(),
+            _ => {}
+        }
         let mut e = n.unsigned_abs();
+        if e == 0 {
+            return Cx::from_f64(1.0, 0.0);
+        }
+        let mut b = self;
+        while e & 1 == 0 {
+            b = b.sqr();
+            e >>= 1;
+        }
+        let mut r = b;
+        e >>= 1;
         while e > 0 {
+            b = b.sqr();
             if e & 1 == 1 {
                 r = r * b;
             }
-            b = b * b;
             e >>= 1;
         }
         if n < 0 { r.recip() } else { r }

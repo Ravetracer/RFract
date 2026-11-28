@@ -543,7 +543,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             iter = maxit;
         }
         var psave = vec2<f32>(s_v(l0.re), s_v(l0.im));
-        var psave_at = 1u;
+        var psave_at = 8u;
         loop {
             if iter >= maxit {
                 break;
@@ -559,7 +559,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 break;
             }
 //@COLOR_LOOP
-            if U.seed.z > 0.0 {
+            // Every 8th iteration only (the check costs more than most orbits save); z is saved
+            // at the powers of two from 8 on.
+            if U.seed.z > 0.0 && (iter & 7u) == 0u {
                 let zc = vec2<f32>(s_v(l0.re), s_v(l0.im));
                 let dp = abs(zc - psave);
                 if dp.x < U.seed.z && dp.y < U.seed.z {

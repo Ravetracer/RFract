@@ -131,18 +131,41 @@ fn c_pow(a: Cx, w: Cx) -> Cx {
     }
     return c_exp(c_mul(w, c_log(a)));
 }
+// a^n by squaring: the low zero bits of n square first, the result starts at the first set
+// bit (z² is one squaring). The same steps as Cx::powi.
 fn c_powi(a: Cx, n: i32) -> Cx {
-    var r = c_f(1.0, 0.0);
-    var b = a;
+    // The common powers without loops (the same products as below).
+    if n == 2 {
+        return c_sqr(a);
+    }
+    if n == 3 {
+        return c_mul(a, c_sqr(a));
+    }
+    if n == 4 {
+        return c_sqr(c_sqr(a));
+    }
     var e = u32(abs(n));
+    if e == 0u {
+        return c_f(1.0, 0.0);
+    }
+    var b = a;
+    loop {
+        if (e & 1u) == 1u {
+            break;
+        }
+        b = c_sqr(b);
+        e = e >> 1u;
+    }
+    var r = b;
+    e = e >> 1u;
     loop {
         if e == 0u {
             break;
         }
+        b = c_sqr(b);
         if (e & 1u) == 1u {
             r = c_mul(r, b);
         }
-        b = c_mul(b, b);
         e = e >> 1u;
     }
     if n < 0 {
