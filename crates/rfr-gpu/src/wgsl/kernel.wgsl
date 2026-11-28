@@ -93,6 +93,9 @@ struct Uni {
     fnear: vec4<i32>,
     ffar: vec4<i32>,
     fstep: vec4<u32>,
+    // 3D terrain walls: the color at the base (linear RGB), the base (k · height); walls on (x)
+    lwall: vec4<f32>,
+    lwalli: vec4<u32>,
 }
 
 struct Params {

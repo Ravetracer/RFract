@@ -1164,6 +1164,12 @@ pub struct Lighting {
     pub terrain: bool,
     pub terrain_height: f64,
     pub camera: Camera,
+    /// 3D terrain: walls down to a base close the terrain into a block; the base lies
+    /// `wall_depth` (a share of the terrain height) below the lowest ground of the height
+    /// source. The walls show the edge's colors, fading to `wall_color` toward the base.
+    pub walls: bool,
+    pub wall_depth: f64,
+    pub wall_color: [f32; 3],
     /// Renders the surface normals as colors instead of shading (the denoiser's normal
     /// image, `render::post::aux_documents`); never saved.
     #[serde(skip)]
@@ -1212,6 +1218,9 @@ impl Default for Lighting {
             terrain: false,
             terrain_height: 0.15,
             camera: Camera::default(),
+            walls: false,
+            wall_depth: 0.15,
+            wall_color: [0.08, 0.07, 0.06],
             normal_output: false,
         }
     }

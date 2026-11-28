@@ -223,6 +223,14 @@ fn gpu_matches_the_cpu_renderer() {
         l.shadows = true;
         l.camera.yaw = 30.0;
         cases.push(("lit terrain".into(), ter.clone()));
+        // With walls down to a base, seen low from a corner.
+        let mut walls = ter.clone();
+        let l = &mut walls.layers[0].light;
+        l.walls = true;
+        l.wall_depth = 0.4;
+        l.camera.yaw = 40.0;
+        l.camera.pitch = 15.0;
+        cases.push(("terrain walls".into(), walls));
         // Point lights from the document's light sources, with shadows, flat and as a terrain.
         let light = |x: &str, y: &str, h: f64, color: [f32; 3]| rfr_core::doc::LightSource {
             position: [x.into(), y.into()],

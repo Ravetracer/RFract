@@ -933,6 +933,18 @@ fn lighting_section(ui: &mut Ui, l: &mut Layer) {
                 5.0..=120.0,
                 c.fov,
             );
+            widgets::checkbox(ui, "Walls", "Close the terrain into a block: walls down to a base below the lowest ground", &mut li.walls);
+            if li.walls {
+                widgets::slider(
+                    ui,
+                    "Wall depth",
+                    "How far the base lies below the lowest ground, as a share of the terrain height",
+                    &mut li.wall_depth,
+                    0.0..=2.0,
+                    def.wall_depth,
+                );
+                widgets::color(ui, "Wall color", "Color of the walls at the base; at the top they show the edge's colors", &mut li.wall_color);
+            }
         }
         widgets::slider(
             ui,

@@ -108,6 +108,8 @@ struct Uni {
     fnear: [i32; 4],
     ffar: [i32; 4],
     fstep: [u32; 4],
+    lwall: [f32; 4],
+    lwalli: [u32; 4],
 }
 
 /// The lighting a layer's shaders use: a lit layer's or a 3D object's.
@@ -378,7 +380,12 @@ fn field_uni(plan: &Plan, lp: &LayerPlan) -> Uni {
     let near = g.near.as_ref().map_or([0; 4], row);
     let near_cells = g.near.as_ref().map_or(0, |n| n.cells()) as u32;
     let margin = lp.light.as_ref().map_or(0, |l| l.near_margin);
-    Uni { fnear: near, ffar: row(&g.far), fstep: [g.far.step, margin, near_cells, 0], ..Uni::default() }
+    // 3D terrain walls.
+    let (lwall, lwalli) = match lp.light.as_ref().and_then(|l| Some((l.walls?, l.wall_base(g.far.height)?))) {
+        Some(((_, c), base)) => ([c[0], c[1], c[2], base], [1, 0, 0, 0]),
+        None => ([0.0; 4], [0; 4]),
+    };
+    Uni { fnear: near, ffar: row(&g.far), fstep: [g.far.step, margin, near_cells, 0], lwall, lwalli, ..Uni::default() }
 }
 
 /// Per light one row of the lit layer's uniforms (direction or color).

@@ -69,6 +69,8 @@ Open points of the earlier stages (their notes below stay for the details).
         dropped; Metropolis scores on the whole image), `density_maxima` (first sweep over the
         tiles), `Plan::with_density_max` (the whole image's largest counts per pass).
 - [ ] Terrain: larger than the view, walls down to a base, optional path tracing into OIDN.
+  - [x] Walls down to a base (`Lighting::walls`, `Hit::Wall`, base below the source's lowest
+        ground; walls lit without shadows, edge colors fading to the wall color).
 - [ ] 3D objects: bicomplex Julia and more DE formulas, 3D formula programs, depth compositing
       with terrains.
 - [ ] Perturbation: BLA for formulas with more than z, double-float reference values on the

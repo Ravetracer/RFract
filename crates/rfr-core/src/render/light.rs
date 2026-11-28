@@ -58,6 +58,9 @@ pub struct LightPlan {
     /// value that reaches it (see [`LightPlan::set_height_range`]).
     pub terrain_height: f32,
     pub height_range: f32,
+    /// 3D terrain: walls down to a base (depth below the lowest ground as a share of the
+    /// terrain height, the color at the base).
+    pub walls: Option<(f32, [f32; 3])>,
     /// Whether the layer is lit (else a layer with effects keeps its colors).
     pub shading: bool,
     /// Output the surface normal as a color (n / 2 + ½) instead of shading.
@@ -148,6 +151,7 @@ impl LightPlan {
             zenith: l.zenith,
             terrain_height: l.terrain_height.max(0.0) as f32,
             height_range: 1.0,
+            walls: (l.terrain && l.walls).then_some((l.wall_depth.max(0.0) as f32, l.wall_color)),
             shading: true,
             normal_output: l.normal_output,
             fx: None,
@@ -227,6 +231,15 @@ impl LightPlan {
             p.0 = [(x - w as f32 * 0.5) * unit, (h as f32 * 0.5 - y) * unit, p.0[2] * unit];
             *r *= unit;
         }
+    }
+
+    /// A terrain's base for its walls (`k` · height units of a field `field_height` cells
+    /// high): below the lowest ground of the height source (0, or minus the height range for
+    /// distance heights) by the wall depth.
+    pub fn wall_base(&self, field_height: u32) -> Option<f32> {
+        let (depth, _) = self.walls?;
+        let low = if self.source == HeightSource::Distance { 1.0 } else { 0.0 };
+        Some(-(depth + low) * self.terrain_height * field_height as f32)
     }
 
     /// The size of the height values of the source for a terrain: smooth iterations up to
@@ -648,26 +661,32 @@ impl Field {
     /// first meets the surface from above, in pixel units; `None` when it misses. Cells whose
     /// highest point stays below the ray are skipped level by level; in a level-0 cell the
     /// bilinear surface is searched in steps and the crossing refined by bisection.
-    pub fn trace(&self, o: [f32; 3], d: [f32; 3], k: f32) -> Option<(f32, f32)> {
+    pub fn trace(&self, o: [f32; 3], d: [f32; 3], k: f32, base: Option<f32>) -> Option<Hit> {
         if self.mips.is_empty() {
             return None;
         }
         let top = self.mips.len() - 1;
         let (xmax, ymax) = ((self.width as f32 - 1.0).max(0.0), (self.height as f32 - 1.0).max(0.0));
-        // The part of the ray over the field and below its highest point.
+        // The part of the ray over the field and below its highest point; the side it enters
+        // through (axis, entering toward +).
         let mut t0 = 0.0f32;
         let mut t1 = f32::INFINITY;
-        for (oa, da, hi) in [(o[0], d[0], xmax), (o[1], d[1], ymax)] {
+        let mut side = None;
+        for (axis, (oa, da, hi)) in [(o[0], d[0], xmax), (o[1], d[1], ymax)].into_iter().enumerate() {
             if da.abs() < 1e-12 {
                 if oa < 0.0 || oa > hi {
                     return None;
                 }
             } else {
                 let (a, b) = (-oa / da, (hi - oa) / da);
-                t0 = t0.max(a.min(b));
+                if a.min(b) > t0 {
+                    t0 = a.min(b);
+                    side = Some((axis, da > 0.0));
+                }
                 t1 = t1.min(a.max(b));
             }
         }
+        let t_side = t0;
         let zt = self.mip(top, 0, 0);
         if o[2] > zt {
             if d[2] >= 0.0 {
@@ -684,10 +703,25 @@ impl Field {
             o[2] + d[2] * t - k * self.height_at(x, y)
         };
         // A ray that enters the field below the surface comes in through a side (or from
-        // underneath): the terrain is an open sheet without walls. (Entering through the
-        // highest point, on a plateau, is rounding, not a side.)
+        // underneath): it meets the wall when the terrain has walls and it comes in above the
+        // base, else the terrain is an open sheet. (Entering through the highest point, on a
+        // plateau, is rounding, not a side.)
         if above(t0) < -1e-3 * (1.0 + zt.abs() + o[2].abs()) {
-            return None;
+            let z = o[2] + d[2] * t0;
+            return match (base, side) {
+                (Some(b), Some((axis, up))) if t0 == t_side && z >= b => {
+                    let (x, y) = at(t0);
+                    // Outward, with y up like the lights (field y runs down).
+                    let n = match (axis, up) {
+                        (0, true) => [-1.0, 0.0, 0.0],
+                        (0, false) => [1.0, 0.0, 0.0],
+                        (_, true) => [0.0, 1.0, 0.0],
+                        (_, false) => [0.0, -1.0, 0.0],
+                    };
+                    Some(Hit::Wall { x, y, z, n })
+                }
+                _ => None,
+            };
         }
         let mut t = t0;
         let mut level = top;
@@ -720,7 +754,7 @@ impl Field {
             }
             // Level 0: search the bilinear surface between t and te, refine the crossing.
             if above(t) <= 0.0 {
-                return Some(at(t));
+                return Some(Hit::Surface(at(t)));
             }
             let mut a = t;
             for j in 1..=TRACE_STEPS {
@@ -735,7 +769,7 @@ impl Field {
                             lo = m;
                         }
                     }
-                    return Some(at(hi));
+                    return Some(Hit::Surface(at(hi)));
                 }
                 a = b;
             }
@@ -743,8 +777,16 @@ impl Field {
             level = 1.min(top);
         }
         // Out of steps: the ray skims the surface here.
-        (t <= t1).then(|| at(t))
+        (t <= t1).then(|| Hit::Surface(at(t)))
     }
+}
+
+/// Where a camera ray meets a terrain: its surface (field cells), or a wall at height `z`
+/// with outward normal `n` (x right, y up).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Hit {
+    Surface((f32, f32)),
+    Wall { x: f32, y: f32, z: f32, n: [f32; 3] },
 }
 
 /// The fields of a lit layer for one pass (see [`Grids`]).
@@ -821,12 +863,33 @@ impl Fields {
             x as f32 + u as f32,
             y as f32 + v as f32,
         );
-        let Some((hx, hy)) = t.trace(o, d, l.slope_scale(h_img)) else { return [0.0; 4] };
+        let k = l.slope_scale(h_img);
+        // Toward the viewer, with y up like the lights.
+        let view = [-d[0], d[1], -d[2]];
+        let base = l.wall_base(t.height);
+        let (hx, hy) = match t.trace(o, d, k, base) {
+            None => return [0.0; 4],
+            Some(Hit::Surface(p)) => p,
+            Some(Hit::Wall { x, y, z, n }) => {
+                // The edge's color fading to the wall color toward the base; lit by every light
+                // (nothing stands outside the block), without occlusion.
+                let (b, wall) = (base.unwrap_or(0.0), l.walls.map_or([0.0; 3], |w| w.1));
+                let top = k * t.height_at(x, y);
+                let f = ((top - z) / (top - b).max(1e-6)).clamp(0.0, 1.0);
+                let edge = t.color_at(x, y);
+                let color = [0, 1, 2].map(|c| edge[c] + (wall[c] - edge[c]) * f);
+                let mut points = [([0.0f32; 3], 1.0f32); crate::doc::MAX_LIGHTS];
+                for (i, (pos, _)) in l.points.iter().enumerate() {
+                    let (dir, _, fall) = point_dir(*pos, x, y, z, l.reach[i]);
+                    points[i] = (dir, fall);
+                }
+                let seen = [1.0f32; crate::doc::MAX_LIGHTS];
+                return shade_normal(l, [color[0], color[1], color[2], 1.0], n, &seen, 1.0, view, &points[..l.points.len()]);
+            }
+        };
         let h = |dx: f32, dy: f32| t.height_at(hx + dx, hy + dy);
         let gx = (h(1.0, 0.0) - h(-1.0, 0.0)) * 0.5;
         let gy = (h(0.0, -1.0) - h(0.0, 1.0)) * 0.5;
-        // Toward the viewer, with y up like the lights.
-        let view = [-d[0], d[1], -d[2]];
         self.shade_point(l, t.color_at(hx, hy), hx, hy, h(0.0, 0.0), gx, gy, view, &mut rng)
     }
 
@@ -1013,6 +1076,36 @@ mod tests {
             let dark = LightPlan { lights: Vec::new(), ..l.clone() };
             assert!((shade(&dark, grey, 0.3, 0.1, 1.0, &[], 1.0, [0.0, 0.0, 1.0], &[])[1] - 0.5 * l.ambient).abs() < 1e-6);
         }
+    }
+
+    #[test]
+    fn rays_through_the_sides_meet_the_walls() {
+        // A flat terrain at height 1 (k = 1), 20 × 10 cells; a ray coming in low through the
+        // left side.
+        let (w, h) = (20u32, 10u32);
+        let data = vec![[0.5, 0.5, 0.5, 1.0, 1.0, 3.0e38]; (w * h) as usize];
+        let mut lighting = Lighting { enabled: true, terrain: true, walls: true, wall_depth: 0.5, ..Lighting::default() };
+        lighting.terrain_height = 0.1;
+        let mut l = LightPlan::new(&lighting);
+        l.set_height_range(100);
+        let grid = Grid { x: 0, y: 0, width: w, height: h, step: 1 };
+        let f = Field::new(&l, grid, h, data);
+        // The ground lies at z = k (height 1), the base at −0.5 · 0.1 · 10.
+        let k = l.slope_scale(h);
+        let (o, d) = ([-5.0, 4.0, 0.5 * k], normalize([1.0, 0.0, 0.0]));
+        let base = l.wall_base(h);
+        assert_eq!(base, Some(-0.5 * 0.1 * 10.0));
+        match f.trace(o, d, k, base) {
+            Some(Hit::Wall { x, n, z, .. }) => {
+                assert!(x.abs() < 1e-4 && n == [-1.0, 0.0, 0.0] && (z - 0.5 * k).abs() < 1e-4, "{x} {n:?} {z}");
+            }
+            other => panic!("expected the left wall, got {other:?}"),
+        }
+        // Without walls the sheet is open; below the base the ray passes under the block.
+        assert_eq!(f.trace(o, d, k, None), None);
+        assert_eq!(f.trace([-5.0, 4.0, -1.0], d, k, base), None);
+        // From above it meets the surface.
+        assert!(matches!(f.trace([5.0, 4.0, 5.0], normalize([0.2, 0.0, -1.0]), k, base), Some(Hit::Surface(_))));
     }
 
     #[test]

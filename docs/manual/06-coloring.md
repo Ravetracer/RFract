@@ -163,16 +163,22 @@ height* is its angle above the ground, *Camera distance* its distance in image h
 view orbits the camera (left and right: direction, up and down: height) and **Ctrl-wheel**
 moves it closer or farther; plain dragging and the wheel still move and zoom the plane under
 it. Where no terrain is seen, the layer is transparent: the layers below and the background
-show, for example a gradient fill layer as a sky. The terrain is an open sheet: its edges have
-no walls.
+show, for example a gradient fill layer as a sky.
+
+Without walls the terrain is an open sheet. **Walls** close it into a block: its sides go down
+to a base that lies *Wall depth* (a share of the terrain height) below the lowest ground the
+height source gives. The walls show the colors of the terrain's edge, fading to *Wall color*
+toward the base, like a slice through the landscape; every light reaches them (nothing stands
+outside the block). Where the ground dips below the base (distance heights far from the set),
+the wall leaves a gap.
 
 **Terrain height** (instead of *Relief*) sets how high the terrain's highest parts rise, as a
 share of the image height: with *Iterations* the set is a plateau at exactly that height,
 with *Distance* the slopes rise smoothly to the set at that height. The lights, shadows,
 occlusion and reflections work on the terrain as on the flat relief. Very steep walls show
 the colors of the few pixels they stand on, stretched; a lower terrain height or *Distance*
-heights avoid them. The terrain has as many
-points as the image has pixels, so close-ups of the ground look soft.
+heights avoid them. The terrain has as many points as the image has pixels (at most 4096 on
+its long side), so close-ups of the ground look soft.
 
 Every render pass computes the layer's heights over the whole image (and as far beyond it as
 shadows, occlusion and effects reach) before it shades it, so a lit layer costs a little more

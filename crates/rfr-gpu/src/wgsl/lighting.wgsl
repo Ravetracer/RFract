@@ -228,7 +228,8 @@ fn l_above(o: vec3<f32>, d: vec3<f32>, k: f32, t: f32) -> f32 {
     return o.z + d.z * t - k * l_height_at(o.x + d.x * t, o.y + d.y * t);
 }
 
-// rfr_core::render::light::Field::trace: the hit (x, y, 1), or z = 0 for a miss.
+// rfr_core::render::light::Field::trace: a surface hit (x, y, 1), a wall hit (x, y, 2 + side:
+// 0 enters toward +x, 1 toward −x, 2 toward +y, 3 toward −y), or z = 0 for a miss.
 fn l_trace(o: vec3<f32>, d: vec3<f32>, k: f32) -> vec3<f32> {
     let levels = l_mip_levels();
     let top = levels - 1u;
@@ -243,6 +244,7 @@ fn l_trace(o: vec3<f32>, d: vec3<f32>, k: f32) -> vec3<f32> {
     let oa = vec2<f32>(o.x, o.y);
     let da = vec2<f32>(d.x, d.y);
     let hi = vec2<f32>(xmax, ymax);
+    var side = -1;
     for (var a = 0; a < 2; a = a + 1) {
         if abs(da[a]) < 1e-12 {
             if oa[a] < 0.0 || oa[a] > hi[a] {
@@ -251,10 +253,14 @@ fn l_trace(o: vec3<f32>, d: vec3<f32>, k: f32) -> vec3<f32> {
         } else {
             let ta = -oa[a] / da[a];
             let tb = (hi[a] - oa[a]) / da[a];
-            t0 = max(t0, min(ta, tb));
+            if min(ta, tb) > t0 {
+                t0 = min(ta, tb);
+                side = 2 * a + select(1, 0, da[a] > 0.0);
+            }
             t1 = min(t1, max(ta, tb));
         }
     }
+    let t_side = t0;
     let zt = l_mip_get(bases[top], top, 0, 0);
     if o.z > zt {
         if d.z >= 0.0 {
@@ -265,8 +271,12 @@ fn l_trace(o: vec3<f32>, d: vec3<f32>, k: f32) -> vec3<f32> {
     if t0 > t1 {
         return vec3<f32>(0.0);
     }
-    // Entering below the surface: through a side or from underneath (no walls).
+    // Entering below the surface: through a side or from underneath; the wall when the
+    // terrain has walls and the ray comes in above the base.
     if l_above(o, d, k, t0) < -1e-3 * (1.0 + abs(zt) + abs(o.z)) {
+        if U.lwalli.x != 0u && side >= 0 && t0 == t_side && o.z + d.z * t0 >= U.lwall.w {
+            return vec3<f32>(oa + da * t0, 2.0 + f32(side));
+        }
         return vec3<f32>(0.0);
     }
     var t = t0;
@@ -428,6 +438,42 @@ fn lit(@builtin(global_invocation_id) gid: vec3<u32>) {
         let hit = l_trace(ray[0], ray[1], k);
         if hit.z == 0.0 {
             l_blend(gid, x, vec4<f32>(0.0));
+            return;
+        }
+        if hit.z >= 2.0 {
+            // A wall (Fields::shade): the edge's color fading to the wall color toward the
+            // base, lit by every light, without occlusion.
+            let side = u32(hit.z - 2.0);
+            let d = ray[1];
+            let o = ray[0];
+            var t = (hit.y - o.y) / d.y;
+            if side < 2u {
+                t = (hit.x - o.x) / d.x;
+            }
+            let z = o.z + d.z * t;
+            var n = vec3<f32>(-1.0, 0.0, 0.0);
+            if side == 1u {
+                n = vec3<f32>(1.0, 0.0, 0.0);
+            } else if side == 2u {
+                n = vec3<f32>(0.0, 1.0, 0.0);
+            } else if side == 3u {
+                n = vec3<f32>(0.0, -1.0, 0.0);
+            }
+            let top = k * l_height_at(hit.x, hit.y);
+            let f = clamp((top - z) / max(top - U.lwall.w, 1e-6), 0.0, 1.0);
+            let edge = l_color_at(hit.x, hit.y);
+            let wc = vec4<f32>(mix(edge.xyz, U.lwall.xyz, f), 1.0);
+            var wpts = array<vec4<f32>, 4>();
+            for (var i = 0u; i < u32(U.lenv.w); i = i + 1u) {
+                let dl = vec3<f32>(U.lpos[i].x - hit.x, hit.y - U.lpos[i].y, U.lpos[i].z - z);
+                var sn = 1.0;
+                let reach = U.lpos[i].w;
+                if reach > 0.0 {
+                    sn = sn / (1.0 + dot(dl, dl) / (reach * reach));
+                }
+                wpts[i] = vec4<f32>(normalize(dl), sn);
+            }
+            l_blend(gid, x, l_shade_n(wc, n, array<f32, 4>(1.0, 1.0, 1.0, 1.0), 1.0, vec3<f32>(-d.x, d.y, -d.z), wpts));
             return;
         }
         px = hit.x;
