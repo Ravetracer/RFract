@@ -55,6 +55,7 @@ impl Browser {
                         ("Fractal formula", ProgramKind::Fractal),
                         ("Coloring formula", ProgramKind::Coloring),
                         ("Transformation", ProgramKind::Transform),
+                        ("3D formula", ProgramKind::Object),
                     ] {
                         if ui
                             .button(label)

@@ -99,6 +99,92 @@ fn o_de(p: vec3<f32>) -> vec2<f32> {
             let d = length(max(q, vec3<f32>(0.0))) + min(max(q.x, max(q.y, q.z)), 0.0);
             return vec2<f32>(d / scale, trap * 4.0);
         }
+        case 4u: {
+            // ObjectPlan::bicomplex: two complex iterations in the idempotent basis.
+            var c1 = p.xy;
+            var c2 = vec2<f32>(p.z, 0.0);
+            var add = 1.0;
+            if U.obji.z != 0u {
+                c1 = U.objc.xy;
+                c2 = U.objc.zw;
+                add = 0.0;
+            }
+            var w1 = vec2<f32>(p.x, p.y - p.z);
+            var w2 = vec2<f32>(p.x, p.y + p.z);
+            let k1 = vec2<f32>(c1.x + c2.y, c1.y - c2.x);
+            let k2 = vec2<f32>(c1.x - c2.y, c1.y + c2.x);
+            var d1 = vec2<f32>(1.0, 0.0);
+            var d2 = vec2<f32>(1.0, 0.0);
+            for (var i = 0u; i < iters; i = i + 1u) {
+                trap = min(trap, sqrt((dot(w1, w1) + dot(w2, w2)) * 0.5));
+                if dot(w1, w1) <= 1e4 {
+                    d1 = vec2<f32>(2.0 * (w1.x * d1.x - w1.y * d1.y) + add, 2.0 * (w1.x * d1.y + w1.y * d1.x));
+                    w1 = vec2<f32>(w1.x * w1.x - w1.y * w1.y + k1.x, 2.0 * w1.x * w1.y + k1.y);
+                }
+                if dot(w2, w2) <= 1e4 {
+                    d2 = vec2<f32>(2.0 * (w2.x * d2.x - w2.y * d2.y) + add, 2.0 * (w2.x * d2.y + w2.y * d2.x));
+                    w2 = vec2<f32>(w2.x * w2.x - w2.y * w2.y + k2.x, 2.0 * w2.x * w2.y + k2.y);
+                }
+            }
+            var e1 = 0.0;
+            let r1 = length(w1);
+            if r1 * r1 > 4.0 {
+                e1 = 0.5 * r1 * log(r1) / max(length(d1), 1e-12);
+            }
+            var e2 = 0.0;
+            let r2 = length(w2);
+            if r2 * r2 > 4.0 {
+                e2 = 0.5 * r2 * log(r2) / max(length(d2), 1e-12);
+            }
+            return vec2<f32>(sqrt(e1 * e1 + e2 * e2) * 0.70710678, trap);
+        }
+        case 5u: {
+            // ObjectPlan::tetrahedron
+            let s = max(U.obj.y, 1.01);
+            var z = p;
+            var k = 1.0;
+            for (var i = 0u; i < iters; i = i + 1u) {
+                if z.x + z.y < 0.0 {
+                    z = vec3<f32>(-z.y, -z.x, z.z);
+                }
+                if z.x + z.z < 0.0 {
+                    z = vec3<f32>(-z.z, z.y, -z.x);
+                }
+                if z.y + z.z < 0.0 {
+                    z = vec3<f32>(z.x, -z.z, -z.y);
+                }
+                z = z * s - vec3<f32>(s - 1.0);
+                k = k * s;
+                trap = min(trap, length(z) / k);
+            }
+            return vec2<f32>((length(z) - 1.0) / k, trap * 2.0);
+        }
+        case 6u: {
+            // ObjectPlan::octahedron
+            let s = max(U.obj.y, 1.01);
+            var z = p;
+            var k = 1.0;
+            for (var i = 0u; i < iters; i = i + 1u) {
+                z = abs(z);
+                if z.x < z.y {
+                    z = vec3<f32>(z.y, z.x, z.z);
+                }
+                if z.x < z.z {
+                    z = vec3<f32>(z.z, z.y, z.x);
+                }
+                if z.y < z.z {
+                    z = vec3<f32>(z.x, z.z, z.y);
+                }
+                z = vec3<f32>(z.x * s - (s - 1.0), z.y * s, z.z * s);
+                k = k * s;
+                trap = min(trap, length(z) / k);
+            }
+            return vec2<f32>((length(z) - 1.0) / k, trap * 2.0);
+        }
+        case 7u: {
+            // A 3D formula (codegen::object_kernel).
+            return o_formula(p);
+        }
         default: {
             let n = U.obj.x;
             let c = o_c3(p);

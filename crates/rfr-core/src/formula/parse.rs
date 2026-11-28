@@ -1183,6 +1183,23 @@ impl Parser {
                     }
                     self.skip_line();
                 }
+                "distance" => {
+                    self.next();
+                    if self.eat_op("=")
+                        && let Tok::Str(s) = self.peek().clone()
+                    {
+                        self.next();
+                        f.distance = Some(s);
+                    }
+                    self.skip_line();
+                }
+                "bound" => {
+                    self.next();
+                    if self.eat_op("=") {
+                        f.bound = self.const_value().map(|v| v.as_f64());
+                    }
+                    self.skip_line();
+                }
                 "title" | "center" | "magn" | "maxiter" => {
                     self.next();
                     if self.eat_op("=") {
@@ -1385,6 +1402,8 @@ impl Parser {
             funcs: Vec::new(),
             outside_coloring: None,
             inside_coloring: None,
+            distance: None,
+            bound: None,
         };
         let mut seen_section = false;
         loop {
@@ -1543,6 +1562,8 @@ impl Parser {
                         funcs: Vec::new(),
                         outside_coloring: None,
                         inside_coloring: None,
+                        distance: None,
+                        bound: None,
                     };
                     self.ufm_default(&mut f)?;
                     c.params.extend(f.params);

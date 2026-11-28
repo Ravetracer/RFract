@@ -706,6 +706,27 @@ fn render_check(prog: rfr_core::formula::Program, kind: rfr_core::formula::Progr
             object: None,
             early: Default::default(),
         },
+        // A 3D formula in an object layer.
+        ProgramKind::Object => {
+            let object = rfr_core::doc::Object3D { shape: rfr_core::doc::ObjectShape::Formula, ..Default::default() };
+            let mut o = rfr_core::render::object::ObjectPlan::new(&object, &Default::default());
+            o.formula = Some(std::sync::Arc::new(rfr_core::render::object::ObjectFormula::new(mine)));
+            LayerPlan {
+                fractal: mandel,
+                max_iter: 50,
+                julia: false,
+                seed: [0.0; 2],
+                transforms: vec![],
+                post_transforms: vec![],
+                outside: color(ColorMethod::Smooth),
+                inside: color(ColorMethod::Solid),
+                density: None,
+                density_max: None,
+                light: None,
+                object: Some(o),
+                early: Default::default(),
+            }
+        }
     };
     let src = rfr_gpu::codegen::kernel(&lp, rfr_gpu::codegen::Mode::Plain);
     let module = naga::front::wgsl::parse_str(&src).map_err(|e| format!("shader: {}", e.message()))?;

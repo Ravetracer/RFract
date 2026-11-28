@@ -114,8 +114,9 @@ fn c_log(a: Cx) -> Cx { return Cx(s_log(c_cabs(a)), c_arg(a)); }
 fn c_sqrt(a: Cx) -> Cx {
     let r = c_cabs(a);
     let h = s_c(0.5);
-    let re = s_sqrt(s_mul(s_add(r, a.re), h));
-    let im = s_sqrt(s_mul(s_sub(r, a.re), h));
+    // |a| ± re can round below zero next to the real axis (GPU sqrt is not exact): clamp.
+    let re = s_sqrt(s_max(s_mul(s_add(r, a.re), h), s_c(0.0)));
+    let im = s_sqrt(s_max(s_mul(s_sub(r, a.re), h), s_c(0.0)));
     if s_v(a.im) < 0.0 {
         return Cx(re, s_neg(im));
     }

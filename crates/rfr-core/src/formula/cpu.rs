@@ -44,6 +44,9 @@ pub struct Frame<S> {
     /// `z` saved at the last power-of-two iteration ends as inside at the iteration limit;
     /// 0: off.
     pub period: f64,
+    /// 3D objects: the point (`#px`, `#py`, `#pz`) and the constant (`#cx`, `#cy`, `#cz`).
+    pub p3: [S; 3],
+    pub c3: [S; 3],
 }
 
 /// Generator state of `#random`; an atomic so frames can be shared with worker threads (each
@@ -498,6 +501,14 @@ impl<'a, S: Scalar + Send + Sync + 'static> Cc<'a, S> {
                 Sys::MaxIt => E::I(Box::new(|f| f.maxit)),
                 Sys::NumIter => E::I(Box::new(|f| f.numiter)),
                 Sys::IsMand => E::B(Box::new(|f| f.ismand)),
+                Sys::P3(a) => {
+                    let a = *a as usize;
+                    E::R(Box::new(move |f| f.p3[a]))
+                }
+                Sys::C3(a) => {
+                    let a = *a as usize;
+                    E::R(Box::new(move |f| f.c3[a]))
+                }
             },
             Kind::Conv(inner) => self.conv(inner, e.ty),
             Kind::Neg(a) => match self.expr(a) {
@@ -877,6 +888,8 @@ impl<S: Scalar + Send + Sync + 'static> Compiled<S> {
             angle: 0.0,
             rng: RngState::default(),
             period: 0.0,
+            p3: [S::zero(); 3],
+            c3: [S::zero(); 3],
         }
     }
 
@@ -1028,6 +1041,37 @@ impl<S: Scalar + Send + Sync + 'static> Compiled<S> {
         }
         self.fin.iter().for_each(|s| s(f));
         Orbit { z: f.cx[z], zprev: f.zprev, zprev2, iter, escaped }
+    }
+
+    /// A 3D object program (`ProgramKind::Object`) on the point `f.p3` with the constant
+    /// `f.c3` (the caller sets them and `ismand`): `x`, `y`, `z` start at the point, `init`, then
+    /// `loop` while the bailout holds, at most `maxit` times, then `final`. Returns the last
+    /// point, whether the bailout ended the orbit and the orbit trap (the smallest |p| seen).
+    pub fn run_object(&self, f: &mut Frame<S>, maxit: u32) -> ([S; 3], bool, f64) {
+        self.reset(f, maxit);
+        let slot = |a: usize| self.layout.slot[a].1;
+        for a in 0..3 {
+            f.reals[slot(a)] = f.p3[a];
+        }
+        self.init.iter().for_each(|s| s(f));
+        let point = |f: &Frame<S>| [f.reals[slot(0)], f.reals[slot(1)], f.reals[slot(2)]];
+        let len = |p: [S; 3]| (p[0].v() * p[0].v() + p[1].v() * p[1].v() + p[2].v() * p[2].v()).sqrt();
+        let mut trap = len(point(f));
+        let mut escaped = false;
+        for iter in 1..=maxit {
+            self.body.iter().for_each(|s| s(f));
+            f.numiter = iter as i64;
+            let p = point(f);
+            let r = len(p);
+            f.lastsqr = S::from_f64(r * r);
+            if !r.is_finite() || !(self.bailout)(f) {
+                escaped = true;
+                break;
+            }
+            trap = trap.min(r);
+        }
+        self.fin.iter().for_each(|s| s(f));
+        (point(f), escaped, trap)
     }
 
     /// Iterates one sample. The caller sets `pixel`, `c`, `ismand`, `center` and `magn`.

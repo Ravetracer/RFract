@@ -262,11 +262,22 @@ impl App {
                         {
                             self.warn(err);
                         }
-                        // A new fractal formula goes onto the selected layer right away.
+                        // A new fractal formula goes onto the selected layer right away, a 3D formula
+                        // onto a selected 3D object layer.
                         if kind == rfr_core::formula::ProgramKind::Fractal
                             && let Ok(d) = crate::browser::with_formula(&self.doc.doc, &self.selection, &id)
                         {
                             self.doc.replace(d);
+                        }
+                        if kind == rfr_core::formula::ProgramKind::Object {
+                            let mut d = self.doc.doc.clone();
+                            if let Some(l) = crate::layers::target_mut(&mut d, &self.selection).filter(|l| l.kind == rfr_core::doc::LayerKind::Object)
+                            {
+                                l.object.shape = rfr_core::doc::ObjectShape::Formula;
+                                l.object.formula = id.clone();
+                                l.object.params.clear();
+                                self.doc.replace(d);
+                            }
                         }
                         self.notify(format!("New formula {id}"));
                     }
@@ -292,6 +303,8 @@ impl App {
                             }
                             Err(err) => self.warn(err),
                         }
+                    } else if kind == rfr_core::formula::ProgramKind::Object {
+                        self.notify(format!("Copied to {id}; pick it as the formula of a 3D object layer"));
                     } else {
                         self.notify(format!("Copied to {id}; pick it in the coloring or transformation list"));
                     }

@@ -50,13 +50,16 @@ pub enum Sys {
     Angle,
     /// A new random complex number with both parts in -1..1 at every use.
     Random,
+    /// 3D objects: a coordinate (0: x, 1: y, 2: z) of the point and of the constant.
+    P3(u8),
+    C3(u8),
 }
 
 impl Sys {
     pub fn ty(self) -> Ty {
         match self {
             Sys::Pixel | Sys::C | Sys::ZPrev | Sys::Center | Sys::Z | Sys::ScreenPixel | Sys::ScreenMax | Sys::Random => Ty::Complex,
-            Sys::LastSqr | Sys::Magn | Sys::Angle => Ty::Real,
+            Sys::LastSqr | Sys::Magn | Sys::Angle | Sys::P3(_) | Sys::C3(_) => Ty::Real,
             Sys::MaxIt | Sys::NumIter | Sys::X | Sys::Y | Sys::Width | Sys::Height => Ty::Int,
             Sys::IsMand => Ty::Bool,
         }
@@ -395,6 +398,10 @@ pub struct Program {
     /// then replaces the gradient lookup of `#index`).
     pub color_slot: Option<usize>,
     pub direct: bool,
+    /// 3D objects: the linear distance estimate r / |dr| (folds) instead of the logarithmic
+    /// one, and the radius of a sphere holding the object.
+    pub linear_de: bool,
+    pub bound: f64,
 }
 
 /// Color operations of formulas (`super::color`).

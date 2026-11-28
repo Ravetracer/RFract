@@ -328,6 +328,11 @@ impl<'a> Ck<'a> {
         Ok((slot, acc))
     }
 
+    /// Whether a name is the complex `z` of 2D formulas (3D objects have real `x`, `y`, `z`).
+    fn is_z(&self, key: &str) -> bool {
+        key == "z" && self.kind != ProgramKind::Object
+    }
+
     fn sys(&mut self, s: Sys) -> Expr {
         if s == Sys::IsMand {
             self.has_julia = true;
@@ -366,7 +371,7 @@ impl<'a> Ck<'a> {
         if self.obj_vars.contains(&key) {
             return Ok(truth(&self.oval(&key).alts()));
         }
-        if key == "z" {
+        if self.is_z(&key) {
             return Ok(Expr { ty: Ty::Complex, kind: Kind::Local(Z) });
         }
         if let Some(&i) = self.slots.get(&key) {
@@ -1621,6 +1626,13 @@ impl<'a> Ck<'a> {
             }
             (ProgramKind::Coloring | ProgramKind::Transform, "z") => return Ok(self.sys(Sys::Z)),
             (ProgramKind::Coloring, "color") => return Ok(Expr { ty: Ty::Color, kind: Kind::Local(self.color_slot.unwrap_or(0)) }),
+            (ProgramKind::Object, "px" | "py" | "pz" | "cx" | "cy" | "cz") => {
+                let axis = lower.as_bytes()[1] - b'x';
+                return Ok(self.sys(if lower.starts_with('p') { Sys::P3(axis) } else { Sys::C3(axis) }));
+            }
+            (ProgramKind::Object, "pixel" | "z" | "c" | "zprev" | "center" | "magn" | "x" | "y" | "screenpixel" | "screenmax" | "angle") => {
+                return err(line, format!("'#{name}' is not available in 3D formulas (they have #px, #py, #pz, #cx, #cy, #cz)"));
+            }
             _ => {}
         }
         let s = match lower.as_str() {
@@ -2157,7 +2169,7 @@ impl<'a> Ck<'a> {
 
     fn assign(&mut self, name: &str, value: Expr, line: usize) -> Result<Stmt, Error> {
         let key = self.norm(name);
-        if key == "z" {
+        if self.is_z(&key) {
             return Ok(Stmt::Assign(Z, conv(value, Ty::Complex)));
         }
         if self.dialect == Dialect::Frm {
@@ -2321,7 +2333,7 @@ impl<'a> Ck<'a> {
                         }
                         Target::Comp { re, var } => {
                             let key = self.norm(var);
-                            let i = if key == "z" { Z } else { self.local(var, Ty::Complex) };
+                            let i = if self.is_z(&key) { Z } else { self.local(var, Ty::Complex) };
                             if self.locals[i].ty != Ty::Complex && self.preset.get(&key) != Some(&Ty::Complex) {
                                 self.widen.insert(key, Ty::Complex);
                             }
@@ -2338,7 +2350,7 @@ impl<'a> Ck<'a> {
                         DeclTy::Color => Ty::Color,
                     };
                     let key = self.norm(name);
-                    if key == "z" {
+                    if self.is_z(&key) {
                         if let Some(v) = value {
                             let v = self.expr(v, *line)?;
                             out.push(Stmt::Assign(Z, conv(v, Ty::Complex)));
@@ -2798,7 +2810,12 @@ pub fn check_with(ast: &FormulaAst, kind: ProgramKind, classes: Option<&ClassCtx
             direct: false,
             declared: Default::default(),
             params: Vec::new(),
-            locals: vec![Local { name: "z".into(), ty: Ty::Complex, cap: None }],
+            // 3D objects: the point's real coordinates; 2D formulas: the complex z.
+            locals: if kind == ProgramKind::Object {
+                ["x", "y", "z"].map(|n| Local { name: n.into(), ty: Ty::Real, cap: None }).to_vec()
+            } else {
+                vec![Local { name: "z".into(), ty: Ty::Complex, cap: None }]
+            },
             slots: HashMap::new(),
             preset: preset.clone(),
             widen: HashMap::new(),
@@ -2829,12 +2846,19 @@ pub fn check_with(ast: &FormulaAst, kind: ProgramKind, classes: Option<&ClassCtx
                 })
             }),
         };
-        ck.slots.insert("z".into(), Z);
+        if kind == ProgramKind::Object {
+            for (i, n) in ["x", "y", "z"].iter().enumerate() {
+                ck.slots.insert((*n).into(), i);
+                ck.declared.insert((*n).into());
+            }
+        } else {
+            ck.slots.insert("z".into(), Z);
+        }
         if kind == ProgramKind::Coloring {
             ck.locals.push(Local { name: "#index".into(), ty: Ty::Real, cap: None });
             ck.index_slot = Some(ck.locals.len() - 1);
         }
-        if kind != ProgramKind::Fractal {
+        if matches!(kind, ProgramKind::Coloring | ProgramKind::Transform) {
             ck.locals.push(Local { name: "#solid".into(), ty: Ty::Bool, cap: None });
             ck.solid_slot = Some(ck.locals.len() - 1);
         }
@@ -2877,13 +2901,13 @@ pub fn check_with(ast: &FormulaAst, kind: ProgramKind, classes: Option<&ClassCtx
         init.extend(ck.stmts(&ast.init)?);
         let mut body = if kind == ProgramKind::Transform { ck.stmts(&ast.transform)? } else { ck.stmts(&ast.body)? };
         let bailout = match (&ast.bailout, kind) {
-            (Some(b), ProgramKind::Fractal) => {
+            (Some(b), ProgramKind::Fractal | ProgramKind::Object) => {
                 // Statements the bailout needs (inlined calls) run at the end of the loop.
                 let (pre, e) = ck.cexpr(b, 0)?;
                 body.extend(pre);
                 ck.cond(e)
             }
-            (None, ProgramKind::Fractal) => return err(0, "the formula has no bailout condition"),
+            (None, ProgramKind::Fractal | ProgramKind::Object) => return err(0, "the formula has no bailout condition"),
             _ => Expr { ty: Ty::Bool, kind: Kind::Bool(true) },
         };
         let fin = ck.stmts(&ast.fin)?;
@@ -2918,6 +2942,8 @@ pub fn check_with(ast: &FormulaAst, kind: ProgramKind, classes: Option<&ClassCtx
             fin,
             has_julia: ck.has_julia,
             transcendental: ck.transcendental,
+            linear_de: ast.distance.as_deref().is_some_and(|d| d.eq_ignore_ascii_case("linear")),
+            bound: ast.bound.unwrap_or(4.0).max(0.1),
         };
         super::deriv::resolve(&mut prog);
         return Ok(prog);

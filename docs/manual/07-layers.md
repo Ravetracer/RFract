@@ -133,17 +133,21 @@ Lighting*). Layer effects do not apply to 3D terrains.
 
 A **3D object** layer (the cube button above the layer list) shows a three-dimensional
 fractal, traced along camera rays to its surface and lit like a lit layer (see *Coloring ›
-Lighting*: lights, highlights, shadows, occlusion and reflections). Shapes:
+Lighting*: lights, highlights, shadows, occlusion and reflections). *Shape* picks the fractal:
 
 | Shape | What it is |
 |-------|------------|
 | Mandelbulb | z → zⁿ + c in spherical coordinates; *Power* 8 gives the classic bulb |
-| Quaternion | The Julia set of q² + c over quaternions (four components), cut at w = 0; *Seed* is c |
+| Quaternion Julia | The Julia set of q² + c over quaternions (four components), cut at w = 0; *Seed* is c |
+| Bicomplex | z² + c over bicomplex numbers, cut at the slice z₁ = x + iy, z₂ = z: the product of two complex Julia (or Mandelbrot) sets, blocky and crystalline; in Julia mode *Seed* is c₁ = x + iy, c₂ = z + iw |
 | Mandelbox | Box and sphere folds with a *Scale* (2: a cube full of folded detail) |
-| Menger | The Menger sponge |
+| Menger sponge | A cube with its middle thirds removed again and again |
+| Sierpinski tetrahedron | A tetrahedron of ever smaller tetrahedra; *Scale* sets how much smaller each level is |
+| Octahedron | Octahedral folds with a *Scale*: a crystal of ever smaller octahedra |
+| Formula… | A 3D formula from the library or your formula folders (see *Formulas › 3D formulas*); its parameters appear below the list |
 
-*Iterations* sets the detail of the formula, *Julia mode* (Mandelbulb, Mandelbox) uses the
-*Seed* as the constant. *Detail* is how close the rays get to the surface, in pixels:
+*Iterations* sets the detail of the formula, *Julia mode* (Mandelbulb, Bicomplex, Mandelbox)
+uses the *Seed* as the constant. *Detail* is how close the rays get to the surface, in pixels:
 smaller values show finer structure and take longer. The camera circles the origin:
 *Camera direction*, *Camera height*, *Camera distance* and *Field of view*; in the view,
 **dragging** orbits the camera and the **wheel** moves it closer or farther. Switching the

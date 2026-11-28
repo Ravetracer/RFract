@@ -35,6 +35,7 @@ const DENSITY: &str = include_str!("wgsl/density.wgsl");
 const LIGHTING: &str = include_str!("wgsl/lighting.wgsl");
 const SHADE: &str = include_str!("wgsl/shade.wgsl");
 const OBJECT: &str = include_str!("wgsl/object.wgsl");
+const SCALAR_DUAL3: &str = include_str!("wgsl/scalar_dual3.wgsl");
 const SCALAR_DF64: &str = include_str!("wgsl/scalar_df64.wgsl");
 const CSTD: &str = include_str!("wgsl/cstd.wgsl");
 const KERNEL: &str = include_str!("wgsl/kernel.wgsl");
@@ -121,6 +122,9 @@ impl Gen<'_> {
                 Sys::Angle => "s_c(atan2(U.rot.y, U.rot.x))".into(),
                 // WGSL evaluates arguments left to right, like the CPU's two draws.
                 Sys::Random => format!("c_f(rnd_step(&rng_{p}), rnd_step(&rng_{p}))", p = self.prefix),
+                // 3D formulas (object_kernel's o_formula).
+                Sys::P3(a) => format!("o_p[{a}]"),
+                Sys::C3(a) => format!("o_c[{a}]"),
             },
             Kind::Conv(inner) => self.conv(inner, e.ty),
             Kind::Neg(a) => match e.ty {
@@ -398,8 +402,11 @@ pub fn func_choices(prog: &Program, values: &[ParamValue]) -> Vec<Option<Func>> 
 }
 
 /// The programs of a layer in the order their parameters fill `P`: fractal, transformations,
-/// outside coloring, inside coloring, post-transformations.
+/// outside coloring, inside coloring, post-transformations; a 3D object's formula alone.
 pub fn param_programs(lp: &LayerPlan) -> Vec<&Prog> {
+    if let Some(fo) = lp.object.as_ref().and_then(|o| o.formula.as_ref()) {
+        return vec![&fo.prog];
+    }
     let mut v = vec![&lp.fractal];
     v.extend(lp.transforms.iter());
     v.extend(lp.outside.formula());
@@ -771,17 +778,58 @@ pub fn density_kernel(lp: &LayerPlan) -> String {
     format!("{SCALAR_F32}\n{CSTD}\n{BLEND}\n{prelude}\n{dens}")
 }
 
-/// The shader of a 3D object layer: kernel.wgsl before its main, shade.wgsl and object.wgsl
-/// (no formula code: the shape and its parameters are uniforms).
-pub fn object_kernel() -> String {
-    let prelude = KERNEL.split("@compute").next().unwrap_or_default().replace("//@RNG_DECL", "");
-    format!("{SCALAR_F32}\n{CSTD}\n{BLEND}\n{prelude}\n{SHADE}\n{OBJECT}")
+/// The shader of a 3D object layer: kernel.wgsl before its main, shade.wgsl and object.wgsl;
+/// the built-in shapes take their parameters from uniforms, a 3D formula becomes `o_formula`
+/// over the three-derivative scalar layer (render::object::ObjectPlan::formula_de, step for
+/// step).
+pub fn object_kernel(lp: &LayerPlan) -> String {
+    let prelude = KERNEL.split("@compute").next().unwrap_or_default().replace("//@RNG_DECL", "var<private> rng_o: u32;");
+    let Some(fo) = lp.object.as_ref().and_then(|o| o.formula.as_ref()) else {
+        let stub = "fn o_formula(p: vec3<f32>) -> vec2<f32> {\n    return vec2<f32>(1.0, 1.0);\n}\n";
+        return format!("{SCALAR_F32}\n{CSTD}\n{BLEND}\n{prelude}\n{SHADE}\n{stub}\n{OBJECT}");
+    };
+    let prog = &fo.prog;
+    let g = Gen {
+        prog: &prog.program,
+        values: &prog.values,
+        funcs: func_choices(&prog.program, &prog.values),
+        prefix: "o".into(),
+        base: 0,
+        img_base: 0,
+        post: false,
+    };
+    let mut counter = 0;
+    let mut out = String::new();
+    out.push_str("var<private> o_p: array<S, 3>;\nvar<private> o_c: array<S, 3>;\n\n");
+    out.push_str("fn o_formula(p: vec3<f32>) -> vec2<f32> {\n");
+    out.push_str("    let ismand = U.obji.z == 0u;\n    let maxit = U.obji.y;\n");
+    out.push_str("    o_p = array<S, 3>(S(p.x, 1.0, 0.0, 0.0), S(p.y, 0.0, 1.0, 0.0), S(p.z, 0.0, 0.0, 1.0));\n");
+    out.push_str("    o_c = o_p;\n    if !ismand {\n        o_c = array<S, 3>(s_c(U.objc.x), s_c(U.objc.y), s_c(U.objc.z));\n    }\n");
+    out.push_str("    var numiter = 0;\n    var lastsqr = s_c(0.0);\n");
+    locals(&g, &mut out, "    ", None);
+    out.push_str("    o0 = o_p[0];\n    o1 = o_p[1];\n    o2 = o_p[2];\n");
+    g.stmts(&g.prog.init, &mut out, 1, &mut counter);
+    out.push_str("    var trap = length(vec3<f32>(s_v(o0), s_v(o1), s_v(o2)));\n");
+    out.push_str("    for (var it = 1u; it <= maxit; it = it + 1u) {\n");
+    g.stmts(&g.prog.body, &mut out, 2, &mut counter);
+    let _ = writeln!(
+        out,
+        "        numiter = i32(it);\n        let r = length(vec3<f32>(s_v(o0), s_v(o1), s_v(o2)));\n        lastsqr = s_c(r * r);\n        if !(r <= 3.4e38) || !({}) {{\n            break;\n        }}\n        trap = min(trap, r);\n    }}",
+        g.expr(&g.prog.bailout)
+    );
+    g.stmts(&g.prog.fin, &mut out, 1, &mut counter);
+    let de = if prog.program.linear_de { "r / dr" } else { "0.5 * r * log(max(r, 1e-30)) / dr" };
+    let _ = writeln!(
+        out,
+        "    let r = length(vec3<f32>(s_v(o0), s_v(o1), s_v(o2)));\n    let frob = sqrt(dot(o0.yzw, o0.yzw) + dot(o1.yzw, o1.yzw) + dot(o2.yzw, o2.yzw));\n    let dr = max(frob / sqrt(3.0), 1e-12);\n    var de = {de};\n    if !(abs(de) <= 3.4e38) {{\n        de = 0.0;\n    }}\n    return vec2<f32>(max(de, 0.0), min(trap, r));\n}}"
+    );
+    format!("{SCALAR_DUAL3}\n{CSTD}\n{BLEND}\n{prelude}\n{SHADE}\n{out}\n{OBJECT}")
 }
 
 /// The complete kernel shader of a layer.
 pub fn kernel(lp: &LayerPlan, mode: Mode) -> String {
     if lp.object.is_some() {
-        return object_kernel();
+        return object_kernel(lp);
     }
     if lp.density.is_some() {
         return density_kernel(lp);

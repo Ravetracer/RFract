@@ -29,6 +29,11 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
   coarser outward, so the horizon can be far away while the middle keeps its detail.
 - Terrain path tracing (*Path tracing*, *Bounces*): light bounces between the surfaces and
   the sky lights them, for the denoiser.
+- 3D object shapes: bicomplex Julia and Mandelbrot sets, the Sierpinski tetrahedron and an
+  octahedral folding fractal; the shape is now picked from a list.
+- 3D formulas (`.r3d` files in UFM syntax): 3D object layers run your own formulas on x, y, z;
+  the surface comes from distance estimates by automatic derivatives. Bundled: Mandelbulb,
+  Burning bulb, Bristorbrot, Mandelbox.
 
 ### Changed
 
@@ -38,6 +43,9 @@ User-visible changes per version. Versions are MAJOR.FEATURE.FIX (see AGENT.md).
   read far heights at a coarser resolution.
 
 ### Fixed
+
+- Complex square roots next to the real axis could give NaN on the GPU (also behind `asin`,
+  `acos` of real values), which left dots in images.
 
 - The parameter fields and checkboxes of transformations were hard to see (same color as
   their frame).

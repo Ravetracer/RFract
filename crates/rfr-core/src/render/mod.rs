@@ -54,6 +54,7 @@ fn kind_name(k: ProgramKind) -> &'static str {
         ProgramKind::Fractal => "fractal formula",
         ProgramKind::Coloring => "coloring formula",
         ProgramKind::Transform => "transformation",
+        ProgramKind::Object => "3D formula",
     }
 }
 
@@ -352,7 +353,17 @@ impl LayerPlan {
                 p.set_height_range(l.max_iter);
                 p
             }),
-            object: (l.kind == LayerKind::Object).then(|| object::ObjectPlan::new(&l.object, &l.light)),
+            object: match l.kind {
+                LayerKind::Object => {
+                    let mut o = object::ObjectPlan::new(&l.object, &l.light);
+                    if l.object.shape == crate::doc::ObjectShape::Formula {
+                        let prog = Prog::resolve(&l.object.formula, &l.object.params, ProgramKind::Object).map_err(|e| format!("{}: {e}", l.name))?;
+                        o.formula = Some(std::sync::Arc::new(object::ObjectFormula::new(prog)));
+                    }
+                    Some(o)
+                }
+                _ => None,
+            },
             early: EarlyInside::default(),
             fractal,
         })

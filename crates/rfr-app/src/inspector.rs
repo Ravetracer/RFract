@@ -455,6 +455,44 @@ fn transform_list(ui: &mut Ui, id: &str, list: &mut Vec<TransformRef>, add_hint:
     .on_hover_text(menu_hint);
 }
 
+/// The 3D formula of an object layer: the list (built-in and user formulas) and its
+/// parameters.
+fn object_formula(ui: &mut Ui, o: &mut rfr_core::doc::Object3D, actions: &mut Vec<Action>) {
+    let lib = library();
+    let title = lib.get(&o.formula).map_or_else(|| o.formula.clone(), |e| e.title.clone());
+    widgets::grid(ui, "object-formula", |ui| {
+        widgets::label(ui, "3D formula", "The formula of the shape (x, y, z iterated; the distance from its derivatives)");
+        egui::ComboBox::from_id_salt("object-formula-combo").selected_text(title).width(200.0).show_ui(ui, |ui| {
+            let mut pick = |ui: &mut Ui, e: &Entry| {
+                if ui.selectable_label(o.formula == e.id, &e.title).on_hover_text(format!("{} ({})", e.title, e.family)).clicked() {
+                    o.formula = e.id.clone();
+                    o.params.clear();
+                    actions.push(Action::Message(format!("3D formula: {}", e.title)));
+                }
+            };
+            for e in lib.objects().filter(|e| e.set != Set::User) {
+                pick(ui, e);
+            }
+            for (file, list) in by_file(lib.objects().filter(|e| e.set == Set::User)) {
+                ui.label(RichText::new(file).color(theme::TEXT_MUTED));
+                for e in list {
+                    pick(ui, e);
+                }
+            }
+        });
+        ui.end_row();
+    });
+    match lib.get(&o.formula).map(|e| e.program_with(&o.params).or_else(|_| e.program())) {
+        Some(Ok(p)) => params_ui(ui, "object-formula", &p, &mut o.params),
+        Some(Err(e)) => {
+            ui.label(RichText::new(format!("The formula does not compile: {e}")).color(theme::WARN));
+        }
+        None => {
+            ui.label(RichText::new(format!("Formula '{}' not found", o.formula)).color(theme::WARN));
+        }
+    }
+}
+
 /// A 3D object layer: shape, parameters, camera, colors and lighting.
 fn object_sections(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
     use rfr_core::doc::{Object3D, ObjectShape};
@@ -465,16 +503,26 @@ fn object_sections(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
     if sec.open {
         let o = &mut l.object;
         let before = o.shape;
-        widgets::segmented(
-            ui,
-            &mut o.shape,
-            &[
-                (ObjectShape::Mandelbulb, "Mandelbulb", "z → zⁿ + c in spherical coordinates: the 3D Mandelbrot analogue"),
-                (ObjectShape::Quaternion, "Quaternion", "The Julia set of q² + c over quaternions, cut at w = 0"),
-                (ObjectShape::Mandelbox, "Mandelbox", "Box and sphere folds, scaled: cubes full of folded detail"),
-                (ObjectShape::Menger, "Menger", "The Menger sponge: a cube with its middle thirds removed again and again"),
-            ],
-        );
+        let shapes = [
+            (ObjectShape::Mandelbulb, "Mandelbulb", "z → zⁿ + c in spherical coordinates: the 3D Mandelbrot analogue"),
+            (ObjectShape::Quaternion, "Quaternion Julia", "The Julia set of q² + c over quaternions, cut at w = 0"),
+            (ObjectShape::Bicomplex, "Bicomplex", "z² + c over bicomplex numbers (two complex Julia sets multiplied), cut at a 3D slice"),
+            (ObjectShape::Mandelbox, "Mandelbox", "Box and sphere folds, scaled: cubes full of folded detail"),
+            (ObjectShape::Menger, "Menger sponge", "A cube with its middle thirds removed again and again"),
+            (ObjectShape::Tetrahedron, "Sierpinski tetrahedron", "A tetrahedron of ever smaller tetrahedra (folds and a scale)"),
+            (ObjectShape::Octahedron, "Octahedron", "Octahedral folds and a scale: a crystal of ever smaller octahedra"),
+            (ObjectShape::Formula, "Formula…", "A 3D formula from the library or your formula folders (.r3d files)"),
+        ];
+        let name = shapes.iter().find(|s| s.0 == o.shape).map_or("", |s| s.1);
+        widgets::grid(ui, "object-shape", |ui| {
+            widgets::label(ui, "Shape", "The 3D fractal");
+            egui::ComboBox::from_id_salt("object-shape-combo").selected_text(name).show_ui(ui, |ui| {
+                for (v, text, tip) in shapes {
+                    ui.selectable_value(&mut o.shape, v, text).on_hover_text(tip);
+                }
+            });
+            ui.end_row();
+        });
         if o.shape != before {
             // Each shape has its own size: move the camera to see it whole.
             o.camera.distance = match o.shape {
@@ -482,10 +530,22 @@ fn object_sections(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
                 ObjectShape::Quaternion => 3.0,
                 ObjectShape::Mandelbox => (2.0 * (o.scale.abs() + 1.0) / (o.scale.abs() - 1.0).max(0.05)).min(16.0) * 3.5,
                 ObjectShape::Menger => 4.5,
+                ObjectShape::Bicomplex => 3.8,
+                ObjectShape::Tetrahedron | ObjectShape::Octahedron => 4.2,
+                ObjectShape::Formula => {
+                    let bound = library().get(&o.formula).and_then(|e| e.program().ok()).map_or(2.0, |p| p.bound);
+                    bound * 1.5
+                }
             };
             o.iterations = if o.shape == ObjectShape::Menger { 5 } else { 10 };
+            if matches!(o.shape, ObjectShape::Tetrahedron | ObjectShape::Octahedron) {
+                o.scale = 2.0;
+            }
         }
         let d = Object3D::default();
+        if o.shape == ObjectShape::Formula {
+            object_formula(ui, o, actions);
+        }
         widgets::grid(ui, "object-grid", |ui| {
             match o.shape {
                 ObjectShape::Mandelbulb => {
@@ -501,17 +561,20 @@ fn object_sections(ui: &mut Ui, l: &mut Layer, actions: &mut Vec<Action>) {
                         d.scale,
                     );
                 }
+                ObjectShape::Tetrahedron | ObjectShape::Octahedron => {
+                    widgets::slider(ui, "Scale", "How much smaller each level is (2: the classic shape)", &mut o.scale, 1.2..=3.0, 2.0);
+                }
                 _ => {}
             }
             widgets::slider_u32(ui, "Iterations", "Steps of the formula per point: more give finer detail", &mut o.iterations, 1..=40, d.iterations);
-            if o.shape != ObjectShape::Menger {
+            if !matches!(o.shape, ObjectShape::Menger | ObjectShape::Tetrahedron | ObjectShape::Octahedron) {
                 if o.shape != ObjectShape::Quaternion {
                     widgets::checkbox(ui, "Julia mode", "Use the seed below as the constant instead of the point itself", &mut o.julia);
                 }
                 if o.julia || o.shape == ObjectShape::Quaternion {
-                    widgets::label(ui, "Seed", "The constant c (x, y, z; w for quaternions)");
+                    widgets::label(ui, "Seed", "The constant c (x, y, z; w for quaternions; bicomplex: c₁ = x + iy, c₂ = z + iw)");
                     ui.horizontal(|ui| {
-                        let n = if o.shape == ObjectShape::Quaternion { 4 } else { 3 };
+                        let n = if matches!(o.shape, ObjectShape::Quaternion | ObjectShape::Bicomplex) { 4 } else { 3 };
                         for (k, v) in o.seed.iter_mut().take(n).enumerate() {
                             ui.add(egui::DragValue::new(v).speed(0.002).max_decimals(4)).on_hover_text(["x", "y", "z", "w"][k]);
                         }

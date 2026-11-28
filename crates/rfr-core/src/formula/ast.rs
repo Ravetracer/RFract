@@ -26,6 +26,11 @@ pub enum ProgramKind {
     /// Transformation: `transform` changes `#pixel` before the fractal runs; `#solid = true`
     /// leaves the point transparent.
     Transform,
+    /// 3D object (`.r3d`): `init`, `loop`, `bailout` on the real variables `x`, `y`, `z`, which
+    /// start at the point (`#px`, `#py`, `#pz`); `#cx`, `#cy`, `#cz` are the constant (the
+    /// point, or the seed in Julia mode). The distance to the surface comes from the
+    /// derivatives of the orbit (see `render::object`).
+    Object,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -341,4 +346,8 @@ pub struct FormulaAst {
     /// `insidecoloring = "id"` in `default:`).
     pub outside_coloring: Option<String>,
     pub inside_coloring: Option<String>,
+    /// 3D objects: the distance estimate (`distance = "linear"` for folds, else logarithmic)
+    /// and the radius of a sphere holding the object (`bound = 2`).
+    pub distance: Option<String>,
+    pub bound: Option<f64>,
 }

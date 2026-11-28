@@ -410,10 +410,27 @@ pub enum ObjectShape {
     Mandelbox,
     /// The Menger sponge.
     Menger,
+    /// The bicomplex Julia (or Mandelbrot) set of z² + c (a 3D slice: z₁ = x + iy, z₂ = z).
+    Bicomplex,
+    /// The Sierpinski tetrahedron (folds, scale).
+    Tetrahedron,
+    /// The octahedral folding fractal (folds, scale).
+    Octahedron,
+    /// A 3D formula from the library (`.r3d` files, see `Object3D::formula`).
+    Formula,
 }
 
 impl ObjectShape {
-    pub const ALL: [ObjectShape; 4] = [ObjectShape::Mandelbulb, ObjectShape::Quaternion, ObjectShape::Mandelbox, ObjectShape::Menger];
+    pub const ALL: [ObjectShape; 8] = [
+        ObjectShape::Mandelbulb,
+        ObjectShape::Quaternion,
+        ObjectShape::Mandelbox,
+        ObjectShape::Menger,
+        ObjectShape::Bicomplex,
+        ObjectShape::Tetrahedron,
+        ObjectShape::Octahedron,
+        ObjectShape::Formula,
+    ];
 
     pub fn index(self) -> u32 {
         ObjectShape::ALL.iter().position(|s| *s == self).unwrap_or(0) as u32
@@ -428,6 +445,9 @@ impl ObjectShape {
 #[serde(default)]
 pub struct Object3D {
     pub shape: ObjectShape,
+    /// The shape `Formula`: the library id of the 3D formula and its parameter values by name.
+    pub formula: String,
+    pub params: BTreeMap<String, ParamValue>,
     pub power: f64,
     pub scale: f64,
     pub iterations: u32,
@@ -441,6 +461,8 @@ impl Default for Object3D {
     fn default() -> Self {
         Object3D {
             shape: ObjectShape::Mandelbulb,
+            formula: "rfract-3d:Mandelbulb".into(),
+            params: BTreeMap::new(),
             power: 8.0,
             scale: 2.0,
             iterations: 10,

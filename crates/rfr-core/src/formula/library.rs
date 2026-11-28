@@ -22,6 +22,7 @@ include!(concat!(env!("OUT_DIR"), "/bundled_formulas.rs"));
 const RFRACT_UFM: &str = include_str!("../../formulas/rfract/rfract.ufm");
 const RFRACT_UCL: &str = include_str!("../../formulas/rfract/rfract.ucl");
 const RFRACT_UXF: &str = include_str!("../../formulas/rfract/rfract.uxf");
+const RFRACT_R3D: &str = include_str!("../../formulas/rfract/rfract.r3d");
 const FRACTINT_UFM: &str = include_str!("../../formulas/rfract/fractint.ufm");
 const ATTRACTORS_UFM: &str = include_str!("../../formulas/rfract/attractors.ufm");
 const STANDARD_ULB: &str = include_str!("../../formulas/rfract/standard.ulb");
@@ -219,6 +220,10 @@ impl Library {
     pub fn transforms(&self) -> impl Iterator<Item = &Entry> {
         self.entries.iter().map(|e| &**e).filter(|e| e.status() != Some(false) && e.kind == ProgramKind::Transform)
     }
+    /// 3D formulas that compiled (user formulas count until they fail).
+    pub fn objects(&self) -> impl Iterator<Item = &Entry> {
+        self.entries.iter().map(|e| &**e).filter(|e| e.status() != Some(false) && e.kind == ProgramKind::Object)
+    }
 }
 
 #[derive(Deserialize)]
@@ -412,7 +417,7 @@ pub fn set_user_folders(folders: &[PathBuf]) -> usize {
 }
 
 /// Formula files a folder holds (recursively): `.ufm`, `.frm` (fractals), `.ucl` (colorings),
-/// `.uxf` (transformations).
+/// `.uxf` (transformations), `.r3d` (3D formulas).
 pub fn formula_files(dir: &Path, out: &mut Vec<PathBuf>) {
     if dir.is_dir() {
         if let Ok(rd) = std::fs::read_dir(dir) {
@@ -422,7 +427,7 @@ pub fn formula_files(dir: &Path, out: &mut Vec<PathBuf>) {
                 formula_files(&p, out);
             }
         }
-    } else if dir.extension().is_some_and(|e| ["ufm", "ucl", "uxf", "frm"].iter().any(|x| e.eq_ignore_ascii_case(x))) {
+    } else if dir.extension().is_some_and(|e| ["ufm", "ucl", "uxf", "r3d", "frm"].iter().any(|x| e.eq_ignore_ascii_case(x))) {
         out.push(dir.to_path_buf());
     }
 }
@@ -461,6 +466,7 @@ fn scan_file(root: &Path, f: &Path, seen: &mut std::collections::HashSet<String>
     let kind = match ext.as_str() {
         "ucl" => ProgramKind::Coloring,
         "uxf" => ProgramKind::Transform,
+        "r3d" => ProgramKind::Object,
         _ => ProgramKind::Fractal,
     };
     let family = rel.clone();
@@ -593,6 +599,7 @@ fn build() -> Vec<Arc<Entry>> {
     let mut entries = Vec::new();
     ufm_entries(RFRACT_UCL, ProgramKind::Coloring, "rfract-coloring", "Coloring", &mut entries);
     ufm_entries(RFRACT_UXF, ProgramKind::Transform, "rfract-transform", "Transformation", &mut entries);
+    ufm_entries(RFRACT_R3D, ProgramKind::Object, "rfract-3d", "3D formulas", &mut entries);
     ufm_entries(RFRACT_UFM, ProgramKind::Fractal, "rfract", "RFract", &mut entries);
     ufm_entries(FRACTINT_UFM, ProgramKind::Fractal, "fractint", "FractInt types", &mut entries);
     ufm_entries(ATTRACTORS_UFM, ProgramKind::Fractal, "rfract-attractor", "Attractors", &mut entries);

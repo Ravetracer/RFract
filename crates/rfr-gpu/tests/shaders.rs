@@ -86,6 +86,14 @@ fn every_library_program_gives_valid_wgsl() {
             check(&format!("post {}", e.title), &d, &[Mode::Pert]);
         }
     }
+    // 3D formulas as object layers.
+    for e in library().objects() {
+        let mut d = Document::default();
+        d.layers[0].kind = LayerKind::Object;
+        d.layers[0].object.shape = rfr_core::doc::ObjectShape::Formula;
+        d.layers[0].object.formula = e.id.clone();
+        check(&format!("3D formula {}", e.title), &d, &[Mode::Plain]);
+    }
     assert!(validate(&codegen::composite_shader()).is_ok(), "composite shader");
     assert!(failures.is_empty(), "{} shaders fail:\n{}", failures.len(), failures.iter().take(4).cloned().collect::<Vec<_>>().join("\n\n"));
 }
@@ -291,9 +299,15 @@ fn gpu_matches_the_cpu_renderer() {
         cases.push(("effects neon".into(), neon));
         // 3D objects: every shape, with shadows and occlusion.
         use rfr_core::doc::{LayerKind, ObjectShape};
-        for (shape, dist) in
-            [(ObjectShape::Mandelbulb, 2.8), (ObjectShape::Quaternion, 3.0), (ObjectShape::Mandelbox, 24.0), (ObjectShape::Menger, 4.5)]
-        {
+        for (shape, dist) in [
+            (ObjectShape::Mandelbulb, 2.8),
+            (ObjectShape::Quaternion, 3.0),
+            (ObjectShape::Mandelbox, 24.0),
+            (ObjectShape::Menger, 4.5),
+            (ObjectShape::Bicomplex, 3.8),
+            (ObjectShape::Tetrahedron, 4.2),
+            (ObjectShape::Octahedron, 4.2),
+        ] {
             let mut o = Document::for_formula("rfract:Mandelbrot");
             o.layers[0].kind = LayerKind::Object;
             o.layers[0].object.shape = shape;
@@ -302,6 +316,24 @@ fn gpu_matches_the_cpu_renderer() {
             o.layers[0].light.occlusion = 1.0;
             cases.push((format!("object {shape:?}"), o));
         }
+        // 3D formulas: a power formula (logarithmic distance) and a folding one (linear).
+        for (id, dist) in [("rfract-3d:Mandelbulb", 2.8), ("rfract-3d:Mandelbox", 22.0)] {
+            let mut o = Document::for_formula("rfract:Mandelbrot");
+            o.layers[0].kind = LayerKind::Object;
+            o.layers[0].object.shape = ObjectShape::Formula;
+            o.layers[0].object.formula = id.into();
+            o.layers[0].object.camera.distance = dist;
+            o.layers[0].light.shadows = true;
+            cases.push((format!("3D formula {id}"), o));
+        }
+        // The bicomplex Julia set of a seed.
+        let mut bj = Document::for_formula("rfract:Mandelbrot");
+        bj.layers[0].kind = LayerKind::Object;
+        bj.layers[0].object.shape = ObjectShape::Bicomplex;
+        bj.layers[0].object.julia = true;
+        bj.layers[0].object.seed = [-0.12, 0.74, 0.1, -0.05];
+        bj.layers[0].object.camera.distance = 3.8;
+        cases.push(("object bicomplex julia".into(), bj));
         // A 3D object lit by the document's lights (point lights in its world).
         let mut ol = Document::for_formula("rfract:Mandelbrot");
         ol.layers[0].kind = LayerKind::Object;

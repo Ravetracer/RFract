@@ -74,12 +74,14 @@ files carry over; mandel, julia, magnet and newton use RFract's own formulas. Co
 ### Your formula folders
 
 *File › Preferences › Formula folders* lists folders with your own formula files: `.ufm` and
-`.frm` (fractals), `.ucl` (colorings) and `.uxf` (transformations), subfolders included. RFract
+`.frm` (fractals), `.ucl` (colorings), `.uxf` (transformations) and `.r3d` (3D formulas, see
+below), subfolders included. RFract
 reads the folders in the background when it starts and when the list changes (*Rescan* after
 you changed files); the status bar reports how many formulas it found.
 
 The formulas appear in the browser under *User formulas*, one group per file; user colorings
-and transformations appear in the coloring picker and in *Add a transformation*. A formula
+and transformations appear in the coloring picker and in *Add a transformation*, 3D formulas in
+the formula list of a 3D object layer. A formula
 compiles when you pick it; if it does not compile, the view shows why and the browser hides it
 afterwards. Documents store user formulas as `user:<file path in the folder>:<entry name>`, so
 a document opens on another computer as long as the same file lies in one of its formula
@@ -96,14 +98,52 @@ saved text.
 Built-in formulas open read-only. *Copy to my formulas* copies one into `my-formulas.ufm`
 (`.ucl`, `.uxf`) in your first formula folder, where you can change it; a copied fractal
 formula replaces the original on the selected layer. The **+** button above the formula list
-creates a new fractal formula, coloring or transformation from a small template in the same
-file and opens it.
+creates a new fractal formula, coloring, transformation or 3D formula from a small template in
+the same file and opens it (a new 3D formula goes onto the selected 3D object layer).
 
 The command line checks formula files and reports what does not compile yet:
 
 ```
 rfr-cli formulas --check path/to/formulas
 ```
+
+### 3D formulas
+
+A 3D object layer with the shape *Formula…* runs a 3D formula from a `.r3d` file (UFM
+syntax). It iterates the three real variables `x`, `y` and `z`, which start at the point
+being tested:
+
+```
+Bristorbrot {
+loop:
+  float nx = x * x - y * y - z * z + #cx
+  float ny = y * (2 * x - z) + #cy
+  z = z * (2 * x + y) + #cz
+  x = nx
+  y = ny
+bailout:
+  x * x + y * y + z * z < 16
+default:
+  title = "Bristorbrot"
+  bound = 2.5
+}
+```
+
+| Name | Meaning |
+|------|---------|
+| `x`, `y`, `z` | The point, iterated (real numbers) |
+| `#px`, `#py`, `#pz` | The point the orbit started at |
+| `#cx`, `#cy`, `#cz` | The constant: the point itself, or the layer's *Seed* in Julia mode |
+| `#ismand`, `#numiter`, `#maxiter` | Mandelbrot or Julia mode, the iteration count and the layer's *Iterations* |
+
+`init:` runs once, `loop:` while `bailout:` holds (at most *Iterations* times); parameters,
+functions, `if`, loops and complex numbers work as in fractal formulas (`atan2(x + flip(y))`
+is the angle of x + iy). RFract finds the surface from the distance estimate of the orbit,
+computed from its derivatives (by automatic differentiation, nothing to write): logarithmic by
+default, for formulas with powers (½ r ln r / |dr|), linear with `distance = "linear"` in
+`default:`, for folding formulas such as the Mandelbox (r / |dr|). `bound = 2` sets the radius
+of a sphere around the origin that holds the whole object (the rays start there). The bundled
+3D formulas (Mandelbulb, Burning bulb, Bristorbrot, Mandelbox) show both kinds.
 
 ### What the UFM support covers
 

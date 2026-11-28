@@ -92,8 +92,10 @@ impl<S: Scalar> Cx<S> {
     pub fn sqrt(self) -> Self {
         let r = self.cabs();
         let half = S::from_f64(0.5);
-        let re = ((r + self.re) * half).sqrt();
-        let im = ((r - self.re) * half).sqrt();
+        // |z| ± re can round below zero next to the real axis: clamp (as cstd.wgsl).
+        let nonneg = |v: S| if v.v() < 0.0 { S::zero() } else { v };
+        let re = nonneg((r + self.re) * half).sqrt();
+        let im = nonneg((r - self.re) * half).sqrt();
         if self.im.v() < 0.0 { Cx::new(re, -im) } else { Cx::new(re, im) }
     }
     /// `exp(w * log(z))`; zero for a zero base.

@@ -83,6 +83,12 @@ Open points of the earlier stages (their notes below stay for the details).
       recording.
 - [ ] 3D objects: bicomplex Julia and more DE formulas, 3D formula programs, depth compositing
       with terrains.
+  - [x] Bicomplex Julia/Mandelbrot (idempotent basis: the product of two complex sets, distance
+        from the two complex estimates), Sierpinski tetrahedron, octahedral folds.
+  - [x] 3D formula programs: `ProgramKind::Object` (`.r3d`), real `x`, `y`, `z` and `#px…#cz`
+        (`Sys::P3`, `Sys::C3`), `Dual3` gradients (CPU, `scalar_dual3.wgsl`), distance from the
+        Jacobian (Frobenius / √3; `distance = "linear"`), `bound`; `codegen::object_kernel`.
+  - [ ] Depth compositing: 3D objects placed into a terrain's scene (user's choice).
 - [ ] Perturbation: BLA for formulas with more than z, double-float reference values on the
       GPU, fallback or hint for formulas that cannot be perturbed.
 - [ ] Exit: full renders of stage 8 (deep zoom from the app, 1080p fly-over).

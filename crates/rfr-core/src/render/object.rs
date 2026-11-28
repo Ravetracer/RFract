@@ -11,8 +11,37 @@
 //! gradient at an orbit trap (the smallest |z| of the orbit). The GPU (`object.wgsl`) follows
 //! the same steps in f32.
 
+use std::cell::RefCell;
+use std::sync::Arc;
+
 use super::light::{LightPlan, dot, normalize, rnd, shade_normal};
 use crate::doc::{Object3D, ObjectShape};
+use crate::formula::cpu::{Compiled, Frame};
+use crate::math::scalar::{Dual3, Scalar};
+
+/// A 3D formula of an object layer, compiled with gradients for its distance estimate.
+pub struct ObjectFormula {
+    pub prog: super::Prog,
+    pub compiled: Compiled<Dual3>,
+}
+
+impl ObjectFormula {
+    pub fn new(prog: super::Prog) -> ObjectFormula {
+        let compiled = Compiled::new(&prog.program, &prog.values);
+        ObjectFormula { prog, compiled }
+    }
+}
+
+impl std::fmt::Debug for ObjectFormula {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ObjectFormula({})", self.prog.id)
+    }
+}
+
+thread_local! {
+    /// Each thread's frame for 3D formulas (with the formula it belongs to).
+    static FRAME: RefCell<Option<(usize, Frame<Dual3>)>> = const { RefCell::new(None) };
+}
 
 /// A 3D object layer, resolved for rendering.
 #[derive(Clone, Debug)]
@@ -27,7 +56,13 @@ pub struct ObjectPlan {
     pub camera: [f32; 4],
     pub detail: f32,
     pub light: LightPlan,
+    /// The shape `Formula`: its compiled program (see `render::LayerPlan::new`).
+    pub formula: Option<Arc<ObjectFormula>>,
 }
+
+/// Bicomplex sets: a component stops iterating beyond this squared radius (its distance
+/// estimate then holds).
+pub const BICOMPLEX_BAIL: f32 = 1e4;
 
 /// Sphere tracing steps, shadow steps, occlusion samples.
 pub const MARCH_STEPS: u32 = 300;
@@ -52,6 +87,7 @@ impl ObjectPlan {
             ],
             detail: o.detail.clamp(0.05, 20.0) as f32,
             light: LightPlan::new(light),
+            formula: None,
         }
     }
 
@@ -67,6 +103,10 @@ impl ObjectPlan {
                 half * 3f32.sqrt()
             }
             ObjectShape::Menger => 1.8,
+            ObjectShape::Bicomplex => 2.5,
+            ObjectShape::Tetrahedron => 1.8,
+            ObjectShape::Octahedron => 1.8,
+            ObjectShape::Formula => self.formula.as_ref().map_or(4.0, |f| f.prog.program.bound as f32),
         }
     }
 
@@ -77,6 +117,10 @@ impl ObjectPlan {
             ObjectShape::Quaternion => self.quaternion(p),
             ObjectShape::Mandelbox => self.mandelbox(p),
             ObjectShape::Menger => self.menger(p),
+            ObjectShape::Bicomplex => self.bicomplex(p),
+            ObjectShape::Tetrahedron => self.tetrahedron(p),
+            ObjectShape::Octahedron => self.octahedron(p),
+            ObjectShape::Formula => self.formula_de(p),
         }
     }
 
@@ -187,6 +231,116 @@ impl ObjectPlan {
         let outside = len([q[0].max(0.0), q[1].max(0.0), q[2].max(0.0)]);
         let inside = q[0].max(q[1]).max(q[2]).min(0.0);
         ((outside + inside) / scale, trap * 4.0)
+    }
+
+    /// Bicomplex z² + c: in the idempotent basis (w₁ = z₁ − i z₂, w₂ = z₁ + i z₂) two
+    /// independent complex iterations, so the set is the product of two complex filled Julia
+    /// sets; the distance to it from their distance estimates (the basis is √2 times as long).
+    fn bicomplex(&self, p: [f32; 3]) -> (f32, f32) {
+        // z₁ = x + iy, z₂ = z (+ 0i); c from the seed (Julia) or the point.
+        let (c1, c2) = if self.julia { ([self.seed[0], self.seed[1]], [self.seed[2], self.seed[3]]) } else { ([p[0], p[1]], [p[2], 0.0]) };
+        let add = if self.julia { 0.0 } else { 1.0 };
+        // a − i b and a + i b for complex a, b.
+        let idem = |a: [f32; 2], b: [f32; 2]| ([a[0] + b[1], a[1] - b[0]], [a[0] - b[1], a[1] + b[0]]);
+        let (mut w1, mut w2) = idem([p[0], p[1]], [p[2], 0.0]);
+        let (k1, k2) = idem(c1, c2);
+        let (mut d1, mut d2) = ([1.0f32, 0.0], [1.0f32, 0.0]);
+        let mut trap = f32::MAX;
+        let step = |w: &mut [f32; 2], d: &mut [f32; 2], k: [f32; 2]| {
+            if w[0] * w[0] + w[1] * w[1] > BICOMPLEX_BAIL {
+                return;
+            }
+            // d = 2 w d (+ 1), w = w² + c
+            *d = [2.0 * (w[0] * d[0] - w[1] * d[1]) + add, 2.0 * (w[0] * d[1] + w[1] * d[0])];
+            *w = [w[0] * w[0] - w[1] * w[1] + k[0], 2.0 * w[0] * w[1] + k[1]];
+        };
+        for _ in 0..self.iterations {
+            trap = trap.min(((w1[0] * w1[0] + w1[1] * w1[1] + w2[0] * w2[0] + w2[1] * w2[1]) * 0.5).sqrt());
+            step(&mut w1, &mut d1, k1);
+            step(&mut w2, &mut d2, k2);
+        }
+        // A complex distance estimate (0 for a point that stays).
+        let de = |w: [f32; 2], d: [f32; 2]| {
+            let r = (w[0] * w[0] + w[1] * w[1]).sqrt();
+            if r * r > 4.0 { 0.5 * r * r.ln() / (d[0] * d[0] + d[1] * d[1]).sqrt().max(1e-12) } else { 0.0 }
+        };
+        let (e1, e2) = (de(w1, d1), de(w2, d2));
+        ((e1 * e1 + e2 * e2).sqrt() * std::f32::consts::FRAC_1_SQRT_2, trap)
+    }
+
+    /// A 3D formula: the orbit with its gradients by the starting point; the distance from |p|
+    /// and the size of the Jacobian (its Frobenius norm over √3, the scale of a conformal map):
+    /// ½ r ln r / |dr|, or r / |dr| for formulas with `distance = "linear"`.
+    fn formula_de(&self, p: [f32; 3]) -> (f32, f32) {
+        let Some(fo) = &self.formula else { return (1.0, 1.0) };
+        let key = Arc::as_ptr(fo) as usize;
+        FRAME.with(|cell| {
+            let mut cell = cell.borrow_mut();
+            if cell.as_ref().is_none_or(|(k, _)| *k != key) {
+                *cell = Some((key, fo.compiled.frame()));
+            }
+            let (_, f) = cell.as_mut().expect("frame");
+            let unit = |a: usize| std::array::from_fn(|i| if i == a { 1.0 } else { 0.0 });
+            f.p3 = std::array::from_fn(|a| Dual3::new(p[a] as f64, unit(a)));
+            f.c3 = if self.julia { std::array::from_fn(|a| Dual3::from_f64(self.seed[a] as f64)) } else { f.p3 };
+            f.ismand = !self.julia;
+            let (q, _, trap) = fo.compiled.run_object(f, self.iterations);
+            let r = (q[0].v * q[0].v + q[1].v * q[1].v + q[2].v * q[2].v).sqrt();
+            let frob = q.iter().map(|c| c.d.iter().map(|g| g * g).sum::<f64>()).sum::<f64>().sqrt();
+            let dr = (frob / 3f64.sqrt()).max(1e-12);
+            let de = if fo.prog.program.linear_de { r / dr } else { 0.5 * r * r.max(1e-300).ln() / dr };
+            let de = if de.is_finite() { de.max(0.0) } else { 0.0 };
+            (de as f32, trap.min(r) as f32)
+        })
+    }
+
+    /// The Sierpinski tetrahedron: folds over the three planes through the corners, then a
+    /// scale about the corner (1, 1, 1).
+    fn tetrahedron(&self, p: [f32; 3]) -> (f32, f32) {
+        let s = self.scale.max(1.01);
+        let mut z = p;
+        let mut k = 1.0f32;
+        let mut trap = f32::MAX;
+        for _ in 0..self.iterations {
+            if z[0] + z[1] < 0.0 {
+                z = [-z[1], -z[0], z[2]];
+            }
+            if z[0] + z[2] < 0.0 {
+                z = [-z[2], z[1], -z[0]];
+            }
+            if z[1] + z[2] < 0.0 {
+                z = [z[0], -z[2], -z[1]];
+            }
+            z = [z[0] * s - (s - 1.0), z[1] * s - (s - 1.0), z[2] * s - (s - 1.0)];
+            k *= s;
+            trap = trap.min(len(z) / k);
+        }
+        ((len(z) - 1.0) / k, trap * 2.0)
+    }
+
+    /// The octahedral folding fractal: mirror into one wedge (abs, sort), then a scale about
+    /// the corner (1, 0, 0).
+    fn octahedron(&self, p: [f32; 3]) -> (f32, f32) {
+        let s = self.scale.max(1.01);
+        let mut z = p;
+        let mut k = 1.0f32;
+        let mut trap = f32::MAX;
+        for _ in 0..self.iterations {
+            z = [z[0].abs(), z[1].abs(), z[2].abs()];
+            if z[0] < z[1] {
+                z.swap(0, 1);
+            }
+            if z[0] < z[2] {
+                z.swap(0, 2);
+            }
+            if z[1] < z[2] {
+                z.swap(1, 2);
+            }
+            z = [z[0] * s - (s - 1.0), z[1] * s, z[2] * s];
+            k *= s;
+            trap = trap.min(len(z) / k);
+        }
+        ((len(z) - 1.0) / k, trap * 2.0)
     }
 
     /// The camera ray through image point (x, y) of a `width` × `height` image.
@@ -348,17 +502,26 @@ mod tests {
         ObjectPlan::new(&Object3D { shape, ..Object3D::default() }, &Lighting::default())
     }
 
-    /// The distance estimates are lower bounds near the surface and grow far away.
+    /// The distance estimates are lower bounds near the surface and grow far away (the built-in
+    /// shapes and the bundled 3D formulas).
     #[test]
     fn distances_are_plausible() {
-        for shape in ObjectShape::ALL {
-            let p = plan(shape);
+        let formulas = crate::formula::library::library().objects().map(|e| e.id.clone()).collect::<Vec<_>>();
+        assert!(formulas.len() >= 4, "{formulas:?}");
+        let plans =
+            ObjectShape::ALL.iter().filter(|s| **s != ObjectShape::Formula).map(|s| (format!("{s:?}"), plan(*s))).chain(formulas.iter().map(|id| {
+                let mut p = plan(ObjectShape::Formula);
+                let prog = super::super::Prog::resolve(id, &Default::default(), crate::formula::ast::ProgramKind::Object).unwrap();
+                p.formula = Some(Arc::new(ObjectFormula::new(prog)));
+                (id.clone(), p)
+            }));
+        for (shape, p) in plans {
             let r = p.bound() + 4.0;
             let far = p.de([0.0, -r, 0.0]).0;
             assert!(far > 0.5 && far < r + 1.0, "{shape:?}: {far} at distance {r}");
             // March in from the side: the surface is found inside the bounding sphere.
             // (The sponge has tunnels everywhere; along its edges it is solid at every level.)
-            let (x, z) = if shape == ObjectShape::Menger { (0.99999, 0.99999) } else { (0.0, 0.1) };
+            let (x, z) = if shape == "Menger" { (0.99999, 0.99999) } else { (0.0, 0.1) };
             let hit = p.trace([x, -r, z], [0.0, 1.0, 0.0], 1e-4);
             let (t, _) = hit.unwrap_or_else(|| panic!("{shape:?}: no surface along the y axis"));
             assert!(t > r - p.bound() && t < r, "{shape:?}: surface at {t}");

@@ -70,6 +70,7 @@ fn extension(kind: ProgramKind) -> &'static str {
         ProgramKind::Fractal => "ufm",
         ProgramKind::Coloring => "ucl",
         ProgramKind::Transform => "uxf",
+        ProgramKind::Object => "r3d",
     }
 }
 
@@ -83,6 +84,9 @@ fn template(kind: ProgramKind, name: &str) -> String {
         ),
         ProgramKind::Transform => format!(
             "{name} {{\n; A new transformation.\ntransform:\n  #pixel = #pixel * @factor\ndefault:\n  title = \"{name}\"\n  complex param factor\n    caption = \"Factor\"\n    default = (1, 0)\n  endparam\n}}"
+        ),
+        ProgramKind::Object => format!(
+            "{name} {{\n; A new 3D formula: x, y, z start at the point; #cx, #cy, #cz are the constant.\nloop:\n  float nx = x * x - y * y - z * z + #cx\n  float ny = 2 * x * y + #cy\n  z = @twist * x * z + #cz\n  x = nx\n  y = ny\nbailout:\n  x * x + y * y + z * z < 16\ndefault:\n  title = \"{name}\"\n  bound = 2.5\n  float param twist\n    caption = \"Twist\"\n    default = 2\n  endparam\n}}"
         ),
     }
 }
