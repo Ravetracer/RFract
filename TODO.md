@@ -102,7 +102,10 @@ Open points of the earlier stages (their notes below stay for the details).
         of thousands of iterations (MAE 1.3 %).
   - [x] Hint: the status bar names the layers that cannot be perturbed (no bignum fallback:
         far too slow per pixel).
-- [ ] Exit: full renders of stage 8 (deep zoom from the app, 1080p fly-over).
+- [x] Exit: full renders of stage 8 (deep zoom from the app, 1080p fly-over): the deep zoom
+      (1800 frames to 1e-40) through the app's render queue in 48:47, the 1080p fly-over
+      (600 frames, 8 samples, motion blur) through the CLI in 12 min; both checked frame by
+      frame at sample times.
 
 ## Stage 9 – Explore, scale, polish
 
@@ -149,8 +152,7 @@ Open points of the earlier stages (their notes below stay for the details).
       fly-over of a lit Mandelbrot landscape.
       Note: the full render ran through the CLI (1800 frames to 1e-40, 52 min,
       `docs/manual/examples/deep-zoom.rfr`). The same render from the app (render queue) and
-      the 1080p fly-over (`docs/manual/examples/flyover.rfr`) were only checked at small size
-      and partial length; the full renders are still to be done (about 70 min).
+      the 1080p fly-over (`docs/manual/examples/flyover.rfr`) were done in stage 10.
 
 ## Stage 7 – Effects and textures
 
@@ -182,8 +184,8 @@ Open points of the earlier stages (their notes below stay for the details).
 - [x] 3D height view: the field as a terrain under a perspective camera (height-field
       ray tracing over a maximum pyramid, CPU and GPU).
 - [x] Terrain: orbit (Ctrl-drag) and dolly (Ctrl-wheel) the camera with the mouse.
-- [ ] Terrain: larger than the view (more detail near the camera), optional walls down to a
-      base, optional path tracing into OIDN.
+- [x] Terrain: larger than the view (more detail near the camera), optional walls down to a
+      base, optional path tracing into OIDN (done in stage 10).
 - [x] 3D object layers: Mandelbulb, quaternion Julia, Mandelbox, Menger sponge, sphere traced
       with the same lights (shadows, occlusion, reflections).
 - [x] 3D objects: bicomplex Julia and more DE formulas, formulas from the formula language
@@ -212,12 +214,13 @@ Open points of the earlier stages (their notes below stay for the details).
       rebasing; CPU and GPU (`Mode::Pert`), parity tests.
 - [x] BLA (linear steps derived from the formula, binary table, floatexp matrices).
 - [x] Reference orbit kept while navigating near it, new ones in the background.
-- [ ] Periodicity checking and interior checks (cardioid/bulbs) for faster inside regions.
-- [ ] Automatic iteration count (raise while pixels at the limit border escaping ones).
-- [ ] Location bookmarks.
-- [ ] Distance estimation in perturbation views (derivative deltas), BLA for formulas that
+- [x] Periodicity checking and interior checks (cardioid/bulbs) for faster inside regions.
+- [x] Automatic iteration count (raise while pixels at the limit border escaping ones).
+- [x] Location bookmarks.
+- [x] Distance estimation in perturbation views (derivative deltas), BLA for formulas that
       carry more than z, reference values in double-float on the GPU (long orbits).
-- [ ] Formulas that cannot be perturbed: CPU arbitrary-precision fallback (slow) or a hint.
+- [x] Formulas that cannot be perturbed: CPU arbitrary-precision fallback (slow) or a hint.
+      (These five: done in stage 10; df64 reference values judged unnecessary.)
 
 ## Stage 3b – UFM classes (done, v0.4.1)
 
