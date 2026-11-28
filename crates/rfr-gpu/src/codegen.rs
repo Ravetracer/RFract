@@ -112,8 +112,8 @@ impl Gen<'_> {
                 Sys::Magn => "magn".into(),
                 Sys::Z => if self.post { "pz" } else { "l0" }.into(),
                 // Screen values are of the whole image (a window renders part of it).
-                Sys::X => "i32(xf)".into(),
-                Sys::Y => "i32(yf)".into(),
+                Sys::X => "xf".into(),
+                Sys::Y => "yf".into(),
                 Sys::Width => "U.win.z".into(),
                 Sys::Height => "U.win.w".into(),
                 Sys::ScreenPixel => "c_f(f32(xf), f32(yf))".into(),
@@ -816,7 +816,7 @@ pub fn kernel(lp: &LayerPlan, mode: Mode) -> String {
         format!(
             concat!(
                 "struct PostT {{\n    z: Cx,\n    solid: bool,\n}}\n\n",
-                "fn post_tf(pixel_in: Cx, xf: u32, yf: u32) -> PostT {{\n",
+                "fn post_tf(pixel_in: Cx, xf: i32, yf: i32) -> PostT {{\n",
                 "    let ismand = U.iter.y == 0u;\n",
                 "    let center = c_f(U.view.x, U.view.y);\n",
                 "    let magn = s_c(U.view.w);\n",
@@ -980,7 +980,7 @@ pub fn kernel(lp: &LayerPlan, mode: Mode) -> String {
                 "        hgt = dot(col.xyz, vec3<f32>(0.2126, 0.7152, 0.0722)) * col.w;\n",
                 "    }\n",
                 "    if U.band.y == 2u {\n",
-                "        l_store(x, y, col, hgt, fde);\n",
+                "        l_store(fidx, col, hgt, fde);\n",
                 "        return;\n",
                 "    }",
             ),

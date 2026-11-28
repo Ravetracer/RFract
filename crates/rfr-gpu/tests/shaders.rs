@@ -743,11 +743,24 @@ fn tiled_posters_match_whole_renders() {
     let never = std::sync::atomic::AtomicBool::new(false);
     rfr_gpu::poster::render_poster(&doc, (w, h, s), Some(ctx.clone()), &path, &never, |_| {}).unwrap();
     let (_, _, tiled) = rfr_core::io::png::read_rgba8(&path).unwrap();
-    let (whole, _) = rfr_gpu::animation::FrameRenderer::new(Some(ctx)).still(&doc, w, h, s).unwrap();
+    let (whole, _) = rfr_gpu::animation::FrameRenderer::new(Some(ctx.clone())).still(&doc, w, h, s).unwrap();
     let diff = block_diff(&tiled, &whole, w as usize, h as usize);
     eprintln!("tiled vs whole: block difference {diff:.2}");
     assert!(diff < 3.0, "{diff:.2}");
     assert_eq!(rfr_core::io::open(&path).unwrap().view, doc.view);
+    // A lit layer with shadows and effects tiles too (fields around every tile).
+    let mut lit = doc.clone();
+    lit.post = Default::default();
+    lit.layers[0].outside.transfer = rfr_core::doc::Transfer::Sqrt;
+    lit.layers[0].light.enabled = true;
+    lit.layers[0].light.shadows = true;
+    lit.layers[0].effects.glow = 0.6;
+    let never = std::sync::atomic::AtomicBool::new(false);
+    rfr_gpu::poster::render_poster(&lit, (w, h, s), Some(ctx.clone()), &path, &never, |_| {}).unwrap();
+    let (_, _, tiled) = rfr_core::io::png::read_rgba8(&path).unwrap();
+    let (whole, _) = rfr_gpu::animation::FrameRenderer::new(Some(ctx)).still(&lit, w, h, s).unwrap();
+    let diff = mean_diff(&tiled, &whole);
+    assert!(diff < 0.5, "lit poster: tiled vs whole {diff:.3}");
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -764,12 +777,44 @@ fn gpu_windows_are_the_whole_image_there() {
     de.layers[0].outside_method = OutsideMethod::Distance;
     let mut object = Document::default();
     object.layers[0].kind = LayerKind::Object;
+    // A lit layer with shadows, occlusion and effects, its fields small enough that the near
+    // and the far field both take part.
+    let mut lit = Document::for_formula("rfract:Mandelbrot");
+    {
+        let l = &mut lit.layers[0];
+        l.light.enabled = true;
+        l.light.shadows = true;
+        l.light.occlusion = 0.6;
+        l.light.lights = vec![rfr_core::doc::Light { azimuth: 150.0, elevation: 25.0, ..Default::default() }];
+        l.effects.glow = 0.8;
+        l.effects.shadow = 0.7;
+    }
+    let small_fields = |mut plan: Plan| {
+        for n in &mut plan.nodes {
+            if let rfr_core::render::Node::Layer { layer, .. } = n
+                && let Some(l) = layer.light.as_mut()
+            {
+                (l.far_side, l.near_margin) = (48, 6);
+            }
+        }
+        plan
+    };
     let (w, h, s) = (160u32, 90u32, 3);
-    for (name, mut doc) in [("layered", layered()), ("distance", de), ("object", object)] {
+    for (name, mut doc) in [("layered", layered()), ("distance", de), ("object", object), ("lit", lit)] {
         doc.image.adaptive = 0.0;
-        let whole = rfr_core::render::cpu::rgba8(&rfr_gpu::render_blocking(ctx.clone(), &Plan::sized(&doc, w, h).unwrap(), s, |_| true).unwrap());
+        let plan = small_fields(Plan::sized(&doc, w, h).unwrap());
+        let whole = rfr_core::render::cpu::rgba8(&rfr_gpu::render_blocking(ctx.clone(), &plan, s, |_| true).unwrap());
+        if name == "lit" {
+            // The near and far fields on the GPU as on the CPU.
+            let mut r = rfr_core::render::cpu::CpuRenderer::new(plan.clone());
+            for _ in 0..s {
+                r.pass();
+            }
+            let d = mean_diff(&r.rgba8(), &whole);
+            assert!(d < 2.0, "lit with near and far fields: GPU vs CPU {d:.2}");
+        }
         for win in [[0u32, 0, 64, 40], [57, 23, 103, 67], [159, 89, 1, 1]] {
-            let plan = Plan::sized(&doc, w, h).unwrap().with_window(win);
+            let plan = plan.clone().with_window(win);
             let part = rfr_core::render::cpu::rgba8(&rfr_gpu::render_blocking(ctx.clone(), &plan, s, |_| true).unwrap());
             for j in 0..win[3] {
                 let a = ((win[1] + j) * w + win[0]) as usize * 4;

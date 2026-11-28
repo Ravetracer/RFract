@@ -105,6 +105,9 @@ struct Uni {
     lpos: [[f32; 4]; 4],
     lprad: [[f32; 4]; 4],
     win: [i32; 4],
+    fnear: [i32; 4],
+    ffar: [i32; 4],
+    fstep: [u32; 4],
 }
 
 /// The lighting a layer's shaders use: a lit layer's or a 3D object's.
@@ -351,7 +354,23 @@ fn layer_uni(plan: &Plan, lp: &LayerPlan) -> Uni {
             let c = |v: [f32; 3]| [v[0], v[1], v[2], 0.0];
             [c(e.shadow_color), c(e.glow_color), c(e.inner_color), c(e.neon_color)]
         }),
+        ..field_uni(plan, lp)
     }
+}
+
+/// The fields of a lit layer (`rfr_core::render::light::Grids`).
+fn grids(plan: &Plan, lp: &LayerPlan) -> Option<rfr_core::render::light::Grids> {
+    lp.light.as_ref().map(|l| l.grids(plan.frame.width, plan.frame.height, plan.window))
+}
+
+/// A lit layer's field uniforms (kernel.wgsl `fnear`, `ffar`, `fstep`); the rest zero.
+fn field_uni(plan: &Plan, lp: &LayerPlan) -> Uni {
+    let Some(g) = grids(plan, lp) else { return Uni::default() };
+    let row = |g: &rfr_core::render::light::Grid| [g.x, g.y, g.width as i32, g.height as i32];
+    let near = g.near.as_ref().map_or([0; 4], row);
+    let near_cells = g.near.as_ref().map_or(0, |n| n.cells()) as u32;
+    let margin = lp.light.as_ref().map_or(0, |l| l.near_margin);
+    Uni { fnear: near, ffar: row(&g.far), fstep: [g.far.step, margin, near_cells, 0], ..Uni::default() }
 }
 
 /// Per light one row of the lit layer's uniforms (direction or color).
@@ -970,14 +989,14 @@ impl GpuRenderer {
                     });
                     (hist, Some(DensityRes { uniform, orbits: d.orbits.max(1), pixels }))
                 }
-                // Lit layers: the field, 16 bytes per pixel.
-                None if lp.light.is_some() => (
+                // Lit layers: the near and far fields, 16 bytes per cell.
+                None if let Some(g) = grids(plan, lp) => (
                     device.create_buffer(&wgpu::BufferDescriptor {
                         label: Some("light field"),
                         // 3D terrain: the height maxima after the field, four per 16 bytes.
-                        size: (plan.window.pixels() as u64 * 16
+                        size: ((g.near.map_or(0, |n| n.cells()) + g.far.cells()) as u64 * 16
                             + if lp.light.as_ref().is_some_and(|l| l.camera.is_some()) {
-                                rfr_core::render::light::mip_sizes(plan.window.width, plan.window.height)
+                                rfr_core::render::light::mip_sizes(g.far.width, g.far.height)
                                     .iter()
                                     .map(|(w, h)| *w as u64 * *h as u64)
                                     .sum::<u64>()
@@ -1204,7 +1223,6 @@ impl GpuRenderer {
     fn light_pass(&self, scratch: &wgpu::Buffer, max_rows: u32) {
         let device = &self.ctx.device;
         let Some(t) = self.target.as_ref() else { return };
-        let (width, height) = (t.width, t.height);
         let stats = &t.stats;
         for l in &self.layers {
             let Some(uniform) = &l.light else { continue };
@@ -1224,29 +1242,33 @@ impl GpuRenderer {
                     wgpu::BindGroupEntry { binding: 8, resource: stats.as_entire_binding() },
                 ],
             });
-            let mut row = 0;
-            while row < height {
-                let rows = self.band_rows.max(8).min(max_rows.max(8)).min(height - row);
-                let mut u = l.uni;
-                u.size[2] = self.samples;
-                u.size[3] = row;
-                u.band = [rows, 2, 0, NONE];
-                self.ctx.queue.write_buffer(uniform, 0, bytemuck::bytes_of(&u));
-                let mut enc = device.create_command_encoder(&Default::default());
-                {
-                    let mut pass = enc.begin_compute_pass(&Default::default());
-                    pass.set_pipeline(&main);
-                    pass.set_bind_group(0, &bind, &[]);
-                    pass.dispatch_workgroups(width.div_ceil(8), rows.div_ceil(8), 1);
+            // The near grid (when there is one), then the far grid.
+            for (which, g) in [(0u32, l.uni.fnear), (1, l.uni.ffar)] {
+                let (gw, gh) = (g[2] as u32, g[3] as u32);
+                let mut row = 0;
+                while row < gh {
+                    let rows = self.band_rows.max(8).min(max_rows.max(8)).min(gh - row);
+                    let mut u = l.uni;
+                    u.size[2] = self.samples;
+                    u.size[3] = row;
+                    u.band = [rows, 2, which, NONE];
+                    self.ctx.queue.write_buffer(uniform, 0, bytemuck::bytes_of(&u));
+                    let mut enc = device.create_command_encoder(&Default::default());
+                    {
+                        let mut pass = enc.begin_compute_pass(&Default::default());
+                        pass.set_pipeline(&main);
+                        pass.set_bind_group(0, &bind, &[]);
+                        pass.dispatch_workgroups(gw.div_ceil(8), rows.div_ceil(8), 1);
+                    }
+                    self.ctx.queue.submit(Some(enc.finish()));
+                    row += rows;
                 }
-                self.ctx.queue.submit(Some(enc.finish()));
-                row += rows;
             }
             // 3D terrain: the height maxima, level by level.
             if l.uni.lighti[3] != 0
                 && let Some(Ok(lmip)) = self.pipeline(lmip_key(l.signature))
             {
-                for (level, (w, h)) in rfr_core::render::light::mip_sizes(width, height).into_iter().enumerate() {
+                for (level, (w, h)) in rfr_core::render::light::mip_sizes(l.uni.ffar[2] as u32, l.uni.ffar[3] as u32).into_iter().enumerate() {
                     let mut u = l.uni;
                     u.band = [0, 3, level as u32, NONE];
                     self.ctx.queue.write_buffer(uniform, 0, bytemuck::bytes_of(&u));

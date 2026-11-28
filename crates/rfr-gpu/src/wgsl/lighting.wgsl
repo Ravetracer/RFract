@@ -1,19 +1,51 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 //
 // Lit layers (rfr_core::render::light), appended to kernel.wgsl: `main` with operation 2
-// writes the layer's field for the whole image (color in 16-bit fixed point, height), `lit` shades a
-// band from the field with the normals of the neighboring heights and blends it like `main`.
+// writes the layer's fields (color in 16-bit fixed point, height; the near and the far grid of
+// light::Grids), `lit` shades a band from them with the normals of the neighboring heights and
+// blends it like `main`.
 
-// Per pixel: red and green, blue and alpha (16-bit fixed point, 0 to 1), height and distance to
-// the set in pixels (f32 bits).
+// Per cell: red and green, blue and alpha (16-bit fixed point, 0 to 1), height and distance to
+// the set in pixels (f32 bits). The near grid's cells first, then the far grid's (a 3D
+// terrain: its one grid, then the height maxima).
 @group(0) @binding(7) var<storage, read_write> field: array<vec4<u32>>;
 
-fn l_store(x: u32, y: u32, col: vec4<f32>, h: f32, de: f32) {
+// The pixel being shaded (whole-image pixels): lookups near it read the near grid.
+var<private> lp0: vec2<f32>;
+
+fn l_store(at: u32, col: vec4<f32>, h: f32, de: f32) {
     var hh = h;
     if !(abs(hh) <= 3.4e38) {
         hh = 0.0;
     }
-    field[y * U.size.x + x] = vec4<u32>(pack2x16unorm(col.xy), pack2x16unorm(col.zw), bitcast<u32>(hh), bitcast<u32>(de));
+    field[at] = vec4<u32>(pack2x16unorm(col.xy), pack2x16unorm(col.zw), bitcast<u32>(hh), bitcast<u32>(de));
+}
+
+// rfr_core::render::light::Fields::pick: the far grid unless the point is within the near
+// margin of the shaded pixel (per axis).
+fn l_far(x: f32, y: f32) -> bool {
+    return U.fnear.z == 0 || max(abs(x - lp0.x), abs(y - lp0.y)) > f32(U.fstep.y);
+}
+
+// A point in the cells of the near or far grid.
+fn l_local(x: f32, y: f32, far: bool) -> vec2<f32> {
+    if far {
+        return vec2<f32>((x - f32(U.ffar.x)) / f32(U.fstep.x), (y - f32(U.ffar.y)) / f32(U.fstep.x));
+    }
+    return vec2<f32>(x - f32(U.fnear.x), y - f32(U.fnear.y));
+}
+
+// A cell of the near or far grid, the border continued.
+fn l_cell(i: i32, j: i32, far: bool) -> vec4<u32> {
+    var g = U.fnear;
+    var base = 0u;
+    if far {
+        g = U.ffar;
+        base = U.fstep.z;
+    }
+    let ii = u32(clamp(i, 0, g.z - 1));
+    let jj = u32(clamp(j, 0, g.w - 1));
+    return field[base + jj * u32(g.z) + ii];
 }
 
 // rfr_core::render::light::Field::blurred_alpha
@@ -60,52 +92,58 @@ fn l_effects(c: vec4<f32>, x: f32, y: f32, de: f32, rng: ptr<function, u32>) -> 
     return vec4<f32>((lc * la + under * (1.0 - la)) / a, a);
 }
 
+// A height of the far grid (a 3D terrain's one grid).
 fn l_height(x: i32, y: i32) -> f32 {
-    let xx = u32(clamp(x, 0, i32(U.size.x) - 1));
-    let yy = u32(clamp(y, 0, i32(U.size.y) - 1));
-    return bitcast<f32>(field[yy * U.size.x + xx].z);
+    return bitcast<f32>(l_cell(x, y, true).z);
 }
 
-// rfr_core::render::light::Field::height_at: bilinear, the border continued.
-fn l_height_at(x: f32, y: f32) -> f32 {
-    let x0 = floor(x);
-    let y0 = floor(y);
-    let fx = x - x0;
-    let fy = y - y0;
-    let xi = i32(x0);
-    let yi = i32(y0);
-    let top = l_height(xi, yi) + (l_height(xi + 1, yi) - l_height(xi, yi)) * fx;
-    let bottom = l_height(xi, yi + 1) + (l_height(xi + 1, yi + 1) - l_height(xi, yi + 1)) * fx;
-    return top + (bottom - top) * fy;
+fn l_height_in(x: i32, y: i32, far: bool) -> f32 {
+    return bitcast<f32>(l_cell(x, y, far).z);
 }
 
-// rfr_core::render::light::Field::color_at
-fn l_color_at(x: f32, y: f32) -> vec4<f32> {
-    let x0 = floor(x);
-    let y0 = floor(y);
-    let xi = i32(x0);
-    let yi = i32(y0);
-    let top = mix(l_color(xi, yi), l_color(xi + 1, yi), x - x0);
-    let bottom = mix(l_color(xi, yi + 1), l_color(xi + 1, yi + 1), x - x0);
-    return mix(top, bottom, y - y0);
-}
-
-fn l_color(x: i32, y: i32) -> vec4<f32> {
-    let xx = u32(clamp(x, 0, i32(U.size.x) - 1));
-    let yy = u32(clamp(y, 0, i32(U.size.y) - 1));
-    let c = field[yy * U.size.x + xx];
+fn l_color_in(x: i32, y: i32, far: bool) -> vec4<f32> {
+    let c = l_cell(x, y, far);
     return vec4<f32>(unpack2x16unorm(c.x), unpack2x16unorm(c.y));
 }
 
-// Height maxima (rfr_core::render::light::Field::mips) after the field, one f32 per cell,
-// four per vec4: the cell counts and the first word of each level.
+// rfr_core::render::light::Fields::height_at: bilinear in the grid the point reads, the border
+// continued (image pixels; a terrain's grid starts at 0).
+fn l_height_at(x: f32, y: f32) -> f32 {
+    let far = l_far(x, y);
+    let p = l_local(x, y, far);
+    let x0 = floor(p.x);
+    let y0 = floor(p.y);
+    let fx = p.x - x0;
+    let fy = p.y - y0;
+    let xi = i32(x0);
+    let yi = i32(y0);
+    let top = l_height_in(xi, yi, far) + (l_height_in(xi + 1, yi, far) - l_height_in(xi, yi, far)) * fx;
+    let bottom = l_height_in(xi, yi + 1, far) + (l_height_in(xi + 1, yi + 1, far) - l_height_in(xi, yi + 1, far)) * fx;
+    return top + (bottom - top) * fy;
+}
+
+// rfr_core::render::light::Fields::color_at
+fn l_color_at(x: f32, y: f32) -> vec4<f32> {
+    let far = l_far(x, y);
+    let p = l_local(x, y, far);
+    let x0 = floor(p.x);
+    let y0 = floor(p.y);
+    let xi = i32(x0);
+    let yi = i32(y0);
+    let top = mix(l_color_in(xi, yi, far), l_color_in(xi + 1, yi, far), p.x - x0);
+    let bottom = mix(l_color_in(xi, yi + 1, far), l_color_in(xi + 1, yi + 1, far), p.x - x0);
+    return mix(top, bottom, p.y - y0);
+}
+
+// Height maxima (rfr_core::render::light::Field::mips) after a terrain's grid, one f32 per
+// cell, four per vec4: the cell counts and the first word of each level.
 fn l_mip_size(level: u32) -> vec2<u32> {
     let s = (1u << level) - 1u;
-    return vec2<u32>((max(U.size.x, 1u) + s) >> level, (max(U.size.y, 1u) + s) >> level);
+    return vec2<u32>((max(u32(U.ffar.z), 1u) + s) >> level, (max(u32(U.ffar.w), 1u) + s) >> level);
 }
 
 fn l_mip_base(level: u32) -> u32 {
-    var base = U.size.x * U.size.y * 4u;
+    var base = u32(U.ffar.z) * u32(U.ffar.w) * 4u;
     for (var l = 0u; l < level; l = l + 1u) {
         let n = l_mip_size(l);
         base = base + n.x * n.y;
@@ -163,8 +201,8 @@ fn lmip(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 // rfr_core::render::light::camera_ray: origin and direction (field pixels, y down, z up).
 fn l_camera_ray(zc: f32, x: f32, y: f32) -> array<vec3<f32>, 2> {
-    let w = f32(U.size.x);
-    let h = f32(U.size.y);
+    let w = f32(U.ffar.z);
+    let h = f32(U.ffar.w);
     let yaw = U.lcam.x;
     let pitch = U.lcam.y;
     let dist = U.lcam.z;
@@ -192,8 +230,8 @@ fn l_trace(o: vec3<f32>, d: vec3<f32>, k: f32) -> vec3<f32> {
     for (var l = 0u; l < levels; l = l + 1u) {
         bases[l] = l_mip_base(l);
     }
-    let xmax = max(f32(U.size.x) - 1.0, 0.0);
-    let ymax = max(f32(U.size.y) - 1.0, 0.0);
+    let xmax = max(f32(U.ffar.z) - 1.0, 0.0);
+    let ymax = max(f32(U.ffar.w) - 1.0, 0.0);
     var t0 = 0.0;
     var t1 = 3.4e38;
     let oa = vec2<f32>(o.x, o.y);
@@ -227,7 +265,7 @@ fn l_trace(o: vec3<f32>, d: vec3<f32>, k: f32) -> vec3<f32> {
     }
     var t = t0;
     var level = top;
-    let steps = 4u * (U.size.x + U.size.y) + 64u;
+    let steps = 4u * u32(U.ffar.z + U.ffar.w) + 64u;
     for (var it = 0u; it < steps; it = it + 1u) {
         if t > t1 {
             return vec3<f32>(0.0);
@@ -348,7 +386,11 @@ fn lit(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
     let k = U.light.y;
-    var rng = hash(x ^ hash(y ^ hash(U.size.z ^ 0x3C6EF372u)));
+    // The pixel in the whole image (random streams and lookups).
+    let xi = i32(x) + U.win.x;
+    let yi = i32(y) + U.win.y;
+    lp0 = vec2<f32>(f32(xi), f32(yi));
+    var rng = hash(u32(xi) ^ hash(u32(yi) ^ hash(U.size.z ^ 0x3C6EF372u)));
     var color: vec4<f32>;
     var px: f32;
     var py: f32;
@@ -358,23 +400,24 @@ fn lit(@builtin(global_invocation_id) gid: vec3<u32>) {
     var view = vec3<f32>(0.0, 0.0, 1.0);
     var de = 3.0e38;
     if U.lighti.w == 0u {
-        let c = field[y * U.size.x + x];
+        px = lp0.x;
+        py = lp0.y;
+        let far = l_far(px, py);
+        let q = l_local(px, py, far);
+        let c = l_cell(i32(q.x), i32(q.y), far);
         de = bitcast<f32>(c.w);
         color = vec4<f32>(unpack2x16unorm(c.x), unpack2x16unorm(c.y));
-        let xi = i32(x);
-        let yi = i32(y);
-        gx = (l_height(xi + 1, yi) - l_height(xi - 1, yi)) * 0.5;
-        gy = (l_height(xi, yi - 1) - l_height(xi, yi + 1)) * 0.5;
-        px = f32(x);
-        py = f32(y);
+        gx = (l_height_at(px + 1.0, py) - l_height_at(px - 1.0, py)) * 0.5;
+        gy = (l_height_at(px, py - 1.0) - l_height_at(px, py + 1.0)) * 0.5;
         h0 = bitcast<f32>(c.z);
     } else {
-        // 3D terrain: the camera ray through the pixel's sample position (render::sample_offset).
+        // 3D terrain (a whole image): the camera ray through the pixel's sample position
+        // (render::sample_offset).
         let ha = hash(x ^ hash(y + 0x68E31DA4u));
         let hb = hash(ha);
         let ju = f32(ha + U.size.z * 0xC13FA9A9u) / 4294967296.0;
         let jv = f32(hb + U.size.z * 0x91E10DA6u) / 4294967296.0;
-        let zc = k * l_height_at((f32(U.size.x) - 1.0) * 0.5, (f32(U.size.y) - 1.0) * 0.5);
+        let zc = k * l_height_at((f32(U.ffar.z) - 1.0) * 0.5, (f32(U.ffar.w) - 1.0) * 0.5);
         let ray = l_camera_ray(zc, f32(x) + ju, f32(y) + jv);
         let hit = l_trace(ray[0], ray[1], k);
         if hit.z == 0.0 {

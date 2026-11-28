@@ -87,6 +87,12 @@ struct Uni {
     // the window's origin in the whole image (x, y) and the whole image's width and height
     // (rfr_core::render::Window): positions, jitter and random streams use whole-image pixels
     win: vec4<i32>,
+    // Lit layers' fields (rfr_core::render::light::Grids): the near and the far grid (origin
+    // in image pixels, cells; near width 0: none), the far grid's step, the near margin and
+    // the far field's first cell in the buffer
+    fnear: vec4<i32>,
+    ffar: vec4<i32>,
+    fstep: vec4<u32>,
 }
 
 struct Params {
@@ -436,23 +442,37 @@ fn shade_formula(inside: bool, index: f32, solid: bool) -> vec4<f32> {
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let x = gid.x;
     let y = gid.y + U.size.w;
-    if x >= U.size.x || gid.y >= U.band.x || y >= U.size.y {
-        return;
-    }
-    // Adaptive sampling: done pixels take no more samples (lit fields still fill every pixel).
-    if U.band.y < 2u && stats[y * U.size.x + x].w > 0.5 {
-        return;
+    // The pixel in the whole image: of the window, or a lit layer's field cell (operation 2,
+    // band.z: 0 near grid, 1 far grid), which may lie beyond the image.
+    var xf = i32(x) + U.win.x;
+    var yf = i32(y) + U.win.y;
+    var fidx = 0u;
+    if U.band.y == 2u {
+        let far = U.band.z == 1u;
+        let g = select(U.fnear, U.ffar, far);
+        let st = select(1, i32(U.fstep.x), far);
+        if x >= u32(g.z) || gid.y >= U.band.x || y >= u32(g.w) {
+            return;
+        }
+        xf = g.x + i32(x) * st;
+        yf = g.y + i32(y) * st;
+        fidx = select(0u, U.fstep.z, far) + y * u32(g.z) + x;
+    } else {
+        if x >= U.size.x || gid.y >= U.band.x || y >= U.size.y {
+            return;
+        }
+        // Adaptive sampling: done pixels take no more samples.
+        if stats[y * U.size.x + x].w > 0.5 {
+            return;
+        }
     }
     let s = U.size.z;
-    // The pixel in the whole image (the window lies inside it).
-    let xf = u32(i32(x) + U.win.x);
-    let yf = u32(i32(y) + U.win.y);
-    let rng_base = hash(xf ^ hash(yf ^ hash(s + 0x9E3779B9u)));
+    let rng_base = hash(u32(xf) ^ hash(u32(yf) ^ hash(s + 0x9E3779B9u)));
 //@MODE_INIT
     // Sample position inside the pixel (R2 sequence in 32-bit fixed point) and derivative direction;
     // a lit layer's field takes pixel (0, 0)'s for all pixels (a regular grid).
-    var jx = xf;
-    var jy = yf;
+    var jx = u32(xf);
+    var jy = u32(yf);
     if U.band.y == 2u {
         jx = 0u;
         jy = 0u;

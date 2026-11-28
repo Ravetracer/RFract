@@ -135,7 +135,8 @@ shine on it from above. Switch on **Lit** and choose where the heights come from
   *Blinn-Phong* ones a tighter falloff.
 - **Shadows**: higher parts of the relief cast shadows away from each light. *Shadow length*
   is how far they reach (a share of the image height), *Softness* the size of the lights:
-  0 gives sharp edges, larger values soft ones. Low lights cast long shadows.
+  0 gives sharp edges, larger values soft ones. Low lights cast long shadows, also from
+  parts of the relief outside the image.
 - **Occlusion** darkens hollows and the foot of slopes, where less light comes from all
   around; *Occlusion radius* is how far around each point it looks.
 - **Reflection** mirrors the surroundings: 0 not at all, 1 like a mirror (a little more where
@@ -173,9 +174,11 @@ the colors of the few pixels they stand on, stretched; a lower terrain height or
 heights avoid them. The terrain has as many
 points as the image has pixels, so close-ups of the ground look soft.
 
-Every render pass computes the layer's heights over the whole image before it shades it, so
-a lit layer costs a little more than an unlit one; shadows and occlusion sample the heights
-around each pixel and get smoother with every pass. Editing the lights and the relief does
+Every render pass computes the layer's heights over the whole image (and as far beyond it as
+shadows, occlusion and effects reach) before it shades it, so a lit layer costs a little more
+than an unlit one; shadows and occlusion sample the heights around each pixel and get smoother
+with every pass. Far from the pixel (more than 256 pixels away) large images read the heights
+at a coarser resolution. Editing the lights and the relief does
 not recompile anything.
 
 !!! tip

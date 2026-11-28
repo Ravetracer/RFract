@@ -64,6 +64,9 @@ pub struct LightPlan {
     pub normal_output: bool,
     /// The layer's effects (2D layers only).
     pub fx: Option<FxPlan>,
+    /// The fields' sizes (see [`Grids`]): [`FAR_SIDE`] and [`NEAR_MARGIN`] (smaller in tests).
+    pub far_side: u32,
+    pub near_margin: u32,
 }
 
 /// A layer's effects, resolved for rendering (sizes as shares of the image height).
@@ -148,6 +151,8 @@ impl LightPlan {
             shading: true,
             normal_output: l.normal_output,
             fx: None,
+            far_side: FAR_SIDE,
+            near_margin: NEAR_MARGIN,
             camera: l.terrain.then(|| {
                 let c = &l.camera;
                 [
@@ -374,8 +379,127 @@ pub fn shade_normal(l: &LightPlan, color: [f32; 4], n: [f32; 3], light_seen: &[f
     out
 }
 
-/// A lit layer's field of one pass: color (linear RGB, straight alpha) and height per pixel.
+/// Cells of a field over the whole image: cell (i, j) holds the layer at image pixel
+/// (`x` + i · `step`, `y` + j · `step`) (pixel units, centers at integers); a grid may reach
+/// beyond the image.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Grid {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub step: u32,
+}
+
+impl Grid {
+    pub fn cells(&self) -> usize {
+        self.width as usize * self.height as usize
+    }
+
+    /// The image pixel of cell (i, j).
+    pub fn pixel(&self, i: u32, j: u32) -> (i32, i32) {
+        (self.x + (i * self.step) as i32, self.y + (j * self.step) as i32)
+    }
+}
+
+/// The fields a lit layer renders for a window: the far field covers the whole image and what
+/// the shading reaches beyond it, coarser when that is large; then the near field covers the
+/// window and [`NEAR_MARGIN`] pixels around it at full resolution. A lookup within
+/// [`NEAR_MARGIN`] pixels (per axis) of the shaded pixel reads the near field, any other the far
+/// one, so a window shades exactly like the whole image. A 3D terrain has one field, the
+/// window's (terrains render whole images).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Grids {
+    pub near: Option<Grid>,
+    pub far: Grid,
+}
+
+/// Lookups this close to the shaded pixel (per axis, pixels) read the near field.
+pub const NEAR_MARGIN: u32 = 256;
+/// The far field's longest side at most (cells); beyond it the far field gets coarser.
+pub const FAR_SIDE: u32 = 4096;
+
+impl LightPlan {
+    /// How far the shading of a pixel reads the field around it, in pixels of an image of
+    /// `w` × `h`: left, top, right, bottom. Shadows only toward the lights, occlusion and
+    /// effects all around (blurs to three standard deviations).
+    pub fn reach(&self, w: u32, h: u32) -> [f32; 4] {
+        let hf = h as f32;
+        let mut r = [1.0f32; 4];
+        let mut all = |v: f32| r.iter_mut().for_each(|x| *x = x.max(v));
+        if self.shading && self.occlusion > 0.0 {
+            all(self.occlusion_radius * hf);
+        }
+        if let Some(fx) = &self.fx {
+            if fx.glow > 0.0 {
+                all(3.0 * fx.glow_size * hf);
+            }
+            if fx.inner > 0.0 {
+                all(3.0 * fx.inner_size * hf);
+            }
+        }
+        let mut side = |k: usize, v: f32| r[k] = r[k].max(v);
+        if let Some(fx) = self.fx.as_ref().filter(|f| f.shadow > 0.0) {
+            // The shadow reads the layer at (x, y) − offset.
+            let (ox, oy, b) = (fx.shadow_offset[0] * hf, fx.shadow_offset[1] * hf, 3.0 * fx.shadow_size * hf);
+            side(0, ox.max(0.0) + b);
+            side(2, (-ox).max(0.0) + b);
+            side(1, oy.max(0.0) + b);
+            side(3, (-oy).max(0.0) + b);
+        }
+        let len = self.shadow * hf;
+        if self.shading && len > 0.0 {
+            for (dir, _) in &self.lights {
+                let hl = (dir[0] * dir[0] + dir[1] * dir[1]).sqrt();
+                if hl < 1e-4 || dir[2] <= 0.0 {
+                    continue;
+                }
+                let (sx, sy) = (dir[0] / hl, -dir[1] / hl);
+                side(2, len * sx);
+                side(0, -len * sx);
+                side(3, len * sy);
+                side(1, -len * sy);
+            }
+            // Toward point lights outside the image (rays end at the light).
+            let (xmax, ymax) = ((w as f32 - 1.0).max(0.0), (hf - 1.0).max(0.0));
+            for (pos, _) in &self.points {
+                side(2, (pos[0] - xmax).clamp(0.0, len));
+                side(0, (-pos[0]).clamp(0.0, len));
+                side(3, (pos[1] - ymax).clamp(0.0, len));
+                side(1, (-pos[1]).clamp(0.0, len));
+            }
+        }
+        r
+    }
+
+    /// The fields of `window` of a `w` × `h` image (see [`Grids`]).
+    pub fn grids(&self, w: u32, h: u32, window: super::Window) -> Grids {
+        let whole = Grid { x: window.x as i32, y: window.y as i32, width: window.width, height: window.height, step: 1 };
+        if self.camera.is_some() {
+            return Grids { near: None, far: whole };
+        }
+        let [l, t, r, b] = self.reach(w, h).map(|v| v.ceil() as u32 + 2);
+        let (fw, fh) = (w + l + r, h + t + b);
+        let step = fw.max(fh).div_ceil(self.far_side.max(16)).max(1);
+        // One cell more than the pixels need: bilinear lookups at the far edge.
+        let far = Grid { x: -(l as i32), y: -(t as i32), width: (fw - 1) / step + 2, height: (fh - 1) / step + 2, step };
+        // A full-resolution far field holds every lookup.
+        let m = self.near_margin as i32 + 2;
+        let near = (step > 1).then(|| Grid {
+            x: window.x as i32 - m,
+            y: window.y as i32 - m,
+            width: window.width + 2 * m as u32,
+            height: window.height + 2 * m as u32,
+            step: 1,
+        });
+        Grids { near, far }
+    }
+}
+
+/// A lit layer's field of one pass over a [`Grid`]: color (linear RGB, straight alpha), height
+/// and distance to the set per cell.
 pub struct Field {
+    pub grid: Grid,
     pub width: u32,
     pub height: u32,
     pub data: Vec<[f32; 6]>,
@@ -438,11 +562,13 @@ pub fn rnd(state: &mut u32) -> f32 {
 }
 
 impl Field {
-    /// A field; for a 3D terrain with its height maxima.
-    pub fn new(l: &LightPlan, width: u32, height: u32, data: Vec<[f32; 6]>) -> Field {
-        let mut f = Field { width, height, data, mips: Vec::new() };
+    /// A field over `grid` of an image `image_height` pixels high; for a 3D terrain with its
+    /// height maxima.
+    pub fn new(l: &LightPlan, grid: Grid, image_height: u32, data: Vec<[f32; 6]>) -> Field {
+        let (width, height) = (grid.width, grid.height);
+        let mut f = Field { grid, width, height, data, mips: Vec::new() };
         if l.camera.is_some() {
-            let k = l.slope_scale(height);
+            let k = l.slope_scale(image_height);
             let sizes = mip_sizes(width, height);
             let mut levels: Vec<Vec<f32>> = Vec::with_capacity(sizes.len());
             for (lv, &(w, h)) in sizes.iter().enumerate() {
@@ -495,125 +621,6 @@ impl Field {
             let bottom = c[k] + (d[k] - c[k]) * fx;
             top + (bottom - top) * fy
         })
-    }
-
-    /// The layer's color at pixel (x, y) in pass `s`: from straight above, or the terrain seen
-    /// by the camera.
-    pub fn shade(&self, l: &LightPlan, x: u32, y: u32, s: u32) -> [f32; 4] {
-        let mut rng = super::hash(x ^ super::hash(y ^ super::hash(s ^ 0x3C6E_F372)));
-        let Some(cam) = l.camera else {
-            let (xi, yi) = (x as i64, y as i64);
-            let c = self.at(xi, yi);
-            let gx = (self.at(xi + 1, yi)[4] - self.at(xi - 1, yi)[4]) * 0.5;
-            let gy = (self.at(xi, yi - 1)[4] - self.at(xi, yi + 1)[4]) * 0.5;
-            let color = [c[0], c[1], c[2], c[3]];
-            let base = if l.shading { self.shade_point(l, color, x as f32, y as f32, c[4], gx, gy, [0.0, 0.0, 1.0], &mut rng) } else { color };
-            return match &l.fx {
-                Some(fx) => self.effects(fx, base, x as f32, y as f32, c[5], &mut rng),
-                None => base,
-            };
-        };
-        let (u, v, _) = super::sample_offset(x, y, s);
-        let (o, d) = camera_ray(
-            cam,
-            self.width,
-            self.height,
-            l.slope_scale(self.height) * self.height_at((self.width as f32 - 1.0) * 0.5, (self.height as f32 - 1.0) * 0.5),
-            x as f32 + u as f32,
-            y as f32 + v as f32,
-        );
-        let Some((hx, hy)) = self.trace(o, d, l.slope_scale(self.height)) else { return [0.0; 4] };
-        let h = |dx: f32, dy: f32| self.height_at(hx + dx, hy + dy);
-        let gx = (h(1.0, 0.0) - h(-1.0, 0.0)) * 0.5;
-        let gy = (h(0.0, -1.0) - h(0.0, 1.0)) * 0.5;
-        // Toward the viewer, with y up like the lights.
-        let view = [-d[0], d[1], -d[2]];
-        self.shade_point(l, self.color_at(hx, hy), hx, hy, h(0.0, 0.0), gx, gy, view, &mut rng)
-    }
-
-    /// Shades the field's surface at (px, py) with height `h0` and slopes `gx`, `gy`: shadows,
-    /// ambient occlusion, then [`shade`].
-    #[allow(clippy::too_many_arguments)]
-    fn shade_point(&self, l: &LightPlan, color: [f32; 4], px: f32, py: f32, h0: f32, gx: f32, gy: f32, v: [f32; 3], rng: &mut u32) -> [f32; 4] {
-        let k = l.slope_scale(self.height);
-        let z0 = k * h0;
-        let mut seen = [1.0f32; crate::doc::MAX_LIGHTS];
-        let len = l.shadow * self.height as f32;
-        if len > 0.0 {
-            for (i, (dir, _)) in l.lights.iter().enumerate() {
-                seen[i] = self.shadow(dir, px, py, z0, k, len, l.softness, rnd(rng));
-            }
-        }
-        // Point lights: the direction from here; shadows reach no farther than the light.
-        let mut points = [([0.0f32; 3], 1.0f32); crate::doc::MAX_LIGHTS];
-        for (i, (pos, _)) in l.points.iter().enumerate() {
-            let (dir, dist, fall) = point_dir(*pos, px, py, z0, l.reach[i]);
-            points[i].0 = dir;
-            if len > 0.0 {
-                points[i].1 = self.shadow(&dir, px, py, z0, k, len.min(dist), l.softness, rnd(rng));
-            }
-            points[i].1 *= fall;
-        }
-        let radius = l.occlusion_radius * self.height as f32;
-        let open = if l.occlusion > 0.0 && radius > 0.0 { self.occlusion(px, py, z0, k, radius, l.occlusion, rnd(rng), rnd(rng)) } else { 1.0 };
-        shade(l, color, gx, gy, k, &seen, open, v, &points[..l.points.len()])
-    }
-
-    /// The layer's alpha blurred with a Gaussian of `sigma` pixels around (x, y), estimated from
-    /// [`FX_SAMPLES`] random samples.
-    fn blurred_alpha(&self, x: f32, y: f32, sigma: f32, rng: &mut u32) -> f32 {
-        if sigma < 0.25 {
-            return self.color_at(x, y)[3];
-        }
-        let mut sum = 0.0;
-        for _ in 0..FX_SAMPLES {
-            let (u1, u2) = (rnd(rng).max(1e-7), rnd(rng));
-            let r = sigma * (-2.0 * u1.ln()).sqrt();
-            let a = std::f32::consts::TAU * u2;
-            sum += self.color_at(x + r * a.cos(), y + r * a.sin())[3];
-        }
-        sum / FX_SAMPLES as f32
-    }
-
-    /// The layer's effects on `c` (straight color) at pixel (x, y) with the distance `de` (in
-    /// pixels) to the set: inner glow and neon on the layer, then the layer over its outer glow
-    /// and shadow.
-    fn effects(&self, fx: &FxPlan, c: [f32; 4], x: f32, y: f32, de: f32, rng: &mut u32) -> [f32; 4] {
-        let h = self.height as f32;
-        let mut lc = [c[0], c[1], c[2]];
-        let la = c[3];
-        if fx.inner > 0.0 {
-            let ig = (fx.inner * (1.0 - self.blurred_alpha(x, y, fx.inner_size * h, rng)) * la).clamp(0.0, 1.0);
-            for (v, t) in lc.iter_mut().zip(fx.inner_color) {
-                *v += (t - *v) * ig;
-            }
-        }
-        if fx.neon > 0.0 {
-            let n = fx.neon * (-de / (fx.neon_width * h / 1000.0)).exp();
-            for (v, t) in lc.iter_mut().zip(fx.neon_color) {
-                *v += t * n;
-            }
-        }
-        let g = if fx.glow > 0.0 { (fx.glow * self.blurred_alpha(x, y, fx.glow_size * h, rng)).clamp(0.0, 1.0) } else { 0.0 };
-        let s = if fx.shadow > 0.0 {
-            let (ox, oy) = (fx.shadow_offset[0] * h, fx.shadow_offset[1] * h);
-            (fx.shadow * self.blurred_alpha(x - ox, y - oy, fx.shadow_size * h, rng)).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        // Glow over shadow, then the layer over both (straight colors).
-        let ua = g + s * (1.0 - g);
-        let a = la + ua * (1.0 - la);
-        if a <= 1e-6 {
-            return [0.0; 4];
-        }
-        let mut out = [0.0; 4];
-        for k in 0..3 {
-            let under = fx.glow_color[k] * g + fx.shadow_color[k] * s * (1.0 - g);
-            out[k] = (lc[k] * la + under * (1.0 - la)) / a;
-        }
-        out[3] = a;
-        out
     }
 
     fn mip(&self, level: usize, x: i64, y: i64) -> f32 {
@@ -723,12 +730,176 @@ impl Field {
         // Out of steps: the ray skims the surface here.
         (t <= t1).then(|| at(t))
     }
+}
+
+/// The fields of a lit layer for one pass (see [`Grids`]).
+pub struct Fields {
+    pub near: Option<Field>,
+    pub far: Field,
+    /// The image's height: lengths are shares of it.
+    pub image_height: u32,
+    /// Lookups this close to the shaded pixel read the near field.
+    pub near_margin: u32,
+}
+
+impl Fields {
+    /// The field a lookup at image point (x, y) reads when shading pixel `p0`, and the point
+    /// in its cells.
+    fn pick(&self, x: f32, y: f32, p0: [f32; 2]) -> (&Field, f32, f32) {
+        if let Some(n) = &self.near
+            && (x - p0[0]).abs().max((y - p0[1]).abs()) <= self.near_margin as f32
+        {
+            return (n, x - n.grid.x as f32, y - n.grid.y as f32);
+        }
+        let g = &self.far.grid;
+        (&self.far, (x - g.x as f32) / g.step as f32, (y - g.y as f32) / g.step as f32)
+    }
+
+    /// The height at image point (x, y), bilinear, read for pixel `p0`.
+    pub fn height_at(&self, x: f32, y: f32, p0: [f32; 2]) -> f32 {
+        let (f, lx, ly) = self.pick(x, y, p0);
+        f.height_at(lx, ly)
+    }
+
+    /// The color at image point (x, y), bilinear, read for pixel `p0`.
+    pub fn color_at(&self, x: f32, y: f32, p0: [f32; 2]) -> [f32; 4] {
+        let (f, lx, ly) = self.pick(x, y, p0);
+        f.color_at(lx, ly)
+    }
+
+    /// The layer's color at image pixel (x, y) in pass `s`: from straight above, or the
+    /// terrain seen by the camera (its field is the whole image's).
+    pub fn shade(&self, l: &LightPlan, x: u32, y: u32, s: u32) -> [f32; 4] {
+        let mut rng = super::hash(x ^ super::hash(y ^ super::hash(s ^ 0x3C6E_F372)));
+        let h_img = self.image_height;
+        let Some(cam) = l.camera else {
+            let (px, py) = (x as i32 as f32, y as i32 as f32);
+            let p0 = [px, py];
+            let (f, lx, ly) = self.pick(px, py, p0);
+            let c = f.at(lx as i64, ly as i64);
+            let h = |dx: f32, dy: f32| self.height_at(px + dx, py + dy, p0);
+            let gx = (h(1.0, 0.0) - h(-1.0, 0.0)) * 0.5;
+            let gy = (h(0.0, -1.0) - h(0.0, 1.0)) * 0.5;
+            let color = [c[0], c[1], c[2], c[3]];
+            let base = if l.shading { self.shade_point(l, color, px, py, c[4], gx, gy, [0.0, 0.0, 1.0], &mut rng) } else { color };
+            return match &l.fx {
+                Some(fx) => self.effects(fx, base, px, py, c[5], &mut rng),
+                None => base,
+            };
+        };
+        let t = &self.far;
+        let (u, v, _) = super::sample_offset(x, y, s);
+        let (o, d) = camera_ray(
+            cam,
+            t.width,
+            t.height,
+            l.slope_scale(h_img) * t.height_at((t.width as f32 - 1.0) * 0.5, (t.height as f32 - 1.0) * 0.5),
+            x as f32 + u as f32,
+            y as f32 + v as f32,
+        );
+        let Some((hx, hy)) = t.trace(o, d, l.slope_scale(h_img)) else { return [0.0; 4] };
+        let h = |dx: f32, dy: f32| t.height_at(hx + dx, hy + dy);
+        let gx = (h(1.0, 0.0) - h(-1.0, 0.0)) * 0.5;
+        let gy = (h(0.0, -1.0) - h(0.0, 1.0)) * 0.5;
+        // Toward the viewer, with y up like the lights.
+        let view = [-d[0], d[1], -d[2]];
+        self.shade_point(l, t.color_at(hx, hy), hx, hy, h(0.0, 0.0), gx, gy, view, &mut rng)
+    }
+
+    /// Shades the field's surface at (px, py) with height `h0` and slopes `gx`, `gy`: shadows,
+    /// ambient occlusion, then [`shade`].
+    #[allow(clippy::too_many_arguments)]
+    fn shade_point(&self, l: &LightPlan, color: [f32; 4], px: f32, py: f32, h0: f32, gx: f32, gy: f32, v: [f32; 3], rng: &mut u32) -> [f32; 4] {
+        let hf = self.image_height as f32;
+        let k = l.slope_scale(self.image_height);
+        let z0 = k * h0;
+        let p0 = [px, py];
+        let mut seen = [1.0f32; crate::doc::MAX_LIGHTS];
+        let len = l.shadow * hf;
+        if len > 0.0 {
+            for (i, (dir, _)) in l.lights.iter().enumerate() {
+                seen[i] = self.shadow(dir, p0, z0, k, len, l.softness, rnd(rng));
+            }
+        }
+        // Point lights: the direction from here; shadows reach no farther than the light.
+        let mut points = [([0.0f32; 3], 1.0f32); crate::doc::MAX_LIGHTS];
+        for (i, (pos, _)) in l.points.iter().enumerate() {
+            let (dir, dist, fall) = point_dir(*pos, px, py, z0, l.reach[i]);
+            points[i].0 = dir;
+            if len > 0.0 {
+                points[i].1 = self.shadow(&dir, p0, z0, k, len.min(dist), l.softness, rnd(rng));
+            }
+            points[i].1 *= fall;
+        }
+        let radius = l.occlusion_radius * hf;
+        let open = if l.occlusion > 0.0 && radius > 0.0 { self.occlusion(p0, z0, k, radius, l.occlusion, rnd(rng), rnd(rng)) } else { 1.0 };
+        shade(l, color, gx, gy, k, &seen, open, v, &points[..l.points.len()])
+    }
+
+    /// The layer's alpha blurred with a Gaussian of `sigma` pixels around (x, y), estimated from
+    /// [`FX_SAMPLES`] random samples, read for pixel `p0`.
+    fn blurred_alpha(&self, x: f32, y: f32, sigma: f32, p0: [f32; 2], rng: &mut u32) -> f32 {
+        if sigma < 0.25 {
+            return self.color_at(x, y, p0)[3];
+        }
+        let mut sum = 0.0;
+        for _ in 0..FX_SAMPLES {
+            let (u1, u2) = (rnd(rng).max(1e-7), rnd(rng));
+            let r = sigma * (-2.0 * u1.ln()).sqrt();
+            let a = std::f32::consts::TAU * u2;
+            sum += self.color_at(x + r * a.cos(), y + r * a.sin(), p0)[3];
+        }
+        sum / FX_SAMPLES as f32
+    }
+
+    /// The layer's effects on `c` (straight color) at pixel (x, y) with the distance `de` (in
+    /// pixels) to the set: inner glow and neon on the layer, then the layer over its outer glow
+    /// and shadow.
+    fn effects(&self, fx: &FxPlan, c: [f32; 4], x: f32, y: f32, de: f32, rng: &mut u32) -> [f32; 4] {
+        let h = self.image_height as f32;
+        let p0 = [x, y];
+        let mut lc = [c[0], c[1], c[2]];
+        let la = c[3];
+        if fx.inner > 0.0 {
+            let ig = (fx.inner * (1.0 - self.blurred_alpha(x, y, fx.inner_size * h, p0, rng)) * la).clamp(0.0, 1.0);
+            for (v, t) in lc.iter_mut().zip(fx.inner_color) {
+                *v += (t - *v) * ig;
+            }
+        }
+        if fx.neon > 0.0 {
+            let n = fx.neon * (-de / (fx.neon_width * h / 1000.0)).exp();
+            for (v, t) in lc.iter_mut().zip(fx.neon_color) {
+                *v += t * n;
+            }
+        }
+        let g = if fx.glow > 0.0 { (fx.glow * self.blurred_alpha(x, y, fx.glow_size * h, p0, rng)).clamp(0.0, 1.0) } else { 0.0 };
+        let s = if fx.shadow > 0.0 {
+            let (ox, oy) = (fx.shadow_offset[0] * h, fx.shadow_offset[1] * h);
+            (fx.shadow * self.blurred_alpha(x - ox, y - oy, fx.shadow_size * h, p0, rng)).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        // Glow over shadow, then the layer over both (straight colors).
+        let ua = g + s * (1.0 - g);
+        let a = la + ua * (1.0 - la);
+        if a <= 1e-6 {
+            return [0.0; 4];
+        }
+        let mut out = [0.0; 4];
+        for k in 0..3 {
+            let under = fx.glow_color[k] * g + fx.shadow_color[k] * s * (1.0 - g);
+            out[k] = (lc[k] * la + under * (1.0 - la)) / a;
+        }
+        out[3] = a;
+        out
+    }
 
     /// The share of a light reaching (px, py) at height `z0` (pixel units): along the ray
     /// toward the light, the smallest clearance over the heights relative to the distance,
     /// scaled by the light's apparent size `soft` (hard shadows when 0).
     #[allow(clippy::too_many_arguments)]
-    fn shadow(&self, dir: &[f32; 3], px: f32, py: f32, z0: f32, k: f32, len: f32, soft: f32, jitter: f32) -> f32 {
+    fn shadow(&self, dir: &[f32; 3], p0: [f32; 2], z0: f32, k: f32, len: f32, soft: f32, jitter: f32) -> f32 {
+        let [px, py] = p0;
         let hl = (dir[0] * dir[0] + dir[1] * dir[1]).sqrt();
         if hl < 1e-4 || dir[2] <= 0.0 {
             return if dir[2] > 0.0 { 1.0 } else { 0.0 };
@@ -738,7 +909,7 @@ impl Field {
         for i in 0..SHADOW_STEPS {
             let f = (i as f32 + jitter) / SHADOW_STEPS as f32;
             let t = (len * f * f).max(0.5);
-            let clear = z0 + rise * t - k * self.height_at(px + sx * t, py + sy * t);
+            let clear = z0 + rise * t - k * self.height_at(px + sx * t, py + sy * t, p0);
             let v = if soft > 0.0 {
                 (clear / (soft * t)).clamp(0.0, 1.0)
             } else if clear < 0.0 {
@@ -757,7 +928,9 @@ impl Field {
     /// The open share of the sky at (px, py): one minus `strength` times the mean sine of the
     /// highest horizon in [`AO_DIRECTIONS`] directions (turned by `turn`) within `radius`.
     #[allow(clippy::too_many_arguments)]
-    fn occlusion(&self, px: f32, py: f32, z0: f32, k: f32, radius: f32, strength: f32, turn: f32, jitter: f32) -> f32 {
+    #[allow(clippy::too_many_arguments)]
+    fn occlusion(&self, p0: [f32; 2], z0: f32, k: f32, radius: f32, strength: f32, turn: f32, jitter: f32) -> f32 {
+        let [px, py] = p0;
         let mut sum = 0.0;
         for d in 0..AO_DIRECTIONS {
             let a = (d as f32 + turn) / AO_DIRECTIONS as f32 * std::f32::consts::TAU;
@@ -765,7 +938,7 @@ impl Field {
             let mut best = 0.0f32;
             for j in 0..AO_STEPS {
                 let t = (radius * (j as f32 + jitter) / AO_STEPS as f32).max(0.5);
-                let rise = (k * self.height_at(px + sx * t, py + sy * t) - z0) / t;
+                let rise = (k * self.height_at(px + sx * t, py + sy * t, p0) - z0) / t;
                 best = best.max(rise);
             }
             sum += best / (1.0 + best * best).sqrt();
@@ -778,6 +951,12 @@ impl Field {
 mod tests {
     use super::*;
     use crate::doc::Light;
+
+    /// One full-resolution field over a `w` × `h` image.
+    fn fields(w: u32, h: u32, data: Vec<[f32; 6]>) -> Fields {
+        let grid = Grid { x: 0, y: 0, width: w, height: h, step: 1 };
+        Fields { near: None, far: Field { grid, width: w, height: h, data, mips: Vec::new() }, image_height: h, near_margin: NEAR_MARGIN }
+    }
 
     fn plan(model: SpecularModel) -> LightPlan {
         LightPlan::new(&Lighting {
@@ -810,7 +989,7 @@ mod tests {
         // Heights rise to the right: the normal leans left, away from a light on the right.
         let (w, h) = (5u32, 4u32);
         let data = (0..w * h).map(|i| [0.5, 0.5, 0.5, 1.0, (i % w) as f32 * 0.01, 3.0e38]).collect();
-        let f = Field { width: w, height: h, data, mips: Vec::new() };
+        let f = fields(w, h, data);
         let l = plan(SpecularModel::Ggx);
         let lit = f.shade(&l, 2, 2, 0);
         let flat = shade(&l, [0.5, 0.5, 0.5, 1.0], 0.0, 0.0, l.slope_scale(h), &[], 1.0, [0.0, 0.0, 1.0], &[]);
@@ -822,7 +1001,7 @@ mod tests {
         // Flat ground with a wall at x = 10..12, light from the left (azimuth 180°), low.
         let (w, h) = (40u32, 20u32);
         let data = (0..w * h).map(|i| [0.5, 0.5, 0.5, 1.0, if (10..12).contains(&(i % w)) { 0.05 } else { 0.0 }, 3.0e38]).collect();
-        let f = Field { width: w, height: h, data, mips: Vec::new() };
+        let f = fields(w, h, data);
         let mut lighting = Lighting { enabled: true, shadows: true, softness: 0.0, ..Lighting::default() };
         lighting.lights = vec![Light { azimuth: 180.0, elevation: 20.0, ..Light::default() }];
         let l = LightPlan::new(&lighting);
@@ -845,7 +1024,7 @@ mod tests {
         let (w, h) = (60u32, 60u32);
         let inside = |i: u32| (20..40).contains(&(i % w)) && (20..40).contains(&(i / w));
         let data = (0..w * h).map(|i| if inside(i) { [0.5, 0.5, 0.5, 1.0, 0.0, 3.0e38] } else { [0.0; 6] }).collect();
-        let f = Field { width: w, height: h, data, mips: Vec::new() };
+        let f = fields(w, h, data);
         let shade = |e: crate::doc::LayerEffects, x: u32, y: u32| {
             let mut l = LightPlan::new(&Lighting::default());
             l.shading = false;

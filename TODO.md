@@ -57,8 +57,11 @@ Open points of the earlier stages (their notes below stay for the details).
   - [x] Part 1: `Plan::window` (`Window`), both renderers compute positions, jitter and random
         streams in whole-image pixels; posters render windows (pixel-identical to the whole
         render, CPU guessing on the whole image's grid); 3D objects tile.
-  - [ ] Part 2: flat lit layers and layer effects (fields over the window plus a margin; the
-        margin also brings shadows from beyond the image border).
+  - [x] Part 2: flat lit layers and layer effects: `light::Grids` (a far field over the image
+        and the shading's reach beyond it, coarser above `FAR_SIDE`; a near field around the
+        window when the far one is coarse; lookups within `NEAR_MARGIN` of the pixel read the
+        near one), so windows shade exactly like the whole image; shadows from beyond the
+        border.
   - [ ] Part 3: terrains (the field of the whole view, the camera's window).
   - [ ] Part 4: density layers (counts of the window, normalization of the whole image).
 - [ ] Terrain: larger than the view, walls down to a base, optional path tracing into OIDN.

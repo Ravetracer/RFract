@@ -2,10 +2,10 @@
 
 //! Tiled renders for posters larger than the graphics card holds: every tile is a window of
 //! the whole image (`Plan::with_window`), so its pixels are exactly the pixels of the whole
-//! image there. This holds for layers that color every pixel on its own (formulas, colorings,
-//! transformations, masks, groups) and for 3D objects (rays of the whole image's camera); lit
-//! layers, layer effects and density layers depend on more than the window and are not tiled
-//! yet.
+//! image there: layers that color every pixel on their own (formulas, colorings,
+//! transformations, masks, groups), 3D objects (rays of the whole image's camera) and lit layers
+//! and layer effects (fields around the window, see `light::Grids`). 3D terrains and density
+//! layers depend on the whole image and are not tiled yet.
 
 use crate::doc::{Document, Layer, LayerKind};
 
@@ -28,8 +28,7 @@ pub fn can_tile(doc: &Document) -> Result<(), String> {
             let why = match l.kind {
                 LayerKind::Density => Some("is a density layer"),
                 LayerKind::Object => None,
-                _ if l.light.enabled => Some("is lit"),
-                _ if l.effects.active() => Some("has layer effects"),
+                _ if l.light.enabled && l.light.terrain => Some("is a 3D terrain"),
                 _ => None,
             };
             if let Some(why) = why {
@@ -74,6 +73,58 @@ mod tests {
         assert_eq!(with_margin([0, 2048, 2048, 52], 10, 5000, 2100), [0, 2038, 2058, 62]);
     }
 
+    /// A lit layer with shadows, occlusion and effects; its fields small enough that the
+    /// near and far fields both take part.
+    fn lit_plan(doc: &Document, w: u32, h: u32) -> Plan {
+        let mut plan = Plan::sized(doc, w, h).unwrap();
+        for n in &mut plan.nodes {
+            if let crate::render::Node::Layer { layer, .. } = n
+                && let Some(l) = layer.light.as_mut()
+            {
+                (l.far_side, l.near_margin) = (48, 6);
+            }
+        }
+        plan
+    }
+
+    fn lit_doc() -> Document {
+        let mut doc = Document::for_formula("rfract:Mandelbrot");
+        let l = &mut doc.layers[0];
+        l.light.enabled = true;
+        l.light.shadows = true;
+        l.light.occlusion = 0.6;
+        l.light.lights = vec![crate::doc::Light { azimuth: 150.0, elevation: 25.0, ..Default::default() }];
+        l.effects.glow = 0.8;
+        l.effects.shadow = 0.7;
+        doc
+    }
+
+    #[test]
+    fn lit_windows_are_the_whole_image_there() {
+        let doc = lit_doc();
+        let (w, h) = (90u32, 50u32);
+        let plan = lit_plan(&doc, w, h);
+        let g = plan.layers()[0].light.as_ref().unwrap().grids(w, h, plan.window);
+        assert!(g.far.step > 1 && g.near.is_some(), "{g:?}");
+        let render = |plan: Plan| {
+            let mut r = crate::render::cpu::CpuRenderer::new(plan);
+            for _ in 0..2 {
+                r.pass();
+            }
+            r.rgba8()
+        };
+        let whole = render(plan.clone());
+        for win in [[0u32, 0, 40, 20], [37, 11, 53, 39]] {
+            let part = render(plan.clone().with_window(win));
+            for j in 0..win[3] {
+                let a = ((win[1] + j) * w + win[0]) as usize * 4;
+                let b = (j * win[2]) as usize * 4;
+                let n = win[2] as usize * 4;
+                assert_eq!(&whole[a..a + n], &part[b..b + n], "window {win:?}, row {j}");
+            }
+        }
+    }
+
     #[test]
     fn windows_are_the_whole_image_there() {
         // Rotated, with a coloring formula and a transformation: the windows of a render put
@@ -108,6 +159,8 @@ mod tests {
         let mut doc = Document::default();
         assert!(can_tile(&doc).is_ok());
         doc.layers[0].light.enabled = true;
-        assert!(can_tile(&doc).unwrap_err().contains("is lit"));
+        assert!(can_tile(&doc).is_ok());
+        doc.layers[0].light.terrain = true;
+        assert!(can_tile(&doc).unwrap_err().contains("3D terrain"));
     }
 }

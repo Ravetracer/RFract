@@ -230,13 +230,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // The sample position (render::sample_offset) and the jitter of the secondary rays.
     let s = U.size.z;
     // The pixel in the whole image (the window lies inside it).
-    let xf = u32(i32(x) + U.win.x);
-    let yf = u32(i32(y) + U.win.y);
-    let ha = hash(xf ^ hash(yf + 0x68E31DA4u));
+    let xf = i32(x) + U.win.x;
+    let yf = i32(y) + U.win.y;
+    let ha = hash(u32(xf) ^ hash(u32(yf) + 0x68E31DA4u));
     let hb = hash(ha);
     let ju = f32(ha + s * 0xC13FA9A9u) / 4294967296.0;
     let jv = f32(hb + s * 0x91E10DA6u) / 4294967296.0;
-    var rng = hash(xf ^ hash(yf ^ hash(s ^ 0x3C6EF372u)));
+    var rng = hash(u32(xf) ^ hash(u32(yf) ^ hash(s ^ 0x3C6EF372u)));
     let ray = o_ray(f32(xf) + ju, f32(yf) + jv);
     let o = ray[0];
     let d = ray[1];

@@ -362,8 +362,8 @@ pub struct CpuRenderer {
     density_passes: u32,
     /// Samples the render aims at (density layers restart the image while it fills).
     pub target_samples: u32,
-    /// Lit layers: the field of the current pass (same order as `kernels`).
-    fields: Vec<Option<light::Field>>,
+    /// Lit layers: the fields of the current pass (same order as `kernels`).
+    fields: Vec<Option<light::Fields>>,
     /// Fill blocks inside the set without computing them (see [`guess_tile`]); starts from
     /// [`set_guessing`].
     pub guessing: bool,
@@ -372,7 +372,7 @@ pub struct CpuRenderer {
 /// One sample's evaluation state: the layers are evaluated in `plan.layers()` order.
 struct Ctx<'a> {
     kernels: &'a [Kernel],
-    fields: &'a [Option<light::Field>],
+    fields: &'a [Option<light::Fields>],
     frames: &'a mut [KernelF],
     next: usize,
     plan: &'a Plan,
@@ -382,8 +382,6 @@ struct Ctx<'a> {
     turn: f64,
     /// The pixel in the whole image and the sample index.
     pix: (u32, u32, u32),
-    /// The pixel in the window (lit layers' fields cover the window).
-    local: (u32, u32),
     /// Every layer evaluated so far stayed inside (see [`LayerK::eval`]).
     inside: bool,
 }
@@ -394,7 +392,7 @@ impl Ctx<'_> {
         self.next += 1;
         if let (Some(field), Some(l)) = (&self.fields[i], &lp.light) {
             self.inside = false;
-            return field.shade(l, self.local.0, self.local.1, self.pix.2);
+            return field.shade(l, self.pix.0, self.pix.1, self.pix.2);
         }
         let (c, _, inside) = self.kernels[i].eval(&mut self.frames[i], lp, self.plan, (self.p, self.d), self.turn, self.pix);
         self.inside &= inside;
@@ -456,19 +454,8 @@ impl CpuRenderer {
         let (u, v, turn) = sample_offset(ix, iy, s);
         let (px, py) = (ix as f64 + u, iy as f64 + v);
         let (p, d) = (self.plan.frame.plane(px, py), self.plan.frame.offset_fx(px, py));
-        let mut ctx = Ctx {
-            kernels: &self.kernels,
-            fields: &self.fields,
-            frames,
-            next: 0,
-            plan: &self.plan,
-            p,
-            d,
-            turn,
-            pix: (ix, iy, s),
-            local: (x, y),
-            inside: true,
-        };
+        let mut ctx =
+            Ctx { kernels: &self.kernels, fields: &self.fields, frames, next: 0, plan: &self.plan, p, d, turn, pix: (ix, iy, s), inside: true };
         let c = composite_nodes(&self.plan.nodes, self.plan.background, &mut ctx);
         (c, ctx.inside)
     }
@@ -511,40 +498,44 @@ impl CpuRenderer {
         }
     }
 
-    /// Lit layers: their fields for this pass, every pixel at the pass's sub-pixel offset of
-    /// pixel (0, 0) (a regular grid for the normals); a 3D terrain's field stays at the pixel
-    /// centers (moving it would move the ground).
+    /// Lit layers: their fields for this pass (see [`light::Grids`]), every cell at the pass's
+    /// sub-pixel offset of pixel (0, 0) (a regular grid for the normals); a 3D terrain's field
+    /// stays at the pixel centers (moving it would move the ground).
     fn light_pass(&mut self) {
         let s = self.samples;
         let (u, v, turn) = sample_offset(0, 0, s);
-        let win = self.plan.window;
-        let (w, h) = (win.width, win.height);
+        let (w, h) = (self.plan.frame.width, self.plan.frame.height);
         let layers = self.plan.layers();
-        let mut fields: Vec<Option<light::Field>> = Vec::with_capacity(layers.len());
+        let mut fields: Vec<Option<light::Fields>> = Vec::with_capacity(layers.len());
         for (k, lp) in self.kernels.iter().zip(&layers) {
-            if lp.light.is_none() || matches!(k, Kernel::Density(_)) {
+            let Some(l) = lp.light.as_ref().filter(|_| !matches!(k, Kernel::Density(_))) else {
                 fields.push(None);
                 continue;
-            }
-            let (u, v, turn) = if lp.light.as_ref().is_some_and(|l| l.camera.is_some()) { (0.5, 0.5, 0.0) } else { (u, v, turn) };
-            let mut data = vec![[0.0f32; 6]; (w * h) as usize];
-            let proto = k.frames();
+            };
+            let (u, v, turn) = if l.camera.is_some() { (0.5, 0.5, 0.0) } else { (u, v, turn) };
             let plan = &self.plan;
-            data.par_chunks_mut(w as usize).enumerate().for_each_init(
-                || proto.clone(),
-                |f, (y, row)| {
-                    for (x, out) in row.iter_mut().enumerate() {
-                        let (ix, iy) = (x as u32 + win.x, y as u32 + win.y);
-                        let (px, py) = (ix as f64 + u, iy as f64 + v);
-                        let at = (plan.frame.plane(px, py), plan.frame.offset_fx(px, py));
-                        let (c, [hgt, de], _) = k.eval(f, lp, plan, at, turn, (ix, iy, s));
-                        // Colors from 0 to 1 (the GPU keeps them in 16-bit fixed point).
-                        let k = |v: f32| v.clamp(0.0, 1.0);
-                        *out = [k(c[0]), k(c[1]), k(c[2]), k(c[3]), hgt, de];
-                    }
-                },
-            );
-            fields.push(lp.light.as_ref().map(|l| light::Field::new(l, w, h, data)));
+            let proto = k.frames();
+            let field = |g: light::Grid| {
+                let mut data = vec![[0.0f32; 6]; g.cells()];
+                data.par_chunks_mut(g.width as usize).enumerate().for_each_init(
+                    || proto.clone(),
+                    |f, (j, row)| {
+                        for (i, out) in row.iter_mut().enumerate() {
+                            let (ix, iy) = g.pixel(i as u32, j as u32);
+                            let (px, py) = (ix as f64 + u, iy as f64 + v);
+                            let at = (plan.frame.plane(px, py), plan.frame.offset_fx(px, py));
+                            // Cells beyond the image's top or left: the same wrapped seeds as the GPU.
+                            let (c, [hgt, de], _) = k.eval(f, lp, plan, at, turn, (ix as u32, iy as u32, s));
+                            // Colors from 0 to 1 (the GPU keeps them in 16-bit fixed point).
+                            let k = |v: f32| v.clamp(0.0, 1.0);
+                            *out = [k(c[0]), k(c[1]), k(c[2]), k(c[3]), hgt, de];
+                        }
+                    },
+                );
+                light::Field::new(l, g, h, data)
+            };
+            let grids = l.grids(w, h, plan.window);
+            fields.push(Some(light::Fields { near: grids.near.map(&field), far: field(grids.far), image_height: h, near_margin: l.near_margin }));
         }
         self.fields = fields;
     }
